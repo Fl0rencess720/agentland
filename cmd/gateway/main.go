@@ -32,6 +32,7 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	defer logging.Sync(zap.L())
 
 	errCh := make(chan error, 1)
 	go func() {
