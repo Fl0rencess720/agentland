@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,9 +44,15 @@ func main() {
 	select {
 	case <-ctx.Done():
 		zap.L().Info("Received shutdown signal, shutting down gracefully...")
-		cancel()
-		<-errCh
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			zap.L().Error("Server shutdown error", zap.Error(err))
+		}
+		zap.L().Info("Server shutdown complete.")
 	case err := <-errCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			zap.L().Info("Server shutdown complete.")
+			return
+		}
 		zap.L().Fatal("Server error", zap.Error(err))
 	}
 }

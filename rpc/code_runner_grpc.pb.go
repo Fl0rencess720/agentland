@@ -8,6 +8,7 @@ package coderunnerpb
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -121,14 +122,14 @@ var AgentCoreService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	SandboxService_ExcuteCode_FullMethodName = "/agentland.coderunner.v1.SandboxService/ExcuteCode"
+	SandboxService_ExecuteCode_FullMethodName = "/agentland.coderunner.v1.SandboxService/ExecuteCode"
 )
 
 // SandboxServiceClient is the client API for SandboxService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SandboxServiceClient interface {
-	ExcuteCode(ctx context.Context, in *ExcuteCodeRequest, opts ...grpc.CallOption) (*ExcuteCodeResponse, error)
+	ExecuteCode(ctx context.Context, in *ExecuteCodeRequest, opts ...grpc.CallOption) (*ExecuteCodeResponse, error)
 }
 
 type sandboxServiceClient struct {
@@ -139,10 +140,10 @@ func NewSandboxServiceClient(cc grpc.ClientConnInterface) SandboxServiceClient {
 	return &sandboxServiceClient{cc}
 }
 
-func (c *sandboxServiceClient) ExcuteCode(ctx context.Context, in *ExcuteCodeRequest, opts ...grpc.CallOption) (*ExcuteCodeResponse, error) {
+func (c *sandboxServiceClient) ExecuteCode(ctx context.Context, in *ExecuteCodeRequest, opts ...grpc.CallOption) (*ExecuteCodeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ExcuteCodeResponse)
-	err := c.cc.Invoke(ctx, SandboxService_ExcuteCode_FullMethodName, in, out, cOpts...)
+	out := new(ExecuteCodeResponse)
+	err := c.cc.Invoke(ctx, SandboxService_ExecuteCode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +154,7 @@ func (c *sandboxServiceClient) ExcuteCode(ctx context.Context, in *ExcuteCodeReq
 // All implementations must embed UnimplementedSandboxServiceServer
 // for forward compatibility.
 type SandboxServiceServer interface {
-	ExcuteCode(context.Context, *ExcuteCodeRequest) (*ExcuteCodeResponse, error)
+	ExecuteCode(context.Context, *ExecuteCodeRequest) (*ExecuteCodeResponse, error)
 	mustEmbedUnimplementedSandboxServiceServer()
 }
 
@@ -164,8 +165,8 @@ type SandboxServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSandboxServiceServer struct{}
 
-func (UnimplementedSandboxServiceServer) ExcuteCode(context.Context, *ExcuteCodeRequest) (*ExcuteCodeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ExcuteCode not implemented")
+func (UnimplementedSandboxServiceServer) ExecuteCode(context.Context, *ExecuteCodeRequest) (*ExecuteCodeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExecuteCode not implemented")
 }
 func (UnimplementedSandboxServiceServer) mustEmbedUnimplementedSandboxServiceServer() {}
 func (UnimplementedSandboxServiceServer) testEmbeddedByValue()                        {}
@@ -188,20 +189,20 @@ func RegisterSandboxServiceServer(s grpc.ServiceRegistrar, srv SandboxServiceSer
 	s.RegisterService(&SandboxService_ServiceDesc, srv)
 }
 
-func _SandboxService_ExcuteCode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ExcuteCodeRequest)
+func _SandboxService_ExecuteCode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecuteCodeRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(SandboxServiceServer).ExcuteCode(ctx, in)
+		return srv.(SandboxServiceServer).ExecuteCode(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: SandboxService_ExcuteCode_FullMethodName,
+		FullMethod: SandboxService_ExecuteCode_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SandboxServiceServer).ExcuteCode(ctx, req.(*ExcuteCodeRequest))
+		return srv.(SandboxServiceServer).ExecuteCode(ctx, req.(*ExecuteCodeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -214,8 +215,8 @@ var SandboxService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*SandboxServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "ExcuteCode",
-			Handler:    _SandboxService_ExcuteCode_Handler,
+			MethodName: "ExecuteCode",
+			Handler:    _SandboxService_ExecuteCode_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

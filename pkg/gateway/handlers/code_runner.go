@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	AgentCoreServiceName = "agent"
+	AgentCoreServiceName = "localhost"
 	AgentCoreServicePort = "8082"
 )
 
@@ -21,12 +21,12 @@ type CodeRunnerHandler struct {
 	agentCoreServiceClient pb.AgentCoreServiceClient
 }
 
-type ExcuteCodeReq struct {
+type ExecuteCodeReq struct {
 	Language string `json:"language"`
 	Code     string `json:"code"`
 }
 
-type ExcuteCodeResp struct {
+type ExecuteCodeResp struct {
 	Result string `json:"result"`
 }
 
@@ -55,14 +55,14 @@ func InitCodeRunnerApi(group *gin.RouterGroup) {
 
 	h.agentCoreServiceClient = pb.NewAgentCoreServiceClient(conn)
 
-	group.POST("/run", h.ExcuteCode)
+	group.POST("/run", h.ExecuteCode)
 }
 
-func (h *CodeRunnerHandler) ExcuteCode(ctx *gin.Context) {
-	var req ExcuteCodeReq
+func (h *CodeRunnerHandler) ExecuteCode(ctx *gin.Context) {
+	var req ExecuteCodeReq
 	if err := ctx.ShouldBind(&req); err != nil {
 		zap.L().Error("Bind request failed", zap.Error(err))
-		response.ErrorResponse(ctx, response.FormError, err)
+		response.ErrorResponse(ctx, response.FormError)
 		return
 	}
 
@@ -71,11 +71,11 @@ func (h *CodeRunnerHandler) ExcuteCode(ctx *gin.Context) {
 	})
 	if err != nil {
 		zap.L().Error("Create Sandbox failed", zap.Error(err))
-		response.ErrorResponse(ctx, response.ServerError, err)
+		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
 
-	response.SuccessResponse(ctx, ExcuteCodeResp{
+	response.SuccessResponse(ctx, ExecuteCodeResp{
 		Result: createSandboxResp.SandboxId,
 	})
 }

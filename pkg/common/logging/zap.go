@@ -41,7 +41,7 @@ func getEncoder() zapcore.Encoder {
 }
 
 func getLogLevel() zapcore.Level {
-	return zapcore.ErrorLevel
+	return zapcore.InfoLevel
 }
 
 func getWriteSyncer(logFilePath string) zapcore.WriteSyncer {

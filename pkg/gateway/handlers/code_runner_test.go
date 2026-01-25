@@ -65,14 +65,14 @@ func (s *CodeRunnerSuite) SetupTest() {
 }
 
 // 请求参数绑定失败 (Bad Request)
-func (s *CodeRunnerSuite) TestExcuteCode_BindError() {
+func (s *CodeRunnerSuite) TestExecuteCode_BindError() {
 	// 构造错误的 Body (JSON 格式不对)
 	req := httptest.NewRequest("POST", "/run", bytes.NewBufferString("{bad_json"))
 	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
 	// 调用 Handler
-	s.handler.ExcuteCode(s.ctx)
+	s.handler.ExecuteCode(s.ctx)
 
 	// 断言
 	s.Equal(400, s.recorder.Code)
@@ -81,9 +81,9 @@ func (s *CodeRunnerSuite) TestExcuteCode_BindError() {
 }
 
 // gRPC 调用失败
-func (s *CodeRunnerSuite) TestExcuteCode_GRPCError() {
+func (s *CodeRunnerSuite) TestExecuteCode_GRPCError() {
 	// 构造正常的 Request
-	reqBody := ExcuteCodeReq{Language: "python", Code: "print('hello')"}
+	reqBody := ExecuteCodeReq{Language: "python", Code: "print('hello')"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -97,7 +97,7 @@ func (s *CodeRunnerSuite) TestExcuteCode_GRPCError() {
 	).Return(nil, errors.New("rpc connection failed"))
 
 	// 调用 Handler
-	s.handler.ExcuteCode(s.ctx)
+	s.handler.ExecuteCode(s.ctx)
 
 	// 断言
 	s.Equal(500, s.recorder.Code)
@@ -105,9 +105,9 @@ func (s *CodeRunnerSuite) TestExcuteCode_GRPCError() {
 }
 
 // 成功情况
-func (s *CodeRunnerSuite) TestExcuteCode_Success() {
+func (s *CodeRunnerSuite) TestExecuteCode_Success() {
 	// 构造正常的 Request
-	reqBody := ExcuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
+	reqBody := ExecuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -122,7 +122,7 @@ func (s *CodeRunnerSuite) TestExcuteCode_Success() {
 	).Return(expectedResp, nil)
 
 	// 调用 Handler
-	s.handler.ExcuteCode(s.ctx)
+	s.handler.ExecuteCode(s.ctx)
 
 	s.Equal(200, s.recorder.Code)
 

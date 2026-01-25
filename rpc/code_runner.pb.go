@@ -7,10 +7,11 @@
 package coderunnerpb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -118,7 +119,7 @@ func (x *CreateSandboxResponse) GetGrpcEndpoint() string {
 	return ""
 }
 
-type ExcuteCodeRequest struct {
+type ExecuteCodeRequest struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
@@ -127,20 +128,20 @@ type ExcuteCodeRequest struct {
 	Code     string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
 }
 
-func (x *ExcuteCodeRequest) Reset() {
-	*x = ExcuteCodeRequest{}
+func (x *ExecuteCodeRequest) Reset() {
+	*x = ExecuteCodeRequest{}
 	mi := &file_idl_code_runner_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExcuteCodeRequest) String() string {
+func (x *ExecuteCodeRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExcuteCodeRequest) ProtoMessage() {}
+func (*ExecuteCodeRequest) ProtoMessage() {}
 
-func (x *ExcuteCodeRequest) ProtoReflect() protoreflect.Message {
+func (x *ExecuteCodeRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_idl_code_runner_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -152,26 +153,26 @@ func (x *ExcuteCodeRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExcuteCodeRequest.ProtoReflect.Descriptor instead.
-func (*ExcuteCodeRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ExecuteCodeRequest.ProtoReflect.Descriptor instead.
+func (*ExecuteCodeRequest) Descriptor() ([]byte, []int) {
 	return file_idl_code_runner_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ExcuteCodeRequest) GetLanguage() string {
+func (x *ExecuteCodeRequest) GetLanguage() string {
 	if x != nil {
 		return x.Language
 	}
 	return ""
 }
 
-func (x *ExcuteCodeRequest) GetCode() string {
+func (x *ExecuteCodeRequest) GetCode() string {
 	if x != nil {
 		return x.Code
 	}
 	return ""
 }
 
-type ExcuteCodeResponse struct {
+type ExecuteCodeResponse struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
@@ -181,20 +182,20 @@ type ExcuteCodeResponse struct {
 	Stderr   string `protobuf:"bytes,3,opt,name=stderr,proto3" json:"stderr,omitempty"`
 }
 
-func (x *ExcuteCodeResponse) Reset() {
-	*x = ExcuteCodeResponse{}
+func (x *ExecuteCodeResponse) Reset() {
+	*x = ExecuteCodeResponse{}
 	mi := &file_idl_code_runner_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExcuteCodeResponse) String() string {
+func (x *ExecuteCodeResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExcuteCodeResponse) ProtoMessage() {}
+func (*ExecuteCodeResponse) ProtoMessage() {}
 
-func (x *ExcuteCodeResponse) ProtoReflect() protoreflect.Message {
+func (x *ExecuteCodeResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_idl_code_runner_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -206,26 +207,26 @@ func (x *ExcuteCodeResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExcuteCodeResponse.ProtoReflect.Descriptor instead.
-func (*ExcuteCodeResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ExecuteCodeResponse.ProtoReflect.Descriptor instead.
+func (*ExecuteCodeResponse) Descriptor() ([]byte, []int) {
 	return file_idl_code_runner_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *ExcuteCodeResponse) GetExitCode() int32 {
+func (x *ExecuteCodeResponse) GetExitCode() int32 {
 	if x != nil {
 		return x.ExitCode
 	}
 	return 0
 }
 
-func (x *ExcuteCodeResponse) GetStdout() string {
+func (x *ExecuteCodeResponse) GetStdout() string {
 	if x != nil {
 		return x.Stdout
 	}
 	return ""
 }
 
-func (x *ExcuteCodeResponse) GetStderr() string {
+func (x *ExecuteCodeResponse) GetStderr() string {
 	if x != nil {
 		return x.Stderr
 	}
@@ -296,14 +297,14 @@ var file_idl_code_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_idl_code_runner_proto_goTypes = []any{
 	(*CreateSandboxRequest)(nil),  // 0: agentland.coderunner.v1.CreateSandboxRequest
 	(*CreateSandboxResponse)(nil), // 1: agentland.coderunner.v1.CreateSandboxResponse
-	(*ExcuteCodeRequest)(nil),     // 2: agentland.coderunner.v1.ExcuteCodeRequest
-	(*ExcuteCodeResponse)(nil),    // 3: agentland.coderunner.v1.ExcuteCodeResponse
+	(*ExecuteCodeRequest)(nil),     // 2: agentland.coderunner.v1.ExecuteCodeRequest
+	(*ExecuteCodeResponse)(nil),    // 3: agentland.coderunner.v1.ExecuteCodeResponse
 }
 var file_idl_code_runner_proto_depIdxs = []int32{
 	0, // 0: agentland.coderunner.v1.AgentCoreService.CreateSandbox:input_type -> agentland.coderunner.v1.CreateSandboxRequest
-	2, // 1: agentland.coderunner.v1.SandboxService.ExcuteCode:input_type -> agentland.coderunner.v1.ExcuteCodeRequest
+	2, // 1: agentland.coderunner.v1.SandboxService.ExecuteCode:input_type -> agentland.coderunner.v1.ExecuteCodeRequest
 	1, // 2: agentland.coderunner.v1.AgentCoreService.CreateSandbox:output_type -> agentland.coderunner.v1.CreateSandboxResponse
-	3, // 3: agentland.coderunner.v1.SandboxService.ExcuteCode:output_type -> agentland.coderunner.v1.ExcuteCodeResponse
+	3, // 3: agentland.coderunner.v1.SandboxService.ExecuteCode:output_type -> agentland.coderunner.v1.ExecuteCodeResponse
 	2, // [2:4] is the sub-list for method output_type
 	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

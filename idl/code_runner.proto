@@ -9,7 +9,7 @@ service AgentCoreService {
 }
 
 service SandboxService {
-  rpc ExcuteCode(ExcuteCodeRequest) returns (ExcuteCodeResponse);
+  rpc ExecuteCode(ExecuteCodeRequest) returns (ExecuteCodeResponse);
 }
 
 message CreateSandboxRequest {
@@ -21,12 +21,12 @@ message CreateSandboxResponse {
   string grpc_endpoint = 2;
 }
 
-message ExcuteCodeRequest {
+message ExecuteCodeRequest {
   string language = 1;
   string code = 2;
 }
 
-message ExcuteCodeResponse {
+message ExecuteCodeResponse {
   int32 exit_code = 1;
   string stdout = 2;
   string stderr = 3;

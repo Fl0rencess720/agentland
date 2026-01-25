@@ -31,7 +31,7 @@ func SuccessResponse(c *gin.Context, data any) {
 	})
 }
 
-func ErrorResponse(c *gin.Context, code ErrorCode, data ...any) {
+func ErrorResponse(c *gin.Context, code ErrorCode) {
 	httpStatus, ok := HttpCode[code]
 	if !ok {
 		httpStatus = 403
