@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package agentland.coderunner.v1;
+
+option go_package = "github.com/Fl0rencess720/agentland/rpc;coderunnerpb";
+
+service AgentCoreService {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+}
+
+service SandboxService {
+  rpc ExcuteCode(ExcuteCodeRequest) returns (ExcuteCodeResponse);
+}
+
+message CreateSandboxRequest {
+  string language = 1;
+}
+
+message CreateSandboxResponse {
+  string sandbox_id = 1;
+  string grpc_endpoint = 2;
+}
+
+message ExcuteCodeRequest {
+  string language = 1;
+  string code = 2;
+}
+
+message ExcuteCodeResponse {
+  int32 exit_code = 1;
+  string stdout = 2;
+  string stderr = 3;
+}

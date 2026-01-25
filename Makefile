@@ -8,6 +8,11 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+PROTOC ?= protoc
+PROTO_DIR ?= idl
+PROTO_FILES ?= $(wildcard $(PROTO_DIR)/*.proto)
+PROTO_MODULE ?= github.com/Fl0rencess720/agentland
+
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
@@ -48,6 +53,13 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+.PHONY: proto
+proto: ## Generate Go gRPC code from proto files into rpc/.
+	rm -f rpc/*.pb.go
+	$(PROTOC) --go_out=. --go-grpc_out=. \
+		--go_opt=module=$(PROTO_MODULE) --go-grpc_opt=module=$(PROTO_MODULE) \
+		$(PROTO_FILES)
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

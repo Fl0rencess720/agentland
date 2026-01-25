@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -31,12 +32,15 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	agentlandv1alpha1 "github.com/Fl0rencess720/agentland/api/v1alpha1"
 	"github.com/Fl0rencess720/agentland/internal/controller"
+	"github.com/Fl0rencess720/agentland/pkg/agentcore"
+	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -61,6 +65,8 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var agentCorePort string
+
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -79,6 +85,7 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&agentCorePort, "agent-core-port", "8082", "The port for the AgentCore gRPC server.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -186,6 +193,20 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	agentCoreCfg := &config.Config{
+		Port: agentCorePort,
+	}
+
+	// 创建 gRPC Server 实例
+	agentCoreServer := agentcore.NewServer(agentCoreCfg)
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		setupLog.Info("Starting AgentCore gRPC server", "port", agentCorePort)
+		return agentCoreServer.Serve(ctx)
+	})); err != nil {
+		setupLog.Error(err, "unable to add AgentCore server to manager")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
