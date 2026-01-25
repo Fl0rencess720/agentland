@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - agentland.fl0rencess720.app
+  resources:
+  - coderunners
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agentland.fl0rencess720.app
+  resources:
+  - coderunners/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - agentland.fl0rencess720.app
+  resources:
+  - coderunners/status
+  verbs:
+  - get
+  - patch
+  - update
