@@ -20,10 +20,10 @@ type Server struct {
 	listener   net.Listener
 }
 
-func NewServer(cfg *config.Config) *Server {
+func NewServer(cfg *config.Config) (*Server, error) {
 	lis, err := net.Listen("tcp", ":"+cfg.Port)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	kaep := keepalive.EnforcementPolicy{
@@ -48,16 +48,10 @@ func NewServer(cfg *config.Config) *Server {
 	}
 	pb.RegisterAgentCoreServiceServer(server, s)
 
-	return s
+	return s, nil
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	go func() {
-		if err := s.grpcServer.Serve(s.listener); err != nil {
-			zap.L().Error("Failed to serve", zap.Error(err))
-		}
-	}()
-
 	go func() {
 		<-ctx.Done()
 		s.grpcServer.GracefulStop()

@@ -199,7 +199,11 @@ func main() {
 	}
 
 	// 创建 gRPC Server 实例
-	agentCoreServer := agentcore.NewServer(agentCoreCfg)
+	agentCoreServer, err := agentcore.NewServer(agentCoreCfg)
+	if err != nil {
+		setupLog.Error(err, "unable to create AgentCore server")
+		os.Exit(1)
+	}
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		setupLog.Info("Starting AgentCore gRPC server", "port", agentCorePort)
 		return agentCoreServer.Serve(ctx)

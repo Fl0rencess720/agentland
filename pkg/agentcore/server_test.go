@@ -23,8 +23,9 @@ func (s *ServerSuite) SetupSuite() {
 // 测试 NewServer 是否正确初始化
 func (s *ServerSuite) TestNewServer() {
 	cfg := &config.Config{Port: "0"}
-	server := NewServer(cfg)
+	server, err := NewServer(cfg)
 
+	s.NoError(err)
 	s.NotNil(server)
 	s.NotNil(server.grpcServer)
 	s.NotNil(server.listener)
