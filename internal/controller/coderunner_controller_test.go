@@ -51,7 +51,11 @@ var _ = Describe("CodeRunner Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: agentlandv1alpha1.CodeRunnerSpec{
+						Template: &agentlandv1alpha1.CodeRunnerSandboxTemplate{
+							Image: "busybox:1.36",
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
