@@ -17,8 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"time"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -26,7 +24,7 @@ type Port struct {
 	Port uint32 `json:"port"`
 }
 
-type CodeRunnerSandBoxTemplate struct {
+type CodeRunnerSandboxTemplate struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 	// +optional
@@ -41,15 +39,15 @@ type CodeRunnerSpec struct {
 	Ports []Port `json:"ports,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Template *CodeRunnerSandBoxTemplate `json:"sandBoxTemplate"`
+	Template *CodeRunnerSandboxTemplate `json:"sandboxTemplate"`
 
 	// +kubebuilder:default="15m"
 	// +optional
-	SessionTimeout *time.Duration `json:"sessionTimeout,omitempty"`
+	SessionTimeout *metav1.Duration `json:"sessionTimeout,omitempty"`
 
 	// +kubebuilder:default="2h"
 	// +optional
-	MaxSessionDuration *time.Duration `json:"maxSessionDuration,omitempty"`
+	MaxSessionDuration *metav1.Duration `json:"maxSessionDuration,omitempty"`
 }
 
 // CodeRunnerStatus defines the observed state of CodeRunner.
