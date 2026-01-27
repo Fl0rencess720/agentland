@@ -17,22 +17,39 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+type Port struct {
+	Port uint32 `json:"port"`
+}
+
+type CodeRunnerSandBoxTemplate struct {
+	// +kubebuilder:validation:Required
+	Image string `json:"image"`
+	// +optional
+	Command []string `json:"command,omitempty"`
+	// +optional
+	Args []string `json:"args,omitempty"`
+}
 
 // CodeRunnerSpec defines the desired state of CodeRunner
 type CodeRunnerSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of CodeRunner. Edit coderunner_types.go to remove/update
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Ports []Port `json:"ports,omitempty"`
+
+	// +kubebuilder:validation:Required
+	Template *CodeRunnerSandBoxTemplate `json:"sandBoxTemplate"`
+
+	// +kubebuilder:default="15m"
+	// +optional
+	SessionTimeout *time.Duration `json:"sessionTimeout,omitempty"`
+
+	// +kubebuilder:default="2h"
+	// +optional
+	MaxSessionDuration *time.Duration `json:"maxSessionDuration,omitempty"`
 }
 
 // CodeRunnerStatus defines the observed state of CodeRunner.

@@ -39,10 +39,49 @@ spec:
           spec:
             description: spec defines the desired state of CodeRunner
             properties:
-              foo:
-                description: foo is an example field of CodeRunner. Edit coderunner_types.go
-                  to remove/update
-                type: string
+              maxSessionDuration:
+                default: 2h
+                description: |-
+                  A Duration represents the elapsed time between two instants
+                  as an int64 nanosecond count. The representation limits the
+                  largest representable duration to approximately 290 years.
+                format: int64
+                type: integer
+              ports:
+                items:
+                  properties:
+                    port:
+                      format: int32
+                      type: integer
+                  required:
+                  - port
+                  type: object
+                type: array
+              sandBoxTemplate:
+                properties:
+                  args:
+                    items:
+                      type: string
+                    type: array
+                  command:
+                    items:
+                      type: string
+                    type: array
+                  image:
+                    type: string
+                required:
+                - image
+                type: object
+              sessionTimeout:
+                default: 15m
+                description: |-
+                  A Duration represents the elapsed time between two instants
+                  as an int64 nanosecond count. The representation limits the
+                  largest representable duration to approximately 290 years.
+                format: int64
+                type: integer
+            required:
+            - sandBoxTemplate
             type: object
           status:
             description: status defines the observed state of CodeRunner
