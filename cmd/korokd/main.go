@@ -11,6 +11,7 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/korokd"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
 func init() {
@@ -41,12 +42,12 @@ func main() {
 	select {
 	case <-ctx.Done():
 		zap.L().Info("Received shutdown signal, shutting down gracefully...")
-		if err := <-errCh; err != nil {
+		if err := <-errCh; err != nil && err != grpc.ErrServerStopped {
 			zap.L().Error("Server shutdown error", zap.Error(err))
 		}
 		zap.L().Info("Server shutdown complete.")
 	case err := <-errCh:
-		if err == nil {
+		if err == nil || err == grpc.ErrServerStopped {
 			zap.L().Info("Server shutdown complete.")
 			return
 		}

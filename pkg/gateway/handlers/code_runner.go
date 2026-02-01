@@ -19,6 +19,7 @@ const (
 
 type CodeRunnerHandler struct {
 	agentCoreServiceClient pb.AgentCoreServiceClient
+	scm                    *SandboxClientManager
 }
 
 type ExecuteCodeReq struct {
@@ -53,7 +54,10 @@ func InitCodeRunnerApi(group *gin.RouterGroup) {
 		return
 	}
 
+	scm := NewSandboxClientManager()
+
 	h.agentCoreServiceClient = pb.NewAgentCoreServiceClient(conn)
+	h.scm = scm
 
 	group.POST("/run", h.ExecuteCode)
 }
@@ -75,7 +79,24 @@ func (h *CodeRunnerHandler) ExecuteCode(ctx *gin.Context) {
 		return
 	}
 
+	grpcEndpoint := createSandboxResp.GrpcEndpoint
+	client, err := h.scm.Add(createSandboxResp.SandboxId, grpcEndpoint)
+	if err != nil {
+		zap.L().Error("Add Sandbox client failed", zap.Error(err))
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+
+	excuteCodeResp, err := client.ExecuteCode(ctx, &pb.ExecuteCodeRequest{
+		Code: req.Code,
+	})
+	if err != nil {
+		zap.L().Error("Execute code failed", zap.Error(err))
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+
 	response.SuccessResponse(ctx, ExecuteCodeResp{
-		Result: createSandboxResp.SandboxId,
+		Result: excuteCodeResp.Stdout,
 	})
 }

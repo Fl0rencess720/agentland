@@ -8,6 +8,8 @@ import (
 
 	pb "github.com/Fl0rencess720/agentland/rpc"
 	"github.com/stretchr/testify/suite"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestKorokdSuite(t *testing.T) {
@@ -64,4 +66,19 @@ func (s *KorokdSuite) TestExecuteCode_Timeout() {
 	s.NoError(err)
 	s.NotNil(resp)
 	s.NotEqual(int32(0), resp.ExitCode)
+}
+
+func (s *KorokdSuite) TestExecuteCode_ContextCanceledBeforeStart() {
+	server := &Server{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp, err := server.ExecuteCode(ctx, &pb.ExecuteCodeRequest{
+		Code: "print('hello')",
+	})
+
+	s.Nil(resp)
+	s.Error(err)
+	s.Equal(codes.DeadlineExceeded, status.Code(err))
 }
