@@ -60,7 +60,7 @@ func InitCodeRunnerApi(group *gin.RouterGroup) {
 
 func (h *CodeRunnerHandler) ExecuteCode(ctx *gin.Context) {
 	var req ExecuteCodeReq
-	if err := ctx.ShouldBind(&req); err != nil {
+	if err := ctx.ShouldBindJSON(&req); err != nil {
 		zap.L().Error("Bind request failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.FormError)
 		return

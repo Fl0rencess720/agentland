@@ -39,10 +39,39 @@ spec:
           spec:
             description: spec defines the desired state of CodeRunner
             properties:
-              foo:
-                description: foo is an example field of CodeRunner. Edit coderunner_types.go
-                  to remove/update
+              maxSessionDuration:
+                default: 2h
                 type: string
+              ports:
+                items:
+                  properties:
+                    port:
+                      format: int32
+                      type: integer
+                  required:
+                  - port
+                  type: object
+                type: array
+              sandboxTemplate:
+                properties:
+                  args:
+                    items:
+                      type: string
+                    type: array
+                  command:
+                    items:
+                      type: string
+                    type: array
+                  image:
+                    type: string
+                required:
+                - image
+                type: object
+              sessionTimeout:
+                default: 15m
+                type: string
+            required:
+            - sandboxTemplate
             type: object
           status:
             description: status defines the observed state of CodeRunner
