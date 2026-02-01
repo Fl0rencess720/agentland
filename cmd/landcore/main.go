@@ -21,15 +21,11 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
-	"path/filepath"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"k8s.io/client-go/dynamic"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -71,7 +67,6 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var agentCorePort string
-	var kubeconfig string
 
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -92,7 +87,6 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&agentCorePort, "agent-core-port", "8082", "The port for the AgentCore gRPC server.")
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -168,7 +162,8 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg := ctrl.GetConfigOrDie()
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -201,22 +196,7 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	if kubeconfig == "" {
-		if home := homedir.HomeDir(); home != "" {
-			kubeconfig = filepath.Join(home, ".kube", "config")
-		}
-	}
-
-	kubecfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
-	if err != nil {
-		kubecfg, err = rest.InClusterConfig()
-		if err != nil {
-			setupLog.Error(err, "unable to get kubeconfig")
-			os.Exit(1)
-		}
-	}
-
-	k8sClient, err := dynamic.NewForConfig(kubecfg)
+	k8sClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		setupLog.Error(err, "unable to create dynamic Kubernetes client")
 		os.Exit(1)
