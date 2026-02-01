@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"k8s.io/client-go/dynamic"
 )
 
 type Server struct {
@@ -18,6 +19,7 @@ type Server struct {
 
 	grpcServer *grpc.Server
 	listener   net.Listener
+	k8sClient  dynamic.Interface
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -45,6 +47,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	s := &Server{
 		grpcServer: server,
 		listener:   lis,
+		k8sClient:  cfg.K8sClient,
 	}
 	pb.RegisterAgentCoreServiceServer(server, s)
 
