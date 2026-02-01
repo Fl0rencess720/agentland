@@ -115,7 +115,10 @@ func (s *CodeRunnerSuite) TestExecuteCode_Success() {
 
 	// 设定 Mock 行为
 	// 当前期望返回成功的 SandboxId
-	expectedResp := &pb.CreateSandboxResponse{SandboxId: "sandbox-uuid-1234"}
+	expectedResp := &pb.CreateSandboxResponse{
+		SandboxId:    "sandbox-uuid-1234",
+		GrpcEndpoint: "sandbox:1883",
+	}
 	s.mockClient.On("CreateSandbox",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "go"},
@@ -131,5 +134,5 @@ func (s *CodeRunnerSuite) TestExecuteCode_Success() {
 	json.Unmarshal(s.recorder.Body.Bytes(), &resp)
 
 	data := resp["data"].(map[string]interface{})
-	s.Equal("sandbox-uuid-1234", data["result"])
+	s.Equal(expectedResp.SandboxId, data["result"])
 }
