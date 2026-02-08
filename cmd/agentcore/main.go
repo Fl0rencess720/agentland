@@ -42,6 +42,9 @@ import (
 	"github.com/Fl0rencess720/agentland/internal/controller"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
+	"github.com/Fl0rencess720/agentland/pkg/common/conf"
+	"github.com/Fl0rencess720/agentland/pkg/common/logging"
+	"github.com/spf13/viper"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -51,6 +54,9 @@ var (
 )
 
 func init() {
+	logging.Init()
+	conf.Init()
+
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(agentlandv1alpha1.AddToScheme(scheme))
@@ -92,6 +98,12 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// 绑定环境变量
+	viper.SetEnvPrefix("al")
+	_ = viper.BindEnv("redis.addr", "AL_REDIS_ADDR")
+	_ = viper.BindEnv("redis.password", "AL_REDIS_PASSWORD")
+	_ = viper.BindEnv("redis.db", "AL_REDIS_DB")
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
+	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
@@ -21,6 +22,25 @@ import (
 
 type MockAgentCoreServiceClient struct {
 	mock.Mock
+}
+
+type mockSessionStore struct {
+	getSessionFn          func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)
+	updateLatestActivityFn func(ctx context.Context, sandboxID string) error
+}
+
+func (m *mockSessionStore) GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+	if m.getSessionFn != nil {
+		return m.getSessionFn(ctx, sandboxID)
+	}
+	return nil, db.ErrSessionNotFound
+}
+
+func (m *mockSessionStore) UpdateLatestActivity(ctx context.Context, sandboxID string) error {
+	if m.updateLatestActivityFn != nil {
+		return m.updateLatestActivityFn(ctx, sandboxID)
+	}
+	return nil
 }
 
 func (m *MockAgentCoreServiceClient) CreateSandbox(ctx context.Context, in *pb.CreateSandboxRequest, opts ...grpc.CallOption) (*pb.CreateSandboxResponse, error) {
@@ -63,6 +83,7 @@ func (s *CodeInterpreterSuite) SetupTest() {
 	s.handler = &CodeInterpreterHandler{
 		agentCoreServiceClient: s.mockAgentCoreClient,
 		sandboxTransport:       http.DefaultTransport,
+		sessionStore:           &mockSessionStore{},
 	}
 }
 
@@ -180,4 +201,49 @@ func (s *CodeInterpreterSuite) TestExecuteCode_ProxyUnreachable() {
 
 	s.Equal(502, s.recorder.Code)
 	s.Contains(s.recorder.Body.String(), "sandbox unreachable")
+}
+
+func (s *CodeInterpreterSuite) TestExecuteCode_SessionNotFoundFallbackCreateSandbox() {
+	reqBody := ExecuteCodeReq{Language: "python", Code: "print(1+2)"}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("stale-session", sandboxID)
+			return nil, db.ErrSessionNotFound
+		},
+	}
+
+	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		s.NoError(err)
+		s.JSONEq(string(jsonBytes), string(body))
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"exit_code":0,"stdout":"3\n","stderr":""}`)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agentland-session", "stale-session")
+	s.ctx.Request = req
+
+	s.mockAgentCoreClient.On("CreateSandbox",
+		mock.Anything,
+		&pb.CreateSandboxRequest{Language: "python"},
+	).Return(&pb.CreateSandboxResponse{
+		SandboxId:    "session-new123",
+		GrpcEndpoint: "sandbox.test:1883",
+	}, nil).Once()
+
+	s.handler.ExecuteCode(s.ctx)
+
+	s.Equal(200, s.recorder.Code)
+	s.Equal("session-new123", s.recorder.Header().Get("x-agentland-session"))
+	s.JSONEq(`{"exit_code":0,"stdout":"3\n","stderr":""}`, s.recorder.Body.String())
+	s.mockAgentCoreClient.AssertExpectations(s.T())
 }

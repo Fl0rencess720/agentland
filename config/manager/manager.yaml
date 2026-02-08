@@ -66,6 +66,13 @@ spec:
           - --agent-core-port=8082
         image: controller:latest
         imagePullPolicy: IfNotPresent
+        env:
+        - name: AL_REDIS_ADDR
+          value: agentland-redis:6379
+        - name: AL_REDIS_PASSWORD
+          value: ""
+        - name: AL_REDIS_DB
+          value: "0"
         name: manager
         ports:
         - containerPort: 8082

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Fl0rencess720/agentland/api/v1alpha1"
 	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
+	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
 	"github.com/Fl0rencess720/agentland/pkg/common/consts"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/rand"
 )
+
+var KorokdPort = ":1883"
 
 var codeInterpreterGVR = schema.GroupVersionResource{
 	Group:    "agentland.fl0rencess720.app",
@@ -29,7 +32,7 @@ func (s *Server) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest
 			Kind:       "CodeInterpreter",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "sandbox-",
+			GenerateName: "session-",
 			Namespace:    consts.AgentLandSandboxesNamespace,
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
@@ -54,13 +57,13 @@ func (s *Server) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest
 		return nil, fmt.Errorf("failed to create codeinterpreter in k8s: %w", err)
 	}
 
-	sandboxName := result.GetName()
-	if sandboxName == "" && cr.GenerateName != "" {
-		sandboxName = cr.GenerateName + rand.String(8)
+	sandboxID := result.GetName()
+	if sandboxID == "" && cr.GenerateName != "" {
+		sandboxID = cr.GenerateName + rand.String(8)
 	}
 
 	watcher, err := s.k8sClient.Resource(codeInterpreterGVR).Namespace(cr.Namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: "metadata.name=" + sandboxName,
+		FieldSelector: "metadata.name=" + sandboxID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to watch resource: %w", err)
@@ -90,9 +93,32 @@ func (s *Server) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest
 			phase, _, _ := unstructured.NestedString(status, "phase")
 			podIP, _, _ := unstructured.NestedString(status, "podIP")
 			if phase == "Running" && podIP != "" {
+				if s.sessionStore == nil {
+					return nil, fmt.Errorf("session store is nil")
+				}
+
+				now := time.Now()
+				sessionInfo := &db.SandboxInfo{
+					SandboxID:    sandboxID,
+					GrpcEndpoint: podIP + KorokdPort,
+					CreatedAt:    now,
+					ExpiresAt:    now.Add(db.MaxSessionDuration),
+				}
+
+				zap.L().Info("prepare session metadata",
+					zap.String("sandboxID", sessionInfo.SandboxID),
+					zap.Time("createdAt", sessionInfo.CreatedAt),
+					zap.Time("expiresAt", sessionInfo.ExpiresAt),
+					zap.Duration("maxSessionDuration", db.MaxSessionDuration),
+				)
+
+				if err := s.sessionStore.CreateSession(ctx, sessionInfo); err != nil {
+					return nil, fmt.Errorf("create session failed: %w", err)
+				}
+
 				return &pb.CreateSandboxResponse{
-					SandboxId:    sandboxName,
-					GrpcEndpoint: podIP + ":1883",
+					SandboxId:    sandboxID,
+					GrpcEndpoint: podIP + KorokdPort,
 				}, nil
 			}
 		case <-timeoutCtx.Done():

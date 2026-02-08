@@ -27,8 +27,12 @@ func (s *AgentCoreSuite) TestCreateSandbox() {
 	scheme := runtime.NewScheme()
 	s.NoError(v1alpha1.AddToScheme(scheme))
 	fakeDynamicClient := fake.NewSimpleDynamicClient(scheme)
+	mockStore := &mockSessionStore{}
 
-	server := &Server{k8sClient: fakeDynamicClient}
+	server := &Server{
+		k8sClient:    fakeDynamicClient,
+		sessionStore: mockStore,
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -64,8 +68,15 @@ func (s *AgentCoreSuite) TestCreateSandbox() {
 
 	s.NoError(err)
 	s.NotNil(resp)
-	s.Contains(resp.SandboxId, "sandbox-")
+	s.Contains(resp.SandboxId, "session-")
 	s.Equal("10.42.0.10:1883", resp.GrpcEndpoint)
+
+	s.Len(mockStore.created, 1)
+	s.Equal(resp.SandboxId, mockStore.created[0].SandboxID)
+	s.Equal(resp.GrpcEndpoint, mockStore.created[0].GrpcEndpoint)
+	s.False(mockStore.created[0].CreatedAt.IsZero())
+	s.False(mockStore.created[0].ExpiresAt.IsZero())
+	s.True(mockStore.created[0].ExpiresAt.After(mockStore.created[0].CreatedAt))
 
 	list, err := fakeDynamicClient.Resource(codeInterpreterGVR).Namespace(consts.AgentLandSandboxesNamespace).List(context.Background(), metav1.ListOptions{})
 	s.NoError(err)

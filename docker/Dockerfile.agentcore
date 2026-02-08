@@ -30,6 +30,7 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 
 COPY --from=builder /workspace/agentcore .
+RUN mkdir -p /app/playground && touch /app/playground/config.yaml
 
 RUN adduser -D -u 1000 apiserver
 USER 1000

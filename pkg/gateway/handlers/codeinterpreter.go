@@ -2,42 +2,37 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
+	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
 
-const (
-	AgentCoreServiceName = "agentcore"
-	AgentCoreServicePort = "8082"
-)
-
-func resolveAgentCoreAddress() string {
-	if addr := os.Getenv("AGENTCORE_ADDRESS"); addr != "" {
-		return addr
-	}
-
-	return AgentCoreServiceName + ":" + AgentCoreServicePort
-}
-
 type CodeInterpreterHandler struct {
 	agentCoreServiceClient pb.AgentCoreServiceClient
+	sandboxTransport       http.RoundTripper
+	sessionStore           sessionStore
+}
 
-	sandboxTransport http.RoundTripper
+type sessionStore interface {
+	GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)
+	UpdateLatestActivity(ctx context.Context, sandboxID string) error
 }
 
 type ExecuteCodeReq struct {
@@ -65,13 +60,15 @@ func InitCodeInterpreterApi(group *gin.RouterGroup) {
 		grpc.WithKeepaliveParams(kacp),
 	}
 
-	address := resolveAgentCoreAddress()
+	address := viper.GetString("agentcore.address")
 
 	conn, err := grpc.NewClient(address, opts...)
 	if err != nil {
 		zap.L().Error("Connect to service via Kubernetes DNS failed", zap.Error(err))
 		return
 	}
+
+	h.sessionStore = db.NewSessionStore()
 
 	h.sandboxTransport = &http.Transport{
 		MaxIdleConns:        200,
@@ -99,16 +96,18 @@ func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 		return
 	}
 
-	createSandboxResp, err := h.agentCoreServiceClient.CreateSandbox(ctx, &pb.CreateSandboxRequest{
-		Language: req.Language,
-	})
+	sandboxInfo, err := h.resolveSandbox(ctx, req.Language)
 	if err != nil {
-		zap.L().Error("Create Sandbox failed", zap.Error(err))
+		zap.L().Error("Resolve sandbox failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
 
-	target, err := resolveSandboxTarget(createSandboxResp.GrpcEndpoint)
+	if err := h.sessionStore.UpdateLatestActivity(ctx, sandboxInfo.SandboxID); err != nil {
+		zap.L().Warn("Update latest activity failed", zap.String("sandboxID", sandboxInfo.SandboxID), zap.Error(err))
+	}
+
+	target, err := resolveSandboxTarget(sandboxInfo.GrpcEndpoint)
 	if err != nil {
 		zap.L().Error("Parse sandbox url failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.ServerError)
@@ -131,12 +130,48 @@ func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 		}
 	}
 
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Set("x-agentland-session", sandboxInfo.SandboxID)
+		return nil
+	}
+
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		zap.L().Error("Reverse proxy execute failed", zap.Error(err))
 		http.Error(w, "sandbox unreachable", http.StatusBadGateway)
 	}
 
 	proxy.ServeHTTP(closeNotifySafeWriter{ResponseWriter: ctx.Writer}, ctx.Request)
+}
+
+func (h *CodeInterpreterHandler) resolveSandbox(ctx *gin.Context, language string) (*db.SandboxInfo, error) {
+	sessionID := ctx.GetHeader("x-agentland-session")
+	if sessionID == "" {
+		return h.createSandbox(ctx, language)
+	}
+
+	sandboxInfo, err := h.sessionStore.GetSession(ctx, sessionID)
+	if err == nil {
+		return sandboxInfo, nil
+	}
+
+	if !errors.Is(err, db.ErrSessionNotFound) {
+		return nil, fmt.Errorf("get sandbox info failed: %w", err)
+	}
+
+	zap.L().Warn("Session not found, creating new sandbox", zap.String("sessionID", sessionID))
+	return h.createSandbox(ctx, language)
+}
+
+func (h *CodeInterpreterHandler) createSandbox(ctx context.Context, language string) (*db.SandboxInfo, error) {
+	createSandboxResp, err := h.agentCoreServiceClient.CreateSandbox(ctx, &pb.CreateSandboxRequest{Language: language})
+	if err != nil {
+		return nil, fmt.Errorf("create sandbox failed: %w", err)
+	}
+
+	return &db.SandboxInfo{
+		SandboxID:    createSandboxResp.SandboxId,
+		GrpcEndpoint: createSandboxResp.GrpcEndpoint,
+	}, nil
 }
 
 func resolveSandboxTarget(endpoint string) (*url.URL, error) {
