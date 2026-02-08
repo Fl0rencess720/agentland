@@ -13,7 +13,6 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/common/logging"
 	"github.com/Fl0rencess720/agentland/pkg/gateway"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
@@ -25,11 +24,6 @@ func init() {
 func main() {
 	port := flag.String("port", "8080", "Gateway server port")
 	flag.Parse()
-
-	viper.SetEnvPrefix("al")
-	_ = viper.BindEnv("redis.addr", "AL_REDIS_ADDR")
-	_ = viper.BindEnv("redis.password", "AL_REDIS_PASSWORD")
-	_ = viper.BindEnv("redis.db", "AL_REDIS_DB")
 
 	config := &config.Config{
 		Port: *port,

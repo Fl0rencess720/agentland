@@ -21,16 +21,12 @@ func (s *ServerSuite) SetupSuite() {
 }
 
 func (s *ServerSuite) TestNewServer() {
-	cfg := &config.Config{Port: "0"}
+	cfg := &config.Config{Port: "1883"}
 	server, err := NewServer(cfg)
 
 	s.NoError(err)
 	s.NotNil(server)
-	s.NotNil(server.listener)
-	s.NotNil(server.grpcServer)
-
-	s.T().Cleanup(func() {
-		server.grpcServer.Stop()
-		_ = server.listener.Close()
-	})
+	s.NotNil(server.httpServer)
+	s.Equal(":1883", server.httpServer.Addr)
+	s.NotNil(server.httpServer.Handler)
 }

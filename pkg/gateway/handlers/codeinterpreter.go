@@ -1,7 +1,15 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
@@ -28,17 +36,13 @@ func resolveAgentCoreAddress() string {
 
 type CodeInterpreterHandler struct {
 	agentCoreServiceClient pb.AgentCoreServiceClient
-	scm                    sandboxClientManager
-}
 
-type sandboxClientManager interface {
-	Add(sandboxID string, grpcEndpoint string) (pb.SandboxServiceClient, error)
-	GarbageCollect()
+	sandboxTransport http.RoundTripper
 }
 
 type ExecuteCodeReq struct {
-	Language string `json:"language"`
-	Code     string `json:"code"`
+	Language string `json:"language" binding:"required"`
+	Code     string `json:"code" binding:"required"`
 }
 
 type ExecuteCodeResp struct {
@@ -69,19 +73,27 @@ func InitCodeInterpreterApi(group *gin.RouterGroup) {
 		return
 	}
 
-	scm := NewSandboxClientManager()
+	h.sandboxTransport = &http.Transport{
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
 
 	h.agentCoreServiceClient = pb.NewAgentCoreServiceClient(conn)
-	h.scm = scm
-
-	go h.scm.GarbageCollect()
 
 	group.POST("/run", h.ExecuteCode)
 }
 
 func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
+	bodyBytes, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		zap.L().Error("Read request body failed", zap.Error(err))
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
 	var req ExecuteCodeReq
-	if err := ctx.ShouldBindJSON(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil || req.Language == "" || req.Code == "" {
 		zap.L().Error("Bind request failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.FormError)
 		return
@@ -96,25 +108,54 @@ func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 		return
 	}
 
-	grpcEndpoint := createSandboxResp.GrpcEndpoint
-	client, err := h.scm.Add(createSandboxResp.SandboxId, grpcEndpoint)
+	target, err := resolveSandboxTarget(createSandboxResp.GrpcEndpoint)
 	if err != nil {
-		zap.L().Error("Add Sandbox client failed", zap.Error(err))
+		zap.L().Error("Parse sandbox url failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
 
-	excuteCodeResp, err := client.ExecuteCode(ctx, &pb.ExecuteCodeRequest{
-		Code: req.Code,
-	})
-	if err != nil {
-		zap.L().Error("Execute code failed", zap.Error(err))
-		response.ErrorResponse(ctx, response.ServerError)
-		return
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = h.sandboxTransport
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Method = http.MethodPost
+		req.URL.Path = "/api/execute"
+		req.Host = target.Host
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		}
 	}
 
-	response.SuccessResponse(ctx, ExecuteCodeResp{
-		Stdout: excuteCodeResp.Stdout,
-		Stderr: excuteCodeResp.Stderr,
-	})
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		zap.L().Error("Reverse proxy execute failed", zap.Error(err))
+		http.Error(w, "sandbox unreachable", http.StatusBadGateway)
+	}
+
+	proxy.ServeHTTP(closeNotifySafeWriter{ResponseWriter: ctx.Writer}, ctx.Request)
+}
+
+func resolveSandboxTarget(endpoint string) (*url.URL, error) {
+	trimmed := strings.TrimSpace(endpoint)
+	if trimmed == "" {
+		return nil, fmt.Errorf("sandbox endpoint is empty")
+	}
+
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return url.Parse(trimmed)
+	}
+
+	return url.Parse("http://" + trimmed)
+}
+
+type closeNotifySafeWriter struct {
+	gin.ResponseWriter
+}
+
+func (w closeNotifySafeWriter) CloseNotify() <-chan bool {
+	return nil
 }
