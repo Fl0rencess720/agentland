@@ -7,6 +7,7 @@ import (
 
 	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
+	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -14,12 +15,21 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+type sessionStore interface {
+	CreateSession(ctx context.Context, info *db.SandboxInfo) error
+	DeleteSession(ctx context.Context, sandboxID string) error
+	ListInactiveSessions(ctx context.Context, before time.Time, limit int64) ([]string, error)
+	ListExpiredSessions(ctx context.Context, now time.Time, limit int64) ([]string, error)
+}
+
 type Server struct {
 	pb.UnimplementedAgentCoreServiceServer
 
 	grpcServer *grpc.Server
 	listener   net.Listener
 	k8sClient  dynamic.Interface
+
+	sessionStore sessionStore
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -45,10 +55,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	)
 
 	s := &Server{
-		grpcServer: server,
-		listener:   lis,
-		k8sClient:  cfg.K8sClient,
+		grpcServer:   server,
+		listener:     lis,
+		k8sClient:    cfg.K8sClient,
+		sessionStore: db.NewSessionStore(),
 	}
+
 	pb.RegisterAgentCoreServiceServer(server, s)
 
 	return s, nil
@@ -59,6 +71,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		<-ctx.Done()
 		s.grpcServer.GracefulStop()
 	}()
+
+	go s.runSessionGC(ctx)
 
 	zap.S().Infof("AgentCore server listening on %s", s.listener.Addr())
 

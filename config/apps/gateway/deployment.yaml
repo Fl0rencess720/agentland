@@ -29,7 +29,7 @@ spec:
           value: ""
         - name: AL_REDIS_DB
           value: "0"
-        - name: AGENTCORE_ADDRESS
+        - name: AL_AGENTCORE_ADDRESS
           value: agentland-agentcore:8082
         ports:
         - containerPort: 8080
