@@ -72,21 +72,17 @@ func (s *SessionStore) CreateSession(ctx context.Context, info *SandboxInfo) err
 
 	key := keyPrefixSession + info.SandboxID
 
-	if err := s.client.Set(ctx, key, data, ttl).Err(); err != nil {
-		return err
-	}
-
-	if err := s.client.ZAdd(ctx, keyLastActivityIndex, redis.Z{
+	pipe := s.client.Pipeline()
+	pipe.Set(ctx, key, data, ttl)
+	pipe.ZAdd(ctx, keyLastActivityIndex, redis.Z{
 		Score:  float64(now.Unix()),
 		Member: info.SandboxID,
-	}).Err(); err != nil {
-		return err
-	}
-
-	if err := s.client.ZAdd(ctx, keyExpiresAtIndex, redis.Z{
+	})
+	pipe.ZAdd(ctx, keyExpiresAtIndex, redis.Z{
 		Score:  float64(info.ExpiresAt.Unix()),
 		Member: info.SandboxID,
-	}).Err(); err != nil {
+	})
+	if _, err = pipe.Exec(ctx); err != nil {
 		return err
 	}
 
@@ -97,15 +93,11 @@ func (s *SessionStore) CreateSession(ctx context.Context, info *SandboxInfo) err
 func (s *SessionStore) DeleteSession(ctx context.Context, sandboxID string) error {
 	key := keyPrefixSession + sandboxID
 
-	if err := s.client.Del(ctx, key).Err(); err != nil {
-		return err
-	}
-
-	if err := s.client.ZRem(ctx, keyLastActivityIndex, sandboxID).Err(); err != nil {
-		return err
-	}
-
-	if err := s.client.ZRem(ctx, keyExpiresAtIndex, sandboxID).Err(); err != nil {
+	pipe := s.client.Pipeline()
+	pipe.Del(ctx, key)
+	pipe.ZRem(ctx, keyLastActivityIndex, sandboxID)
+	pipe.ZRem(ctx, keyExpiresAtIndex, sandboxID)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}
 
