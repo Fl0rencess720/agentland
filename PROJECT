@@ -15,7 +15,7 @@ resources:
   controller: true
   domain: fl0rencess720.app
   group: agentland
-  kind: CodeRunner
+  kind: CodeInterpreter
   path: github.com/Fl0rencess720/agentland/api/v1alpha1
   version: v1alpha1
 version: "3"

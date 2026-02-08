@@ -1,10 +1,9 @@
-package agentcore
+package korokd
 
 import (
-	"strings"
 	"testing"
 
-	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
 )
@@ -24,16 +23,11 @@ func (s *ServerSuite) SetupSuite() {
 func (s *ServerSuite) TestNewServer() {
 	cfg := &config.Config{Port: "0"}
 	server, err := NewServer(cfg)
-	if err != nil {
-		if strings.Contains(err.Error(), "operation not permitted") {
-			s.T().Skip("listen not permitted in current sandbox")
-		}
-		s.Require().NoError(err)
-	}
 
+	s.NoError(err)
 	s.NotNil(server)
-	s.NotNil(server.grpcServer)
 	s.NotNil(server.listener)
+	s.NotNil(server.grpcServer)
 
 	s.T().Cleanup(func() {
 		server.grpcServer.Stop()

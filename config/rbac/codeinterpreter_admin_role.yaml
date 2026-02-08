@@ -11,17 +11,17 @@ metadata:
   labels:
     app.kubernetes.io/name: agentland
     app.kubernetes.io/managed-by: kustomize
-  name: coderunner-admin-role
+  name: codeinterpreter-admin-role
 rules:
 - apiGroups:
   - agentland.fl0rencess720.app
   resources:
-  - coderunners
+  - codeinterpreters
   verbs:
   - '*'
 - apiGroups:
   - agentland.fl0rencess720.app
   resources:
-  - coderunners/status
+  - codeinterpreters/status
   verbs:
   - get

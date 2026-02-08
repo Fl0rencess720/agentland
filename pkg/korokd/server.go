@@ -1,4 +1,4 @@
-package agentcore
+package korokd
 
 import (
 	"context"
@@ -6,20 +6,18 @@ import (
 	"time"
 
 	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
-	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
-	"k8s.io/client-go/dynamic"
 )
 
 type Server struct {
-	pb.UnimplementedAgentCoreServiceServer
+	pb.UnimplementedSandboxServiceServer
 
 	grpcServer *grpc.Server
 	listener   net.Listener
-	k8sClient  dynamic.Interface
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -38,18 +36,17 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		Timeout: 5 * time.Second,
 	}
 
-	server := grpc.NewServer(
+	grpcServer := grpc.NewServer(
 		grpc.KeepaliveEnforcementPolicy(kaep),
 		grpc.KeepaliveParams(kasp),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 	)
 
 	s := &Server{
-		grpcServer: server,
+		grpcServer: grpcServer,
 		listener:   lis,
-		k8sClient:  cfg.K8sClient,
 	}
-	pb.RegisterAgentCoreServiceServer(server, s)
+	pb.RegisterSandboxServiceServer(grpcServer, s)
 
 	return s, nil
 }
@@ -60,7 +57,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.grpcServer.GracefulStop()
 	}()
 
-	zap.S().Infof("AgentCore server listening on %s", s.listener.Addr())
+	zap.S().Infof("korokd server listening on %s", s.listener.Addr())
 
 	return s.grpcServer.Serve(s.listener)
 }

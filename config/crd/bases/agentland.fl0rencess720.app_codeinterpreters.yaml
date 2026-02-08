@@ -4,20 +4,22 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: coderunners.agentland.fl0rencess720.app
+  name: codeinterpreters.agentland.fl0rencess720.app
 spec:
   group: agentland.fl0rencess720.app
   names:
-    kind: CodeRunner
-    listKind: CodeRunnerList
-    plural: coderunners
-    singular: coderunner
+    kind: CodeInterpreter
+    listKind: CodeInterpreterList
+    plural: codeinterpreters
+    shortNames:
+    - codei
+    singular: codeinterpreter
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: CodeRunner is the Schema for the coderunners API
+        description: CodeInterpreter is the Schema for the codeinterpreters API
         properties:
           apiVersion:
             description: |-
@@ -37,7 +39,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of CodeRunner
+            description: spec defines the desired state of CodeInterpreter
             properties:
               maxSessionDuration:
                 default: 2h
@@ -74,11 +76,11 @@ spec:
             - sandboxTemplate
             type: object
           status:
-            description: status defines the observed state of CodeRunner
+            description: status defines the observed state of CodeInterpreter
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the CodeRunner resource.
+                  conditions represent the current state of the CodeInterpreter resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
@@ -145,6 +147,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              phase:
+                description: 记录当前状态，例如 "Pending", "Running", "Failed"
+                type: string
+              podIP:
+                description: 记录与 CodeInterpreter 相关的 Pod 的 IP 地址
+                type: string
             type: object
         required:
         - spec

@@ -1,0 +1,42 @@
+FROM golang:1.25.5-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+ENV GOPROXY='https://goproxy.cn,direct'
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+COPY internal/ internal/
+COPY api/ api/
+COPY pb/ pb/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w" -o korokd ./cmd/korokd
+
+FROM alpine:3.19
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+
+RUN apk --no-cache add ca-certificates python3
+
+WORKDIR /app
+
+COPY --from=builder /workspace/korokd .
+
+RUN adduser -D -u 1000 apiserver
+USER apiserver
+
+EXPOSE 1883
+
+ENTRYPOINT ["/app/korokd"]
+CMD ["--port=1883"]

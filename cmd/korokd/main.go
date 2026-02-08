@@ -2,43 +2,30 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/Fl0rencess720/agentland/pkg/common/conf"
 	"github.com/Fl0rencess720/agentland/pkg/common/logging"
-	"github.com/Fl0rencess720/agentland/pkg/gateway"
-	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
-	"github.com/spf13/viper"
+	"github.com/Fl0rencess720/agentland/pkg/korokd"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
 func init() {
 	logging.Init()
-	conf.Init()
 }
 
 func main() {
-	port := flag.String("port", "8080", "Gateway server port")
+	port := flag.String("port", "1883", "korokd gRPC server port")
 	flag.Parse()
 
-	viper.SetEnvPrefix("al")
-	_ = viper.BindEnv("redis.addr", "AL_REDIS_ADDR")
-	_ = viper.BindEnv("redis.password", "AL_REDIS_PASSWORD")
-	_ = viper.BindEnv("redis.db", "AL_REDIS_DB")
-
-	config := &config.Config{
-		Port: *port,
-	}
-
-	server, err := gateway.NewServer(config)
+	cfg := &config.Config{Port: *port}
+	server, err := korokd.NewServer(cfg)
 	if err != nil {
 		zap.L().Fatal("New Server failed", zap.Error(err))
-		return
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -47,21 +34,19 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := server.Serve(ctx); err != nil {
-			errCh <- err
-		}
+		errCh <- server.Serve(ctx)
 		close(errCh)
 	}()
 
 	select {
 	case <-ctx.Done():
 		zap.L().Info("Received shutdown signal, shutting down gracefully...")
-		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := <-errCh; err != nil && err != grpc.ErrServerStopped {
 			zap.L().Error("Server shutdown error", zap.Error(err))
 		}
 		zap.L().Info("Server shutdown complete.")
 	case err := <-errCh:
-		if err == nil || errors.Is(err, http.ErrServerClosed) {
+		if err == nil || err == grpc.ErrServerStopped {
 			zap.L().Info("Server shutdown complete.")
 			return
 		}

@@ -1,0 +1,42 @@
+FROM golang:1.25.5-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+ENV GOPROXY='https://goproxy.cn,direct'
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+COPY internal/ internal/
+COPY api/ api/
+COPY pb/ pb/
+
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w" -o gateway ./cmd/gateway
+
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /workspace/gateway .
+RUN mkdir -p /app/playground && touch /app/playground/config.yaml
+
+RUN adduser -D -u 1000 apiserver
+USER apiserver
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/gateway"]
+CMD ["--port=8080"]

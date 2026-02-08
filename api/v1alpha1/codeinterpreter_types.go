@@ -24,7 +24,7 @@ type Port struct {
 	Port uint32 `json:"port"`
 }
 
-type CodeRunnerSandboxTemplate struct {
+type CodeInterpreterSandboxTemplate struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 	// +optional
@@ -33,13 +33,13 @@ type CodeRunnerSandboxTemplate struct {
 	Args []string `json:"args,omitempty"`
 }
 
-// CodeRunnerSpec defines the desired state of CodeRunner
-type CodeRunnerSpec struct {
+// CodeInterpreterSpec defines the desired state of CodeInterpreter
+type CodeInterpreterSpec struct {
 	// +optional
 	Ports []Port `json:"ports,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Template *CodeRunnerSandboxTemplate `json:"sandboxTemplate"`
+	Template *CodeInterpreterSandboxTemplate `json:"sandboxTemplate"`
 
 	// +kubebuilder:default="15m"
 	// +optional
@@ -50,15 +50,15 @@ type CodeRunnerSpec struct {
 	MaxSessionDuration *metav1.Duration `json:"maxSessionDuration,omitempty"`
 }
 
-// CodeRunnerStatus defines the observed state of CodeRunner.
-type CodeRunnerStatus struct {
+// CodeInterpreterStatus defines the observed state of CodeInterpreter.
+type CodeInterpreterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// conditions represent the current state of the CodeRunner resource.
+	// conditions represent the current state of the CodeInterpreter resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
@@ -71,37 +71,46 @@ type CodeRunnerStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// 记录与 CodeInterpreter 相关的 Pod 的 IP 地址
+	// +optional
+	PodIP string `json:"podIP,omitempty"`
+
+	// 记录当前状态，例如 "Pending", "Running", "Failed"
+	// +optional
+	Phase string `json:"phase,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=codei
 
-// CodeRunner is the Schema for the coderunners API
-type CodeRunner struct {
+// CodeInterpreter is the Schema for the codeinterpreters API
+type CodeInterpreter struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of CodeRunner
+	// spec defines the desired state of CodeInterpreter
 	// +required
-	Spec CodeRunnerSpec `json:"spec"`
+	Spec CodeInterpreterSpec `json:"spec"`
 
-	// status defines the observed state of CodeRunner
+	// status defines the observed state of CodeInterpreter
 	// +optional
-	Status CodeRunnerStatus `json:"status,omitempty,omitzero"`
+	Status CodeInterpreterStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// CodeRunnerList contains a list of CodeRunner
-type CodeRunnerList struct {
+// CodeInterpreterList contains a list of CodeInterpreter
+type CodeInterpreterList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []CodeRunner `json:"items"`
+	Items           []CodeInterpreter `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&CodeRunner{}, &CodeRunnerList{})
+	SchemeBuilder.Register(&CodeInterpreter{}, &CodeInterpreterList{})
 }

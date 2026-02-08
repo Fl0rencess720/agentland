@@ -30,7 +30,7 @@ import (
 	agentlandv1alpha1 "github.com/Fl0rencess720/agentland/api/v1alpha1"
 )
 
-var _ = Describe("CodeRunner Controller", func() {
+var _ = Describe("CodeInterpreter Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 
@@ -40,19 +40,19 @@ var _ = Describe("CodeRunner Controller", func() {
 			Name:      resourceName,
 			Namespace: "default", // TODO(user):Modify as needed
 		}
-		coderunner := &agentlandv1alpha1.CodeRunner{}
+		codeinterpreter := &agentlandv1alpha1.CodeInterpreter{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind CodeRunner")
-			err := k8sClient.Get(ctx, typeNamespacedName, coderunner)
+			By("creating the custom resource for the Kind CodeInterpreter")
+			err := k8sClient.Get(ctx, typeNamespacedName, codeinterpreter)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &agentlandv1alpha1.CodeRunner{
+				resource := &agentlandv1alpha1.CodeInterpreter{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					Spec: agentlandv1alpha1.CodeRunnerSpec{
-						Template: &agentlandv1alpha1.CodeRunnerSandboxTemplate{
+					Spec: agentlandv1alpha1.CodeInterpreterSpec{
+						Template: &agentlandv1alpha1.CodeInterpreterSandboxTemplate{
 							Image: "busybox:1.36",
 						},
 					},
@@ -63,16 +63,16 @@ var _ = Describe("CodeRunner Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &agentlandv1alpha1.CodeRunner{}
+			resource := &agentlandv1alpha1.CodeInterpreter{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance CodeRunner")
+			By("Cleanup the specific resource instance CodeInterpreter")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &CodeRunnerReconciler{
+			controllerReconciler := &CodeInterpreterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

@@ -1,9 +1,9 @@
 apiVersion: agentland.fl0rencess720.app/v1alpha1
-kind: CodeRunner
+kind: CodeInterpreter
 metadata:
   labels:
     app.kubernetes.io/name: agentland
     app.kubernetes.io/managed-by: kustomize
-  name: coderunner-sample
+  name: codeinterpreter-sample
 spec:
   # TODO(user): Add fields here
