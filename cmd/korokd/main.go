@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,7 +13,6 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/korokd"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
 func init() {
@@ -19,7 +20,7 @@ func init() {
 }
 
 func main() {
-	port := flag.String("port", "1883", "korokd gRPC server port")
+	port := flag.String("port", "1883", "korokd HTTP server port")
 	flag.Parse()
 
 	cfg := &config.Config{Port: *port}
@@ -41,12 +42,12 @@ func main() {
 	select {
 	case <-ctx.Done():
 		zap.L().Info("Received shutdown signal, shutting down gracefully...")
-		if err := <-errCh; err != nil && err != grpc.ErrServerStopped {
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			zap.L().Error("Server shutdown error", zap.Error(err))
 		}
 		zap.L().Info("Server shutdown complete.")
 	case err := <-errCh:
-		if err == nil || err == grpc.ErrServerStopped {
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
 			zap.L().Info("Server shutdown complete.")
 			return
 		}

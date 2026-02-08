@@ -2,51 +2,34 @@ package korokd
 
 import (
 	"context"
-	"net"
+	"net/http"
 	"time"
 
-	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/handlers"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
 )
 
 type Server struct {
-	pb.UnimplementedSandboxServiceServer
-
-	grpcServer *grpc.Server
-	listener   net.Listener
+	httpServer *http.Server
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
-	lis, err := net.Listen("tcp", ":"+cfg.Port)
-	if err != nil {
-		return nil, err
-	}
+	s := &Server{}
 
-	kaep := keepalive.EnforcementPolicy{
-		MinTime:             5 * time.Second,
-		PermitWithoutStream: false,
-	}
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.GET("/health", s.HealthHandler)
 
-	kasp := keepalive.ServerParameters{
-		Time:    15 * time.Second,
-		Timeout: 5 * time.Second,
-	}
+	api := r.Group("/api")
+	handlers.InitCodeInterpreterApi(api)
 
-	grpcServer := grpc.NewServer(
-		grpc.KeepaliveEnforcementPolicy(kaep),
-		grpc.KeepaliveParams(kasp),
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-	)
-
-	s := &Server{
-		grpcServer: grpcServer,
-		listener:   lis,
+	s.httpServer = &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
-	pb.RegisterSandboxServiceServer(grpcServer, s)
 
 	return s, nil
 }
@@ -54,10 +37,17 @@ func NewServer(cfg *config.Config) (*Server, error) {
 func (s *Server) Serve(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
-		s.grpcServer.GracefulStop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+			zap.L().Error("Korokd server shutdown error", zap.Error(err))
+		}
 	}()
 
-	zap.S().Infof("korokd server listening on %s", s.listener.Addr())
+	zap.S().Infof("korokd http server listening on %s", s.httpServer.Addr)
+	return s.httpServer.ListenAndServe()
+}
 
-	return s.grpcServer.Serve(s.listener)
+func (s *Server) HealthHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
