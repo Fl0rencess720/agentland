@@ -22,7 +22,7 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the agentland itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- coderunner_admin_role.yaml
-- coderunner_editor_role.yaml
-- coderunner_viewer_role.yaml
+- codeinterpreter_admin_role.yaml
+- codeinterpreter_editor_role.yaml
+- codeinterpreter_viewer_role.yaml
 

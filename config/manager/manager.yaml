@@ -59,16 +59,22 @@ spec:
           type: RuntimeDefault
       containers:
       - command:
-        - /manager
+        - /app/agentcore
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --agent-core-port=8082
         image: controller:latest
+        imagePullPolicy: IfNotPresent
         name: manager
-        ports: []
+        ports:
+        - containerPort: 8082
+          name: agentcore-grpc
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
+          runAsUser: 1000
+          runAsGroup: 1000
           capabilities:
             drop:
             - "ALL"

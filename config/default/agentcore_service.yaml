@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentcore
+  labels:
+    app.kubernetes.io/name: agentcore
+    app.kubernetes.io/part-of: agentland
+spec:
+  selector:
+    control-plane: controller-manager
+    app.kubernetes.io/name: agentland
+  ports:
+  - name: grpc
+    port: 8082
+    targetPort: agentcore-grpc

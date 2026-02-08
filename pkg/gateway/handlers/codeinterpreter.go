@@ -1,10 +1,11 @@
 package handlers
 
 import (
+	"os"
 	"time"
 
+	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
-	pb "github.com/Fl0rencess720/agentland/rpc"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -13,13 +14,26 @@ import (
 )
 
 const (
-	AgentCoreServiceName = "localhost"
+	AgentCoreServiceName = "agentcore"
 	AgentCoreServicePort = "8082"
 )
 
-type CodeRunnerHandler struct {
+func resolveAgentCoreAddress() string {
+	if addr := os.Getenv("AGENTCORE_ADDRESS"); addr != "" {
+		return addr
+	}
+
+	return AgentCoreServiceName + ":" + AgentCoreServicePort
+}
+
+type CodeInterpreterHandler struct {
 	agentCoreServiceClient pb.AgentCoreServiceClient
-	scm                    *SandboxClientManager
+	scm                    sandboxClientManager
+}
+
+type sandboxClientManager interface {
+	Add(sandboxID string, grpcEndpoint string) (pb.SandboxServiceClient, error)
+	GarbageCollect()
 }
 
 type ExecuteCodeReq struct {
@@ -28,11 +42,12 @@ type ExecuteCodeReq struct {
 }
 
 type ExecuteCodeResp struct {
-	Result string `json:"result"`
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
 }
 
-func InitCodeRunnerApi(group *gin.RouterGroup) {
-	h := &CodeRunnerHandler{}
+func InitCodeInterpreterApi(group *gin.RouterGroup) {
+	h := &CodeInterpreterHandler{}
 
 	kacp := keepalive.ClientParameters{
 		Time:                10 * time.Second,
@@ -46,7 +61,7 @@ func InitCodeRunnerApi(group *gin.RouterGroup) {
 		grpc.WithKeepaliveParams(kacp),
 	}
 
-	address := AgentCoreServiceName + ":" + AgentCoreServicePort
+	address := resolveAgentCoreAddress()
 
 	conn, err := grpc.NewClient(address, opts...)
 	if err != nil {
@@ -59,10 +74,12 @@ func InitCodeRunnerApi(group *gin.RouterGroup) {
 	h.agentCoreServiceClient = pb.NewAgentCoreServiceClient(conn)
 	h.scm = scm
 
+	go h.scm.GarbageCollect()
+
 	group.POST("/run", h.ExecuteCode)
 }
 
-func (h *CodeRunnerHandler) ExecuteCode(ctx *gin.Context) {
+func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 	var req ExecuteCodeReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		zap.L().Error("Bind request failed", zap.Error(err))
@@ -97,6 +114,7 @@ func (h *CodeRunnerHandler) ExecuteCode(ctx *gin.Context) {
 	}
 
 	response.SuccessResponse(ctx, ExecuteCodeResp{
-		Result: excuteCodeResp.Stdout,
+		Stdout: excuteCodeResp.Stdout,
+		Stderr: excuteCodeResp.Stderr,
 	})
 }

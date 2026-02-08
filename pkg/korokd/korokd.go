@@ -5,7 +5,7 @@ import (
 	"context"
 	"os/exec"
 
-	pb "github.com/Fl0rencess720/agentland/rpc"
+	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

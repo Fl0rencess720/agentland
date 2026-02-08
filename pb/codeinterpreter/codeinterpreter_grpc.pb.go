@@ -2,13 +2,12 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.28.3
-// source: idl/code_runner.proto
+// source: idl/codeinterpreter.proto
 
-package coderunnerpb
+package codeinterpreter
 
 import (
 	context "context"
-
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -20,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentCoreService_CreateSandbox_FullMethodName = "/agentland.coderunner.v1.AgentCoreService/CreateSandbox"
+	AgentCoreService_CreateSandbox_FullMethodName = "/agentland.codeinterpreter.v1.AgentCoreService/CreateSandbox"
 )
 
 // AgentCoreServiceClient is the client API for AgentCoreService service.
@@ -109,7 +108,7 @@ func _AgentCoreService_CreateSandbox_Handler(srv interface{}, ctx context.Contex
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var AgentCoreService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "agentland.coderunner.v1.AgentCoreService",
+	ServiceName: "agentland.codeinterpreter.v1.AgentCoreService",
 	HandlerType: (*AgentCoreServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -118,11 +117,11 @@ var AgentCoreService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "idl/code_runner.proto",
+	Metadata: "idl/codeinterpreter.proto",
 }
 
 const (
-	SandboxService_ExecuteCode_FullMethodName = "/agentland.coderunner.v1.SandboxService/ExecuteCode"
+	SandboxService_ExecuteCode_FullMethodName = "/agentland.codeinterpreter.v1.SandboxService/ExecuteCode"
 )
 
 // SandboxServiceClient is the client API for SandboxService service.
@@ -211,7 +210,7 @@ func _SandboxService_ExecuteCode_Handler(srv interface{}, ctx context.Context, d
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var SandboxService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "agentland.coderunner.v1.SandboxService",
+	ServiceName: "agentland.codeinterpreter.v1.SandboxService",
 	HandlerType: (*SandboxServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -220,5 +219,5 @@ var SandboxService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "idl/code_runner.proto",
+	Metadata: "idl/codeinterpreter.proto",
 }

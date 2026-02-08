@@ -5,8 +5,8 @@ import (
 	"net"
 	"time"
 
+	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
-	pb "github.com/Fl0rencess720/agentland/rpc"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"

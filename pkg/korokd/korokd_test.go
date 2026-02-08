@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/Fl0rencess720/agentland/rpc"
+	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
