@@ -26,7 +26,6 @@ func main() {
 	server, err := korokd.NewServer(cfg)
 	if err != nil {
 		zap.L().Fatal("New Server failed", zap.Error(err))
-		return
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
