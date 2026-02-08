@@ -157,20 +157,5 @@ type closeNotifySafeWriter struct {
 }
 
 func (w closeNotifySafeWriter) CloseNotify() <-chan bool {
-	type closeNotifier interface {
-		CloseNotify() <-chan bool
-	}
-
-	type unwrapper interface {
-		Unwrap() http.ResponseWriter
-	}
-
-	if uw, ok := w.ResponseWriter.(unwrapper); ok {
-		if cn, ok := uw.Unwrap().(closeNotifier); ok {
-			return cn.CloseNotify()
-		}
-	}
-
-	ch := make(chan bool, 1)
-	return ch
+	return nil
 }
