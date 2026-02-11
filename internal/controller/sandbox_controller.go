@@ -123,6 +123,19 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Command:         sandbox.Spec.Template.Command,
 				Args:            sandbox.Spec.Template.Args,
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "sandbox-jwt-public-key",
+					MountPath: "/var/run/agentland/jwt",
+					ReadOnly:  true,
+				}},
+			}},
+			Volumes: []corev1.Volume{{
+				Name: "sandbox-jwt-public-key",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: "gateway-sandbox-jwt-public-key",
+					},
+				},
 			}},
 		},
 	}

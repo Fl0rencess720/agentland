@@ -16,6 +16,7 @@ spec:
         app.kubernetes.io/name: gateway
         app.kubernetes.io/part-of: agentland
     spec:
+      serviceAccountName: gateway
       containers:
       - name: gateway
         image: agentland-gateway:latest
@@ -31,6 +32,18 @@ spec:
           value: "0"
         - name: AL_AGENTCORE_ADDRESS
           value: agentland-agentcore:8082
+        - name: AL_GATEWAY_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: AL_SANDBOX_JWT_ISSUER
+          value: agentland-gateway
+        - name: AL_SANDBOX_JWT_AUDIENCE
+          value: sandbox
+        - name: AL_SANDBOX_JWT_TTL
+          value: 5m
+        - name: AL_SANDBOX_JWT_KID
+          value: default
         ports:
         - containerPort: 8080
           name: http

@@ -2,11 +2,14 @@ package korokd
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/sandboxtoken"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/handlers"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/middleware"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -22,7 +25,18 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	r.Use(gin.Recovery())
 	r.GET("/health", s.HealthHandler)
 
+	verifier, err := sandboxtoken.NewVerifierFromConfig(sandboxtoken.VerifierConfig{
+		PublicKeyPath: cfg.SandboxJWTPublicPath,
+		Issuer:        cfg.SandboxJWTIssuer,
+		Audience:      cfg.SandboxJWTAudience,
+		ClockSkew:     cfg.SandboxJWTClockSkew,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init sandbox token verifier failed: %w", err)
+	}
+
 	api := r.Group("/api")
+	api.Use(middleware.SandboxAuth(verifier))
 	handlers.InitCodeInterpreterApi(api)
 
 	s.httpServer = &http.Server{

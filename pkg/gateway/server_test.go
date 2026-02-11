@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
@@ -24,8 +25,15 @@ type ServerSuite struct {
 func (s *ServerSuite) SetupSuite() {
 	zap.ReplaceGlobals(zap.NewNop())
 
+	privatePath, _, err := testutil.WriteTestRSAKeys(s.T().TempDir())
+	s.Require().NoError(err)
 	s.testConfig = &config.Config{
-		Port: "18883",
+		Port:                  "18883",
+		SandboxJWTPrivatePath: privatePath,
+		SandboxJWTIssuer:      "agentland-gateway",
+		SandboxJWTAudience:    "sandbox",
+		SandboxJWTTTL:         5 * time.Minute,
+		SandboxJWTKID:         "default",
 	}
 }
 

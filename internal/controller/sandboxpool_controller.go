@@ -139,6 +139,19 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Command:         pool.Spec.Template.Command,
 				Args:            pool.Spec.Template.Args,
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "sandbox-jwt-public-key",
+					MountPath: "/var/run/agentland/jwt",
+					ReadOnly:  true,
+				}},
+			}},
+			Volumes: []corev1.Volume{{
+				Name: "sandbox-jwt-public-key",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: "gateway-sandbox-jwt-public-key",
+					},
+				},
 			}},
 		},
 	}

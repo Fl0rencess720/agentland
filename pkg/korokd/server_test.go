@@ -2,7 +2,9 @@ package korokd
 
 import (
 	"testing"
+	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
@@ -21,7 +23,15 @@ func (s *ServerSuite) SetupSuite() {
 }
 
 func (s *ServerSuite) TestNewServer() {
-	cfg := &config.Config{Port: "1883"}
+	_, publicPath, err := testutil.WriteTestRSAKeys(s.T().TempDir())
+	s.Require().NoError(err)
+	cfg := &config.Config{
+		Port:                 "1883",
+		SandboxJWTPublicPath: publicPath,
+		SandboxJWTIssuer:     "agentland-gateway",
+		SandboxJWTAudience:   "sandbox",
+		SandboxJWTClockSkew:  30 * time.Second,
+	}
 	server, err := NewServer(cfg)
 
 	s.NoError(err)
