@@ -36,12 +36,30 @@ func (s *Server) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest
 			Namespace:    consts.AgentLandSandboxesNamespace,
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
-			Template: &v1alpha1.CodeInterpreterSandboxTemplate{
+			Template: &v1alpha1.SandboxTemplate{
 				Image:   "korokd:latest",
 				Command: []string{},
 				Args:    []string{},
 			},
 		},
+	}
+
+	if s.warmPoolEnabled {
+		mode := v1alpha1.ProvisioningModePoolPreferred
+		switch s.warmPoolDefaultMode {
+		case string(v1alpha1.ProvisioningModePoolRequired):
+			mode = v1alpha1.ProvisioningModePoolRequired
+		case string(v1alpha1.ProvisioningModePoolPreferred):
+			mode = v1alpha1.ProvisioningModePoolPreferred
+		case string(v1alpha1.ProvisioningModeDirect):
+			mode = v1alpha1.ProvisioningModeDirect
+		}
+
+		cr.Spec.Provisioning = &v1alpha1.CodeInterpreterProvisioningSpec{
+			Mode:    mode,
+			PoolRef: s.warmPoolPoolRef,
+			Profile: s.warmPoolProfile,
+		}
 	}
 
 	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cr)
@@ -104,13 +122,6 @@ func (s *Server) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRequest
 					CreatedAt:    now,
 					ExpiresAt:    now.Add(db.MaxSessionDuration),
 				}
-
-				zap.L().Info("prepare session metadata",
-					zap.String("sandboxID", sessionInfo.SandboxID),
-					zap.Time("createdAt", sessionInfo.CreatedAt),
-					zap.Time("expiresAt", sessionInfo.ExpiresAt),
-					zap.Duration("maxSessionDuration", db.MaxSessionDuration),
-				)
 
 				if err := s.sessionStore.CreateSession(ctx, sessionInfo); err != nil {
 					return nil, fmt.Errorf("create session failed: %w", err)

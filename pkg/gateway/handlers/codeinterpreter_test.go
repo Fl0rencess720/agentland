@@ -25,7 +25,7 @@ type MockAgentCoreServiceClient struct {
 }
 
 type mockSessionStore struct {
-	getSessionFn          func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)
+	getSessionFn           func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)
 	updateLatestActivityFn func(ctx context.Context, sandboxID string) error
 }
 

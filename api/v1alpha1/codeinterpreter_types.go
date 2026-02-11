@@ -24,13 +24,27 @@ type Port struct {
 	Port uint32 `json:"port"`
 }
 
-type CodeInterpreterSandboxTemplate struct {
-	// +kubebuilder:validation:Required
-	Image string `json:"image"`
+// ProvisioningMode defines how a CodeInterpreter should be provisioned.
+// +kubebuilder:validation:Enum=Direct;PoolPreferred;PoolRequired
+type ProvisioningMode string
+
+const (
+	ProvisioningModeDirect        ProvisioningMode = "Direct"
+	ProvisioningModePoolPreferred ProvisioningMode = "PoolPreferred"
+	ProvisioningModePoolRequired  ProvisioningMode = "PoolRequired"
+)
+
+// CodeInterpreterProvisioningSpec controls pool-based provisioning behavior.
+type CodeInterpreterProvisioningSpec struct {
+	// +kubebuilder:default=Direct
 	// +optional
-	Command []string `json:"command,omitempty"`
+	Mode ProvisioningMode `json:"mode,omitempty"`
+
 	// +optional
-	Args []string `json:"args,omitempty"`
+	PoolRef string `json:"poolRef,omitempty"`
+
+	// +optional
+	Profile string `json:"profile,omitempty"`
 }
 
 // CodeInterpreterSpec defines the desired state of CodeInterpreter
@@ -39,7 +53,7 @@ type CodeInterpreterSpec struct {
 	Ports []Port `json:"ports,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Template *CodeInterpreterSandboxTemplate `json:"sandboxTemplate"`
+	Template *SandboxTemplate `json:"sandboxTemplate"`
 
 	// +kubebuilder:default="15m"
 	// +optional
@@ -48,6 +62,9 @@ type CodeInterpreterSpec struct {
 	// +kubebuilder:default="2h"
 	// +optional
 	MaxSessionDuration *metav1.Duration `json:"maxSessionDuration,omitempty"`
+
+	// +optional
+	Provisioning *CodeInterpreterProvisioningSpec `json:"provisioning,omitempty"`
 }
 
 // CodeInterpreterStatus defines the observed state of CodeInterpreter.
@@ -79,6 +96,12 @@ type CodeInterpreterStatus struct {
 	// 记录当前状态，例如 "Pending", "Running", "Failed"
 	// +optional
 	Phase string `json:"phase,omitempty"`
+
+	// +optional
+	ClaimName string `json:"claimName,omitempty"`
+
+	// +optional
+	SandboxName string `json:"sandboxName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

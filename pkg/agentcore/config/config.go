@@ -6,4 +6,9 @@ type Config struct {
 	Port string `json:"port"`
 
 	K8sClient *dynamic.DynamicClient
+
+	WarmPoolEnabled     bool
+	WarmPoolDefaultMode string
+	WarmPoolPoolRef     string
+	WarmPoolProfile     string
 }

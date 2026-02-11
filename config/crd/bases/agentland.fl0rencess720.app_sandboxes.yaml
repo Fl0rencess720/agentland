@@ -4,22 +4,22 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: codeinterpreters.agentland.fl0rencess720.app
+  name: sandboxes.agentland.fl0rencess720.app
 spec:
   group: agentland.fl0rencess720.app
   names:
-    kind: CodeInterpreter
-    listKind: CodeInterpreterList
-    plural: codeinterpreters
+    kind: Sandbox
+    listKind: SandboxList
+    plural: sandboxes
     shortNames:
-    - codei
-    singular: codeinterpreter
+    - sbx
+    singular: sandbox
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: CodeInterpreter is the Schema for the codeinterpreters API
+        description: Sandbox is the Schema for the sandboxes API.
         properties:
           apiVersion:
             description: |-
@@ -39,39 +39,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of CodeInterpreter
+            description: SandboxSpec defines the desired state of Sandbox.
             properties:
-              maxSessionDuration:
-                default: 2h
+              claimRef:
                 type: string
-              ports:
-                items:
-                  properties:
-                    port:
-                      format: int32
-                      type: integer
-                  required:
-                  - port
-                  type: object
-                type: array
-              provisioning:
-                description: CodeInterpreterProvisioningSpec controls pool-based provisioning
-                  behavior.
-                properties:
-                  mode:
-                    default: Direct
-                    description: ProvisioningMode defines how a CodeInterpreter should
-                      be provisioned.
-                    enum:
-                    - Direct
-                    - PoolPreferred
-                    - PoolRequired
-                    type: string
-                  poolRef:
-                    type: string
-                  profile:
-                    type: string
-                type: object
+              profile:
+                type: string
               sandboxTemplate:
                 description: SandboxTemplate defines a generic pod startup template
                   for all sandbox types.
@@ -89,28 +62,13 @@ spec:
                 required:
                 - image
                 type: object
-              sessionTimeout:
-                default: 15m
-                type: string
             required:
             - sandboxTemplate
             type: object
           status:
-            description: status defines the observed state of CodeInterpreter
+            description: SandboxStatus defines the observed state of Sandbox.
             properties:
-              claimName:
-                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the CodeInterpreter resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -170,12 +128,8 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               phase:
-                description: 记录当前状态，例如 "Pending", "Running", "Failed"
                 type: string
               podIP:
-                description: 记录与 CodeInterpreter 相关的 Pod 的 IP 地址
-                type: string
-              sandboxName:
                 type: string
             type: object
         required:

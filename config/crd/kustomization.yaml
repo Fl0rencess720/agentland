@@ -3,6 +3,9 @@
 # It should be run by config/default
 resources:
 - bases/agentland.fl0rencess720.app_codeinterpreters.yaml
+- bases/agentland.fl0rencess720.app_sandboxes.yaml
+- bases/agentland.fl0rencess720.app_sandboxclaims.yaml
+- bases/agentland.fl0rencess720.app_sandboxpools.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
