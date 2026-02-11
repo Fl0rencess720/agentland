@@ -52,7 +52,7 @@ var _ = Describe("CodeInterpreter Controller", func() {
 						Namespace: "default",
 					},
 					Spec: agentlandv1alpha1.CodeInterpreterSpec{
-						Template: &agentlandv1alpha1.CodeInterpreterSandboxTemplate{
+						Template: &agentlandv1alpha1.SandboxTemplate{
 							Image: "busybox:1.36",
 						},
 					},

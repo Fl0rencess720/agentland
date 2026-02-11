@@ -20,6 +20,9 @@ rules:
   - agentland.fl0rencess720.app
   resources:
   - codeinterpreters
+  - sandboxclaims
+  - sandboxes
+  - sandboxpools
   verbs:
   - create
   - delete
@@ -38,6 +41,9 @@ rules:
   - agentland.fl0rencess720.app
   resources:
   - codeinterpreters/status
+  - sandboxclaims/status
+  - sandboxes/status
+  - sandboxpools/status
   verbs:
   - get
   - patch

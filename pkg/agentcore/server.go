@@ -30,6 +30,11 @@ type Server struct {
 	k8sClient  dynamic.Interface
 
 	sessionStore sessionStore
+
+	warmPoolEnabled     bool
+	warmPoolDefaultMode string
+	warmPoolPoolRef     string
+	warmPoolProfile     string
 }
 
 func NewServer(cfg *config.Config) (*Server, error) {
@@ -59,6 +64,11 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		listener:     lis,
 		k8sClient:    cfg.K8sClient,
 		sessionStore: db.NewSessionStore(),
+
+		warmPoolEnabled:     cfg.WarmPoolEnabled,
+		warmPoolDefaultMode: cfg.WarmPoolDefaultMode,
+		warmPoolPoolRef:     cfg.WarmPoolPoolRef,
+		warmPoolProfile:     cfg.WarmPoolProfile,
 	}
 
 	pb.RegisterAgentCoreServiceServer(server, s)

@@ -32,7 +32,7 @@ func (s *AgentCoreGCSuite) TestGCOnceDeletesInactiveAndExpiredSessions() {
 			Namespace: consts.AgentLandSandboxesNamespace,
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
-			Template: &v1alpha1.CodeInterpreterSandboxTemplate{Image: "korokd:latest"},
+			Template: &v1alpha1.SandboxTemplate{Image: "korokd:latest"},
 		},
 	}
 	objB := &v1alpha1.CodeInterpreter{
@@ -42,7 +42,7 @@ func (s *AgentCoreGCSuite) TestGCOnceDeletesInactiveAndExpiredSessions() {
 			Namespace: consts.AgentLandSandboxesNamespace,
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
-			Template: &v1alpha1.CodeInterpreterSandboxTemplate{Image: "korokd:latest"},
+			Template: &v1alpha1.SandboxTemplate{Image: "korokd:latest"},
 		},
 	}
 	objKeep := &v1alpha1.CodeInterpreter{
@@ -52,7 +52,7 @@ func (s *AgentCoreGCSuite) TestGCOnceDeletesInactiveAndExpiredSessions() {
 			Namespace: consts.AgentLandSandboxesNamespace,
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
-			Template: &v1alpha1.CodeInterpreterSandboxTemplate{Image: "korokd:latest"},
+			Template: &v1alpha1.SandboxTemplate{Image: "korokd:latest"},
 		},
 	}
 

@@ -104,6 +104,14 @@ func main() {
 	_ = viper.BindEnv("redis.addr", "AL_REDIS_ADDR")
 	_ = viper.BindEnv("redis.password", "AL_REDIS_PASSWORD")
 	_ = viper.BindEnv("redis.db", "AL_REDIS_DB")
+	_ = viper.BindEnv("warm_pool.enabled", "AL_WARMPOOL_ENABLED")
+	_ = viper.BindEnv("warm_pool.default_mode", "AL_WARMPOOL_DEFAULT_MODE")
+	_ = viper.BindEnv("warm_pool.pool_ref", "AL_WARMPOOL_POOL_REF")
+	_ = viper.BindEnv("warm_pool.profile", "AL_WARMPOOL_PROFILE")
+	viper.SetDefault("warm_pool.enabled", false)
+	viper.SetDefault("warm_pool.default_mode", "PoolPreferred")
+	viper.SetDefault("warm_pool.pool_ref", "")
+	viper.SetDefault("warm_pool.profile", "default")
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -206,6 +214,30 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CodeInterpreter")
 		os.Exit(1)
 	}
+
+	if err := (&controller.SandboxReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
+		os.Exit(1)
+	}
+
+	if err := (&controller.SandboxPoolReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SandboxPool")
+		os.Exit(1)
+	}
+
+	if err := (&controller.SandboxClaimReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SandboxClaim")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	k8sClient, err := dynamic.NewForConfig(cfg)
@@ -215,8 +247,12 @@ func main() {
 	}
 
 	agentCoreCfg := &config.Config{
-		Port:      agentCorePort,
-		K8sClient: k8sClient,
+		Port:                agentCorePort,
+		K8sClient:           k8sClient,
+		WarmPoolEnabled:     viper.GetBool("warm_pool.enabled"),
+		WarmPoolDefaultMode: viper.GetString("warm_pool.default_mode"),
+		WarmPoolPoolRef:     viper.GetString("warm_pool.pool_ref"),
+		WarmPoolProfile:     viper.GetString("warm_pool.profile"),
 	}
 
 	// 创建 gRPC Server 实例
