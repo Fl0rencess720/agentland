@@ -29,6 +29,10 @@ type mockSessionStore struct {
 	updateLatestActivityFn func(ctx context.Context, sandboxID string) error
 }
 
+type mockTokenSigner struct {
+	signFn func(sessionID, subject string, version int64) (string, error)
+}
+
 func (m *mockSessionStore) GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
 	if m.getSessionFn != nil {
 		return m.getSessionFn(ctx, sandboxID)
@@ -41,6 +45,13 @@ func (m *mockSessionStore) UpdateLatestActivity(ctx context.Context, sandboxID s
 		return m.updateLatestActivityFn(ctx, sandboxID)
 	}
 	return nil
+}
+
+func (m *mockTokenSigner) Sign(sessionID, subject string, version int64) (string, error) {
+	if m.signFn != nil {
+		return m.signFn(sessionID, subject, version)
+	}
+	return "", errors.New("sign not implemented")
 }
 
 func (m *MockAgentCoreServiceClient) CreateSandbox(ctx context.Context, in *pb.CreateSandboxRequest, opts ...grpc.CallOption) (*pb.CreateSandboxResponse, error) {
@@ -84,6 +95,11 @@ func (s *CodeInterpreterSuite) SetupTest() {
 		agentCoreServiceClient: s.mockAgentCoreClient,
 		sandboxTransport:       http.DefaultTransport,
 		sessionStore:           &mockSessionStore{},
+		sandboxTokenSigner: &mockTokenSigner{
+			signFn: func(sessionID, subject string, version int64) (string, error) {
+				return "default.jwt.token", nil
+			},
+		},
 	}
 }
 
@@ -201,6 +217,46 @@ func (s *CodeInterpreterSuite) TestExecuteCode_ProxyUnreachable() {
 
 	s.Equal(502, s.recorder.Code)
 	s.Contains(s.recorder.Body.String(), "sandbox unreachable")
+}
+
+func (s *CodeInterpreterSuite) TestExecuteCode_InjectsSandboxJWTAuthorizationHeader() {
+	reqBody := ExecuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	s.handler.sandboxTokenSigner = &mockTokenSigner{
+		signFn: func(sessionID, subject string, version int64) (string, error) {
+			s.Equal("sandbox-uuid-1234", sessionID)
+			return "sandbox.jwt.token", nil
+		},
+	}
+
+	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal("Bearer sandbox.jwt.token", r.Header.Get("Authorization"))
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"exit_code":0,"stdout":"1\n","stderr":""}`)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer client-token")
+	s.ctx.Request = req
+
+	s.mockAgentCoreClient.On("CreateSandbox",
+		mock.Anything,
+		&pb.CreateSandboxRequest{Language: "go"},
+	).Return(&pb.CreateSandboxResponse{
+		SandboxId:    "sandbox-uuid-1234",
+		GrpcEndpoint: "sandbox.test:1883",
+	}, nil)
+
+	s.handler.ExecuteCode(s.ctx)
+
+	s.Equal(200, s.recorder.Code)
 }
 
 func (s *CodeInterpreterSuite) TestExecuteCode_SessionNotFoundFallbackCreateSandbox() {

@@ -12,6 +12,7 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/common/logging"
 	"github.com/Fl0rencess720/agentland/pkg/korokd"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
+	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
@@ -23,7 +24,24 @@ func main() {
 	port := flag.String("port", "1883", "korokd HTTP server port")
 	flag.Parse()
 
-	cfg := &config.Config{Port: *port}
+	viper.SetEnvPrefix("al")
+	_ = viper.BindEnv("sandbox.jwt.public_key_path", "AL_SANDBOX_JWT_PUBLIC_KEY_PATH")
+	_ = viper.BindEnv("sandbox.jwt.issuer", "AL_SANDBOX_JWT_ISSUER")
+	_ = viper.BindEnv("sandbox.jwt.audience", "AL_SANDBOX_JWT_AUDIENCE")
+	_ = viper.BindEnv("sandbox.jwt.clock_skew", "AL_SANDBOX_JWT_CLOCK_SKEW")
+
+	viper.SetDefault("sandbox.jwt.public_key_path", "/var/run/agentland/jwt/public.pem")
+	viper.SetDefault("sandbox.jwt.issuer", "agentland-gateway")
+	viper.SetDefault("sandbox.jwt.audience", "sandbox")
+	viper.SetDefault("sandbox.jwt.clock_skew", "30s")
+
+	cfg := &config.Config{
+		Port:                 *port,
+		SandboxJWTPublicPath: viper.GetString("sandbox.jwt.public_key_path"),
+		SandboxJWTIssuer:     viper.GetString("sandbox.jwt.issuer"),
+		SandboxJWTAudience:   viper.GetString("sandbox.jwt.audience"),
+		SandboxJWTClockSkew:  viper.GetDuration("sandbox.jwt.clock_skew"),
+	}
 	server, err := korokd.NewServer(cfg)
 	if err != nil {
 		zap.L().Fatal("New Server failed", zap.Error(err))

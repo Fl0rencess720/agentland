@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gateway-secret-manager
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gateway-secret-manager
+subjects:
+- kind: ServiceAccount
+  name: gateway
+  namespace: agentland-system
