@@ -144,7 +144,12 @@ func (r *CodeInterpreterReconciler) reconcileViaClaim(ctx context.Context, ci *a
 			return ctrl.Result{}, err
 		}
 		if err := r.Create(ctx, claim); err != nil {
-			return ctrl.Result{}, err
+			if !errors.IsAlreadyExists(err) {
+				return ctrl.Result{}, err
+			}
+			if err := r.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
