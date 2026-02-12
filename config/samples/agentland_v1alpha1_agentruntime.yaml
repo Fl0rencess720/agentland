@@ -1,0 +1,11 @@
+apiVersion: agentland.fl0rencess720.app/v1alpha1
+kind: AgentRuntime
+metadata:
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: kustomize
+  name: default-runtime
+  namespace: agentland-sandboxes
+spec:
+  sandboxTemplate:
+    image: korokd:latest

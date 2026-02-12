@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const (
@@ -70,8 +71,8 @@ func (s *Server) gcOnce(parent context.Context) error {
 
 	var errs []error
 	for sessionID := range candidates {
-		if err := s.deleteSandboxCR(ctx, sessionID); err != nil {
-			errs = append(errs, fmt.Errorf("delete sandbox CR %s failed: %w", sessionID, err))
+		if err := s.deleteSessionCR(ctx, sessionID); err != nil {
+			errs = append(errs, fmt.Errorf("delete session CR %s failed: %w", sessionID, err))
 			continue
 		}
 
@@ -90,8 +91,18 @@ func (s *Server) gcOnce(parent context.Context) error {
 	return nil
 }
 
-func (s *Server) deleteSandboxCR(ctx context.Context, sessionID string) error {
-	err := s.k8sClient.Resource(codeInterpreterGVR).
+func (s *Server) deleteSessionCR(ctx context.Context, sessionID string) error {
+	if err := s.deleteSessionCRByGVR(ctx, codeInterpreterGVR, sessionID); err != nil {
+		return err
+	}
+	if err := s.deleteSessionCRByGVR(ctx, agentSessionGVR, sessionID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) deleteSessionCRByGVR(ctx context.Context, gvr schema.GroupVersionResource, sessionID string) error {
+	err := s.k8sClient.Resource(gvr).
 		Namespace(consts.AgentLandSandboxesNamespace).
 		Delete(ctx, sessionID, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {

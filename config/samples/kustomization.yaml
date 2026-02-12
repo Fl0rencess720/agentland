@@ -1,4 +1,6 @@
 ## Append samples of your project ##
 resources:
+- agentland_v1alpha1_agentruntime.yaml
+- agentland_v1alpha1_agentsession.yaml
 - agentland_v1alpha1_codeinterpreter.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -43,6 +43,8 @@ func main() {
 	_ = viper.BindEnv("sandbox.jwt.audience", "AL_SANDBOX_JWT_AUDIENCE")
 	_ = viper.BindEnv("sandbox.jwt.ttl", "AL_SANDBOX_JWT_TTL")
 	_ = viper.BindEnv("sandbox.jwt.kid", "AL_SANDBOX_JWT_KID")
+	_ = viper.BindEnv("agent_runtime.default_name", "AL_AGENT_RUNTIME_DEFAULT_NAME")
+	_ = viper.BindEnv("agent_runtime.default_namespace", "AL_AGENT_RUNTIME_DEFAULT_NAMESPACE")
 
 	viper.SetDefault("agentcore.address", "agentland-agentcore:8082")
 	viper.SetDefault("sandbox.jwt.private_key_path", "/tmp/agentland/jwt/private.pem")
@@ -53,6 +55,8 @@ func main() {
 	viper.SetDefault("sandbox.jwt.audience", "sandbox")
 	viper.SetDefault("sandbox.jwt.ttl", "5m")
 	viper.SetDefault("sandbox.jwt.kid", "default")
+	viper.SetDefault("agent_runtime.default_name", "default-runtime")
+	viper.SetDefault("agent_runtime.default_namespace", "agentland-sandboxes")
 
 	privateKeyPath, err := sandboxjwt.EnsureGatewaySigningKey(context.Background(), sandboxjwt.BootstrapConfig{
 		IdentitySecretName:      viper.GetString("sandbox.jwt.identity_secret_name"),
@@ -67,12 +71,14 @@ func main() {
 	}
 
 	config := &config.Config{
-		Port:                  *port,
-		SandboxJWTPrivatePath: privateKeyPath,
-		SandboxJWTIssuer:      viper.GetString("sandbox.jwt.issuer"),
-		SandboxJWTAudience:    viper.GetString("sandbox.jwt.audience"),
-		SandboxJWTTTL:         viper.GetDuration("sandbox.jwt.ttl"),
-		SandboxJWTKID:         viper.GetString("sandbox.jwt.kid"),
+		Port:                         *port,
+		SandboxJWTPrivatePath:        privateKeyPath,
+		SandboxJWTIssuer:             viper.GetString("sandbox.jwt.issuer"),
+		SandboxJWTAudience:           viper.GetString("sandbox.jwt.audience"),
+		SandboxJWTTTL:                viper.GetDuration("sandbox.jwt.ttl"),
+		SandboxJWTKID:                viper.GetString("sandbox.jwt.kid"),
+		DefaultAgentRuntimeName:      viper.GetString("agent_runtime.default_name"),
+		DefaultAgentRuntimeNamespace: viper.GetString("agent_runtime.default_namespace"),
 	}
 
 	server, err := gateway.NewServer(config)

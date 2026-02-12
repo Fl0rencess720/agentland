@@ -24,29 +24,6 @@ type Port struct {
 	Port uint32 `json:"port"`
 }
 
-// ProvisioningMode defines how a CodeInterpreter should be provisioned.
-// +kubebuilder:validation:Enum=Direct;PoolPreferred;PoolRequired
-type ProvisioningMode string
-
-const (
-	ProvisioningModeDirect        ProvisioningMode = "Direct"
-	ProvisioningModePoolPreferred ProvisioningMode = "PoolPreferred"
-	ProvisioningModePoolRequired  ProvisioningMode = "PoolRequired"
-)
-
-// CodeInterpreterProvisioningSpec controls pool-based provisioning behavior.
-type CodeInterpreterProvisioningSpec struct {
-	// +kubebuilder:default=Direct
-	// +optional
-	Mode ProvisioningMode `json:"mode,omitempty"`
-
-	// +optional
-	PoolRef string `json:"poolRef,omitempty"`
-
-	// +optional
-	Profile string `json:"profile,omitempty"`
-}
-
 // CodeInterpreterSpec defines the desired state of CodeInterpreter
 type CodeInterpreterSpec struct {
 	// +optional
@@ -64,7 +41,7 @@ type CodeInterpreterSpec struct {
 	MaxSessionDuration *metav1.Duration `json:"maxSessionDuration,omitempty"`
 
 	// +optional
-	Provisioning *CodeInterpreterProvisioningSpec `json:"provisioning,omitempty"`
+	Provisioning *ProvisioningSpec `json:"provisioning,omitempty"`
 }
 
 // CodeInterpreterStatus defines the observed state of CodeInterpreter.

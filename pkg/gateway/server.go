@@ -23,6 +23,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	app := e.Group("/api")
 	{
 		handlers.InitCodeInterpreterApi(app.Group("/code-runner"), cfg)
+		handlers.InitAgentSessionApi(app.Group("/agent-sessions"), cfg)
 	}
 
 	httpServer := &http.Server{

@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
@@ -28,6 +29,16 @@ func (m *mockSessionStore) CreateSession(ctx context.Context, info *db.SandboxIn
 		m.created = append(m.created, &cloned)
 	}
 	return nil
+}
+
+func (m *mockSessionStore) GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+	for _, item := range m.created {
+		if item != nil && item.SandboxID == sandboxID {
+			cloned := *item
+			return &cloned, nil
+		}
+	}
+	return nil, errors.New("session not found")
 }
 
 func (m *mockSessionStore) DeleteSession(ctx context.Context, sandboxID string) error {

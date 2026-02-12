@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
+	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/mock"
@@ -54,12 +54,36 @@ func (m *mockTokenSigner) Sign(sessionID, subject string, version int64) (string
 	return "", errors.New("sign not implemented")
 }
 
-func (m *MockAgentCoreServiceClient) CreateSandbox(ctx context.Context, in *pb.CreateSandboxRequest, opts ...grpc.CallOption) (*pb.CreateSandboxResponse, error) {
+func (m *MockAgentCoreServiceClient) CreateCodeInterpreter(ctx context.Context, in *pb.CreateSandboxRequest, opts ...grpc.CallOption) (*pb.CreateSandboxResponse, error) {
 	args := m.Called(ctx, in)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*pb.CreateSandboxResponse), args.Error(1)
+}
+
+func (m *MockAgentCoreServiceClient) CreateAgentSession(ctx context.Context, in *pb.CreateAgentSessionRequest, opts ...grpc.CallOption) (*pb.CreateAgentSessionResponse, error) {
+	args := m.Called(ctx, in)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*pb.CreateAgentSessionResponse), args.Error(1)
+}
+
+func (m *MockAgentCoreServiceClient) GetAgentSession(ctx context.Context, in *pb.GetAgentSessionRequest, opts ...grpc.CallOption) (*pb.GetAgentSessionResponse, error) {
+	args := m.Called(ctx, in)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*pb.GetAgentSessionResponse), args.Error(1)
+}
+
+func (m *MockAgentCoreServiceClient) DeleteAgentSession(ctx context.Context, in *pb.DeleteAgentSessionRequest, opts ...grpc.CallOption) (*pb.DeleteAgentSessionResponse, error) {
+	args := m.Called(ctx, in)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*pb.DeleteAgentSessionResponse), args.Error(1)
 }
 
 func TestCodeInterpreterSuite(t *testing.T) {
@@ -111,7 +135,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_BindError() {
 	s.handler.ExecuteCode(s.ctx)
 
 	s.Equal(400, s.recorder.Code)
-	s.mockAgentCoreClient.AssertNotCalled(s.T(), "CreateSandbox")
+	s.mockAgentCoreClient.AssertNotCalled(s.T(), "CreateCodeInterpreter")
 }
 
 func (s *CodeInterpreterSuite) TestExecuteCode_CreateSandboxError() {
@@ -121,7 +145,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_CreateSandboxError() {
 	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
-	s.mockAgentCoreClient.On("CreateSandbox",
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "python"},
 	).Return(nil, errors.New("rpc connection failed"))
@@ -139,7 +163,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_EmptyEndpointError() {
 	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
-	s.mockAgentCoreClient.On("CreateSandbox",
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "go"},
 	).Return(&pb.CreateSandboxResponse{
@@ -179,7 +203,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_ProxySuccess() {
 	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
-	s.mockAgentCoreClient.On("CreateSandbox",
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "go"},
 	).Return(&pb.CreateSandboxResponse{
@@ -205,7 +229,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_ProxyUnreachable() {
 	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
-	s.mockAgentCoreClient.On("CreateSandbox",
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "go"},
 	).Return(&pb.CreateSandboxResponse{
@@ -246,7 +270,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_InjectsSandboxJWTAuthorizationHea
 	req.Header.Set("Authorization", "Bearer client-token")
 	s.ctx.Request = req
 
-	s.mockAgentCoreClient.On("CreateSandbox",
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "go"},
 	).Return(&pb.CreateSandboxResponse{
@@ -288,7 +312,7 @@ func (s *CodeInterpreterSuite) TestExecuteCode_SessionNotFoundFallbackCreateSand
 	req.Header.Set("x-agentland-session", "stale-session")
 	s.ctx.Request = req
 
-	s.mockAgentCoreClient.On("CreateSandbox",
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "python"},
 	).Return(&pb.CreateSandboxResponse{

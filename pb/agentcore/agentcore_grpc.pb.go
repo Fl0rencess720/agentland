@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v5.28.3
-// source: idl/codeinterpreter.proto
+// source: idl/agentcore.proto
 
-package codeinterpreter
+package agentcore
 
 import (
 	context "context"
@@ -19,14 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentCoreService_CreateSandbox_FullMethodName = "/agentland.codeinterpreter.v1.AgentCoreService/CreateSandbox"
+	AgentCoreService_CreateCodeInterpreter_FullMethodName = "/agentland.agentcore.v1.AgentCoreService/CreateCodeInterpreter"
+	AgentCoreService_CreateAgentSession_FullMethodName    = "/agentland.agentcore.v1.AgentCoreService/CreateAgentSession"
+	AgentCoreService_GetAgentSession_FullMethodName       = "/agentland.agentcore.v1.AgentCoreService/GetAgentSession"
+	AgentCoreService_DeleteAgentSession_FullMethodName    = "/agentland.agentcore.v1.AgentCoreService/DeleteAgentSession"
 )
 
 // AgentCoreServiceClient is the client API for AgentCoreService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AgentCoreServiceClient interface {
-	CreateSandbox(ctx context.Context, in *CreateSandboxRequest, opts ...grpc.CallOption) (*CreateSandboxResponse, error)
+	CreateCodeInterpreter(ctx context.Context, in *CreateSandboxRequest, opts ...grpc.CallOption) (*CreateSandboxResponse, error)
+	CreateAgentSession(ctx context.Context, in *CreateAgentSessionRequest, opts ...grpc.CallOption) (*CreateAgentSessionResponse, error)
+	GetAgentSession(ctx context.Context, in *GetAgentSessionRequest, opts ...grpc.CallOption) (*GetAgentSessionResponse, error)
+	DeleteAgentSession(ctx context.Context, in *DeleteAgentSessionRequest, opts ...grpc.CallOption) (*DeleteAgentSessionResponse, error)
 }
 
 type agentCoreServiceClient struct {
@@ -37,10 +43,40 @@ func NewAgentCoreServiceClient(cc grpc.ClientConnInterface) AgentCoreServiceClie
 	return &agentCoreServiceClient{cc}
 }
 
-func (c *agentCoreServiceClient) CreateSandbox(ctx context.Context, in *CreateSandboxRequest, opts ...grpc.CallOption) (*CreateSandboxResponse, error) {
+func (c *agentCoreServiceClient) CreateCodeInterpreter(ctx context.Context, in *CreateSandboxRequest, opts ...grpc.CallOption) (*CreateSandboxResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateSandboxResponse)
-	err := c.cc.Invoke(ctx, AgentCoreService_CreateSandbox_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, AgentCoreService_CreateCodeInterpreter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentCoreServiceClient) CreateAgentSession(ctx context.Context, in *CreateAgentSessionRequest, opts ...grpc.CallOption) (*CreateAgentSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateAgentSessionResponse)
+	err := c.cc.Invoke(ctx, AgentCoreService_CreateAgentSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentCoreServiceClient) GetAgentSession(ctx context.Context, in *GetAgentSessionRequest, opts ...grpc.CallOption) (*GetAgentSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAgentSessionResponse)
+	err := c.cc.Invoke(ctx, AgentCoreService_GetAgentSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentCoreServiceClient) DeleteAgentSession(ctx context.Context, in *DeleteAgentSessionRequest, opts ...grpc.CallOption) (*DeleteAgentSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteAgentSessionResponse)
+	err := c.cc.Invoke(ctx, AgentCoreService_DeleteAgentSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +87,10 @@ func (c *agentCoreServiceClient) CreateSandbox(ctx context.Context, in *CreateSa
 // All implementations must embed UnimplementedAgentCoreServiceServer
 // for forward compatibility.
 type AgentCoreServiceServer interface {
-	CreateSandbox(context.Context, *CreateSandboxRequest) (*CreateSandboxResponse, error)
+	CreateCodeInterpreter(context.Context, *CreateSandboxRequest) (*CreateSandboxResponse, error)
+	CreateAgentSession(context.Context, *CreateAgentSessionRequest) (*CreateAgentSessionResponse, error)
+	GetAgentSession(context.Context, *GetAgentSessionRequest) (*GetAgentSessionResponse, error)
+	DeleteAgentSession(context.Context, *DeleteAgentSessionRequest) (*DeleteAgentSessionResponse, error)
 	mustEmbedUnimplementedAgentCoreServiceServer()
 }
 
@@ -62,8 +101,17 @@ type AgentCoreServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedAgentCoreServiceServer struct{}
 
-func (UnimplementedAgentCoreServiceServer) CreateSandbox(context.Context, *CreateSandboxRequest) (*CreateSandboxResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CreateSandbox not implemented")
+func (UnimplementedAgentCoreServiceServer) CreateCodeInterpreter(context.Context, *CreateSandboxRequest) (*CreateSandboxResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateCodeInterpreter not implemented")
+}
+func (UnimplementedAgentCoreServiceServer) CreateAgentSession(context.Context, *CreateAgentSessionRequest) (*CreateAgentSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateAgentSession not implemented")
+}
+func (UnimplementedAgentCoreServiceServer) GetAgentSession(context.Context, *GetAgentSessionRequest) (*GetAgentSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAgentSession not implemented")
+}
+func (UnimplementedAgentCoreServiceServer) DeleteAgentSession(context.Context, *DeleteAgentSessionRequest) (*DeleteAgentSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteAgentSession not implemented")
 }
 func (UnimplementedAgentCoreServiceServer) mustEmbedUnimplementedAgentCoreServiceServer() {}
 func (UnimplementedAgentCoreServiceServer) testEmbeddedByValue()                          {}
@@ -86,20 +134,74 @@ func RegisterAgentCoreServiceServer(s grpc.ServiceRegistrar, srv AgentCoreServic
 	s.RegisterService(&AgentCoreService_ServiceDesc, srv)
 }
 
-func _AgentCoreService_CreateSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _AgentCoreService_CreateCodeInterpreter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateSandboxRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AgentCoreServiceServer).CreateSandbox(ctx, in)
+		return srv.(AgentCoreServiceServer).CreateCodeInterpreter(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AgentCoreService_CreateSandbox_FullMethodName,
+		FullMethod: AgentCoreService_CreateCodeInterpreter_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AgentCoreServiceServer).CreateSandbox(ctx, req.(*CreateSandboxRequest))
+		return srv.(AgentCoreServiceServer).CreateCodeInterpreter(ctx, req.(*CreateSandboxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentCoreService_CreateAgentSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateAgentSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentCoreServiceServer).CreateAgentSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentCoreService_CreateAgentSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentCoreServiceServer).CreateAgentSession(ctx, req.(*CreateAgentSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentCoreService_GetAgentSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAgentSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentCoreServiceServer).GetAgentSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentCoreService_GetAgentSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentCoreServiceServer).GetAgentSession(ctx, req.(*GetAgentSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentCoreService_DeleteAgentSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteAgentSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentCoreServiceServer).DeleteAgentSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentCoreService_DeleteAgentSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentCoreServiceServer).DeleteAgentSession(ctx, req.(*DeleteAgentSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -108,20 +210,32 @@ func _AgentCoreService_CreateSandbox_Handler(srv interface{}, ctx context.Contex
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var AgentCoreService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "agentland.codeinterpreter.v1.AgentCoreService",
+	ServiceName: "agentland.agentcore.v1.AgentCoreService",
 	HandlerType: (*AgentCoreServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "CreateSandbox",
-			Handler:    _AgentCoreService_CreateSandbox_Handler,
+			MethodName: "CreateCodeInterpreter",
+			Handler:    _AgentCoreService_CreateCodeInterpreter_Handler,
+		},
+		{
+			MethodName: "CreateAgentSession",
+			Handler:    _AgentCoreService_CreateAgentSession_Handler,
+		},
+		{
+			MethodName: "GetAgentSession",
+			Handler:    _AgentCoreService_GetAgentSession_Handler,
+		},
+		{
+			MethodName: "DeleteAgentSession",
+			Handler:    _AgentCoreService_DeleteAgentSession_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "idl/codeinterpreter.proto",
+	Metadata: "idl/agentcore.proto",
 }
 
 const (
-	SandboxService_ExecuteCode_FullMethodName = "/agentland.codeinterpreter.v1.SandboxService/ExecuteCode"
+	SandboxService_ExecuteCode_FullMethodName = "/agentland.agentcore.v1.SandboxService/ExecuteCode"
 )
 
 // SandboxServiceClient is the client API for SandboxService service.
@@ -210,7 +324,7 @@ func _SandboxService_ExecuteCode_Handler(srv interface{}, ctx context.Context, d
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var SandboxService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "agentland.codeinterpreter.v1.SandboxService",
+	ServiceName: "agentland.agentcore.v1.SandboxService",
 	HandlerType: (*SandboxServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -219,5 +333,5 @@ var SandboxService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "idl/codeinterpreter.proto",
+	Metadata: "idl/agentcore.proto",
 }

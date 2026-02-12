@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package agentland.agentcore.v1;
+  
+option go_package = "github.com/Fl0rencess720/agentland/pb/agentcore;agentcore";
+
+service AgentCoreService {
+  rpc CreateCodeInterpreter(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc CreateAgentSession(CreateAgentSessionRequest) returns (CreateAgentSessionResponse);
+  rpc GetAgentSession(GetAgentSessionRequest) returns (GetAgentSessionResponse);
+  rpc DeleteAgentSession(DeleteAgentSessionRequest) returns (DeleteAgentSessionResponse);
+}
+
+service SandboxService {
+  rpc ExecuteCode(ExecuteCodeRequest) returns (ExecuteCodeResponse);
+}
+
+message CreateSandboxRequest {
+  string language = 1;
+}
+
+message CreateSandboxResponse {
+  string sandbox_id = 1;
+  string grpc_endpoint = 2;
+}
+
+message CreateAgentSessionRequest {
+  string runtime_name = 1;
+  string runtime_namespace = 2;
+}
+
+message CreateAgentSessionResponse {
+  string session_id = 1;
+  string grpc_endpoint = 2;
+}
+
+message GetAgentSessionRequest {
+  string session_id = 1;
+}
+
+message GetAgentSessionResponse {
+  string session_id = 1;
+  string grpc_endpoint = 2;
+}
+
+message DeleteAgentSessionRequest {
+  string session_id = 1;
+}
+
+message DeleteAgentSessionResponse {
+}
+
+message ExecuteCodeRequest {
+  string language = 1;
+  string code = 2;
+}
+
+message ExecuteCodeResponse {
+  int32 exit_code = 1;
+  string stdout = 2;
+  string stderr = 3;
+}

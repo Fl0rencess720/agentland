@@ -5,7 +5,7 @@ import (
 	"net"
 	"time"
 
-	pb "github.com/Fl0rencess720/agentland/pb/codeinterpreter"
+	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -17,6 +17,7 @@ import (
 
 type sessionStore interface {
 	CreateSession(ctx context.Context, info *db.SandboxInfo) error
+	GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)
 	DeleteSession(ctx context.Context, sandboxID string) error
 	ListInactiveSessions(ctx context.Context, before time.Time, limit int64) ([]string, error)
 	ListExpiredSessions(ctx context.Context, now time.Time, limit int64) ([]string, error)

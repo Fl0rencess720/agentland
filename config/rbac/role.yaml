@@ -19,6 +19,8 @@ rules:
 - apiGroups:
   - agentland.fl0rencess720.app
   resources:
+  - agentruntimes
+  - agentsessions
   - codeinterpreters
   - sandboxclaims
   - sandboxes
@@ -34,12 +36,16 @@ rules:
 - apiGroups:
   - agentland.fl0rencess720.app
   resources:
+  - agentruntimes/finalizers
+  - agentsessions/finalizers
   - codeinterpreters/finalizers
   verbs:
   - update
 - apiGroups:
   - agentland.fl0rencess720.app
   resources:
+  - agentruntimes/status
+  - agentsessions/status
   - codeinterpreters/status
   - sandboxclaims/status
   - sandboxes/status
