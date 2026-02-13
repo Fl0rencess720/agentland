@@ -79,7 +79,7 @@ helm upgrade --install agentland charts/agentland \
 kubectl -n agentland-system get deploy,svc,sa
 kubectl -n agentland-system get pods
 kubectl -n agentland-sandboxes get pods
-kubectl get crd | rg 'agentland.fl0rencess720.app'
+kubectl get crd | grep 'agentland.fl0rencess720.app'
 ```
 
 ### 卸载
