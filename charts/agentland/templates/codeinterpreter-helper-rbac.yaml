@@ -1,0 +1,72 @@
+{{- if .Values.rbac.codeInterpreterHelperRoles.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.codeInterpreterHelperRoles.adminName) }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+      - agentland.fl0rencess720.app
+    resources:
+      - codeinterpreters
+    verbs:
+      - '*'
+  - apiGroups:
+      - agentland.fl0rencess720.app
+    resources:
+      - codeinterpreters/status
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.codeInterpreterHelperRoles.editorName) }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+      - agentland.fl0rencess720.app
+    resources:
+      - codeinterpreters
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - agentland.fl0rencess720.app
+    resources:
+      - codeinterpreters/status
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.codeInterpreterHelperRoles.viewerName) }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups:
+      - agentland.fl0rencess720.app
+    resources:
+      - codeinterpreters
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - agentland.fl0rencess720.app
+    resources:
+      - codeinterpreters/status
+    verbs:
+      - get
+{{- end }}

@@ -1,0 +1,88 @@
+{{- if .Values.agentcore.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.serviceAccount.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+{{- end }}
+---
+{{- if .Values.agentcore.clusterRole.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.clusterRole.name) }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["agentland.fl0rencess720.app"]
+    resources: ["agentruntimes", "agentsessions", "codeinterpreters", "sandboxclaims", "sandboxes", "sandboxpools"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["agentland.fl0rencess720.app"]
+    resources: ["agentruntimes/finalizers", "agentsessions/finalizers", "codeinterpreters/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["agentland.fl0rencess720.app"]
+    resources: ["agentruntimes/status", "agentsessions/status", "codeinterpreters/status", "sandboxclaims/status", "sandboxes/status", "sandboxpools/status"]
+    verbs: ["get", "patch", "update"]
+{{- end }}
+---
+{{- if .Values.agentcore.clusterRoleBinding.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.clusterRoleBinding.name) }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.clusterRole.name) }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.serviceAccount.name) }}
+    namespace: {{ .Values.namespaces.system }}
+{{- end }}
+---
+{{- if .Values.agentcore.leaderElectionRole.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.leaderElectionRole.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- end }}
+---
+{{- if .Values.agentcore.leaderElectionRoleBinding.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.leaderElectionRoleBinding.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.leaderElectionRole.name) }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.serviceAccount.name) }}
+    namespace: {{ .Values.namespaces.system }}
+{{- end }}

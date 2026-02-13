@@ -1,0 +1,39 @@
+{{- if .Values.agentcore.agentcoreService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.agentcoreService.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: agentcore
+    app.kubernetes.io/part-of: agentland
+spec:
+  selector:
+    control-plane: controller-manager
+    app.kubernetes.io/name: agentland
+  ports:
+    - name: grpc
+      port: {{ .Values.agentcore.agentcoreService.port }}
+      targetPort: {{ .Values.agentcore.agentcoreService.targetPortName }}
+{{- end }}
+---
+{{- if .Values.agentcore.metricsService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.metricsService.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ports:
+    - name: https
+      port: {{ .Values.agentcore.metricsService.port }}
+      protocol: TCP
+      targetPort: {{ .Values.agentcore.metricsService.targetPort }}
+  selector:
+    control-plane: controller-manager
+    app.kubernetes.io/name: agentland
+{{- end }}

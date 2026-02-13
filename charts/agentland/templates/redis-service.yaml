@@ -1,0 +1,17 @@
+{{- if .Values.redis.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.redis.service.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: agentland
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: {{ .Values.redis.service.targetPortName }}
+{{- end }}

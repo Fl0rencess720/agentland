@@ -1,0 +1,28 @@
+{{- if .Values.redis.deployment.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.redis.deployment.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: agentland
+spec:
+  replicas: {{ .Values.redis.deployment.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: agentland
+    spec:
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.deployment.image.repository }}:{{ .Values.redis.deployment.image.tag }}"
+          imagePullPolicy: {{ .Values.redis.deployment.image.pullPolicy }}
+          ports:
+            - containerPort: 6379
+              name: redis
+{{- end }}

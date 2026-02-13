@@ -57,6 +57,40 @@ Agent 调用链路如下：
 - `SandboxPool`：预热 Pod 池
 - `SandboxClaim`：从预热池中分配沙箱的请求
 
+## Helm 部署
+
+你可以使用 Helm 直接安装 `agentland`。当前 chart 路径为
+`charts/agentland`，资源名使用统一前缀策略，执行
+`helm install agentland ...` 时会生成 `agentland-*` 资源名。
+
+安装或升级 Helm release。
+
+```bash
+helm upgrade --install agentland charts/agentland \
+  -n agentland-system \
+  --create-namespace
+```
+
+### 部署验证
+
+安装完成后，你可以用以下命令检查核心资源是否就绪。
+
+```bash
+kubectl -n agentland-system get deploy,svc,sa
+kubectl -n agentland-system get pods
+kubectl -n agentland-sandboxes get pods
+kubectl get crd | rg 'agentland.fl0rencess720.app'
+```
+
+### 卸载
+
+如果你需要回收 Helm 部署资源，先卸载 release，再按需删除命名空间。
+
+```bash
+helm uninstall agentland -n agentland-system
+kubectl delete ns agentland-sandboxes --ignore-not-found=true
+```
+
 ## 📄 License
 
 agentland 采用 [Apache License 2.0](LICENSE) 开源许可证发布

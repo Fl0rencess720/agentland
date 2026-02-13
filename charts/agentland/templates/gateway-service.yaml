@@ -1,0 +1,17 @@
+{{- if .Values.gateway.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.service.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+spec:
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.port }}
+      targetPort: {{ .Values.gateway.service.targetPortName }}
+{{- end }}
