@@ -169,10 +169,11 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               phase:
-                description: 记录当前状态，例如 "Pending", "Running", "Failed"
+                description: Records the current status, e.g., "Pending", "Running",
+                  "Failed"
                 type: string
               podIP:
-                description: 记录与 CodeInterpreter 相关的 Pod 的 IP 地址
+                description: Records the IP address of the Pod related to the CodeInterpreter
                 type: string
               sandboxName:
                 type: string

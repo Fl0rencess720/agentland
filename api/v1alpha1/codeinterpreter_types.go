@@ -66,11 +66,11 @@ type CodeInterpreterStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// 记录与 CodeInterpreter 相关的 Pod 的 IP 地址
+	// Records the IP address of the Pod related to the CodeInterpreter
 	// +optional
 	PodIP string `json:"podIP,omitempty"`
 
-	// 记录当前状态，例如 "Pending", "Running", "Failed"
+	// Records the current status, e.g., "Pending", "Running", "Failed"
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
