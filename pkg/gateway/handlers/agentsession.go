@@ -3,13 +3,11 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"strings"
 	"time"
 
@@ -26,34 +24,17 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
-type CodeInterpreterHandler struct {
+type AgentSessionHandler struct {
 	agentCoreServiceClient pb.AgentCoreServiceClient
 	sandboxTransport       http.RoundTripper
 	sessionStore           sessionStore
 	sandboxTokenSigner     tokenSigner
+	defaultRuntimeName     string
+	defaultRuntimeNS       string
 }
 
-type sessionStore interface {
-	GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)
-	UpdateLatestActivity(ctx context.Context, sandboxID string) error
-}
-
-type tokenSigner interface {
-	Sign(sessionID, subject string, version int64) (string, error)
-}
-
-type ExecuteCodeReq struct {
-	Language string `json:"language" binding:"required"`
-	Code     string `json:"code" binding:"required"`
-}
-
-type ExecuteCodeResp struct {
-	Stdout string `json:"stdout"`
-	Stderr string `json:"stderr"`
-}
-
-func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
-	h := &CodeInterpreterHandler{}
+func InitAgentSessionApi(group *gin.RouterGroup, cfg *config.Config) {
+	h := &AgentSessionHandler{}
 
 	kacp := keepalive.ClientParameters{
 		Time:                10 * time.Second,
@@ -97,11 +78,14 @@ func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 	h.sandboxTokenSigner = signer
 
 	h.agentCoreServiceClient = pb.NewAgentCoreServiceClient(conn)
+	h.defaultRuntimeName = cfg.DefaultAgentRuntimeName
+	h.defaultRuntimeNS = cfg.DefaultAgentRuntimeNamespace
 
-	group.POST("/run", h.ExecuteCode)
+	group.POST("/invocations/*path", h.Invoke)
+	group.GET("/invocations/*path", h.Invoke)
 }
 
-func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
+func (h *AgentSessionHandler) Invoke(ctx *gin.Context) {
 	bodyBytes, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
 		zap.L().Error("Read request body failed", zap.Error(err))
@@ -109,16 +93,9 @@ func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 		return
 	}
 
-	var req ExecuteCodeReq
-	if err := json.Unmarshal(bodyBytes, &req); err != nil || req.Language == "" || req.Code == "" {
-		zap.L().Error("Bind request failed", zap.Error(err))
-		response.ErrorResponse(ctx, response.FormError)
-		return
-	}
-
-	sandboxInfo, err := h.resolveSandbox(ctx, req.Language)
+	sandboxInfo, err := h.resolveSession(ctx)
 	if err != nil {
-		zap.L().Error("Resolve sandbox failed", zap.Error(err))
+		zap.L().Error("Resolve agent session failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
@@ -141,21 +118,27 @@ func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 		return
 	}
 
+	invokePath := ctx.Param("path")
+	if invokePath == "" {
+		invokePath = "/"
+	}
+
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = h.sandboxTransport
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		req.Method = http.MethodPost
-		req.URL.Path = "/api/execute"
+		req.Method = ctx.Request.Method
+		req.URL.Path = invokePath
+		req.URL.RawQuery = ctx.Request.URL.RawQuery
 		req.Host = target.Host
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		req.ContentLength = int64(len(bodyBytes))
-		req.Header.Set("Content-Type", "application/json")
+		req.Header = ctx.Request.Header.Clone()
 		req.Header.Del("Authorization")
 		if sandboxToken != "" {
 			req.Header.Set("Authorization", "Bearer "+sandboxToken)
 		}
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		req.ContentLength = int64(len(bodyBytes))
 		req.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 		}
@@ -167,17 +150,18 @@ func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		zap.L().Error("Reverse proxy execute failed", zap.Error(err))
+		zap.L().Error("Reverse proxy invocation failed", zap.Error(err))
 		http.Error(w, "sandbox unreachable", http.StatusBadGateway)
 	}
 
 	proxy.ServeHTTP(closeNotifySafeWriter{ResponseWriter: ctx.Writer}, ctx.Request)
 }
 
-func (h *CodeInterpreterHandler) resolveSandbox(ctx *gin.Context, language string) (*db.SandboxInfo, error) {
+func (h *AgentSessionHandler) resolveSession(ctx *gin.Context) (*db.SandboxInfo, error) {
 	sessionID := ctx.GetHeader("x-agentland-session")
 	if sessionID == "" {
-		return h.createSandbox(ctx, language)
+		runtimeName, runtimeNamespace := resolveRuntimeRef(ctx, h.defaultRuntimeName, h.defaultRuntimeNS)
+		return h.createAgentSession(ctx, runtimeName, runtimeNamespace)
 	}
 
 	sandboxInfo, err := h.sessionStore.GetSession(ctx, sessionID)
@@ -186,26 +170,34 @@ func (h *CodeInterpreterHandler) resolveSandbox(ctx *gin.Context, language strin
 	}
 
 	if !errors.Is(err, db.ErrSessionNotFound) {
-		return nil, fmt.Errorf("get sandbox info failed: %w", err)
+		return nil, fmt.Errorf("get session info failed: %w", err)
 	}
 
-	zap.L().Warn("Session not found, creating new sandbox", zap.String("sessionID", sessionID))
-	return h.createSandbox(ctx, language)
+	zap.L().Warn("Session not found, creating new agent session", zap.String("sessionID", sessionID))
+	runtimeName, runtimeNamespace := resolveRuntimeRef(ctx, h.defaultRuntimeName, h.defaultRuntimeNS)
+	return h.createAgentSession(ctx, runtimeName, runtimeNamespace)
 }
 
-func (h *CodeInterpreterHandler) createSandbox(ctx context.Context, language string) (*db.SandboxInfo, error) {
-	createSandboxResp, err := h.agentCoreServiceClient.CreateCodeInterpreter(ctx, &pb.CreateSandboxRequest{Language: language})
+func (h *AgentSessionHandler) createAgentSession(ctx context.Context, runtimeName, runtimeNamespace string) (*db.SandboxInfo, error) {
+	if strings.TrimSpace(runtimeName) == "" {
+		return nil, fmt.Errorf("runtime name is required")
+	}
+
+	createResp, err := h.agentCoreServiceClient.CreateAgentSession(ctx, &pb.CreateAgentSessionRequest{
+		RuntimeName:      runtimeName,
+		RuntimeNamespace: runtimeNamespace,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create sandbox failed: %w", err)
+		return nil, fmt.Errorf("create agent session failed: %w", err)
 	}
 
 	return &db.SandboxInfo{
-		SandboxID:    createSandboxResp.SandboxId,
-		GrpcEndpoint: createSandboxResp.GrpcEndpoint,
+		SandboxID:    createResp.SessionId,
+		GrpcEndpoint: createResp.GrpcEndpoint,
 	}, nil
 }
 
-func (h *CodeInterpreterHandler) issueSandboxToken(sessionID string) (string, error) {
+func (h *AgentSessionHandler) issueSandboxToken(sessionID string) (string, error) {
 	if h.sandboxTokenSigner == nil {
 		return "", errors.New("sandbox token signer is not configured")
 	}
@@ -216,23 +208,22 @@ func (h *CodeInterpreterHandler) issueSandboxToken(sessionID string) (string, er
 	return token, nil
 }
 
-func resolveSandboxTarget(endpoint string) (*url.URL, error) {
-	trimmed := strings.TrimSpace(endpoint)
-	if trimmed == "" {
-		return nil, fmt.Errorf("sandbox endpoint is empty")
+func resolveRuntimeRef(ctx *gin.Context, defaultRuntimeName, defaultRuntimeNS string) (string, string) {
+	runtimeName := strings.TrimSpace(ctx.GetHeader("x-agentland-runtime"))
+	if runtimeName == "" {
+		runtimeName = strings.TrimSpace(ctx.Query("runtime"))
+	}
+	if runtimeName == "" {
+		runtimeName = strings.TrimSpace(defaultRuntimeName)
 	}
 
-	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
-		return url.Parse(trimmed)
+	runtimeNamespace := strings.TrimSpace(ctx.GetHeader("x-agentland-runtime-namespace"))
+	if runtimeNamespace == "" {
+		runtimeNamespace = strings.TrimSpace(ctx.Query("runtime_namespace"))
+	}
+	if runtimeNamespace == "" {
+		runtimeNamespace = strings.TrimSpace(defaultRuntimeNS)
 	}
 
-	return url.Parse("http://" + trimmed)
-}
-
-type closeNotifySafeWriter struct {
-	gin.ResponseWriter
-}
-
-func (w closeNotifySafeWriter) CloseNotify() <-chan bool {
-	return nil
+	return runtimeName, runtimeNamespace
 }

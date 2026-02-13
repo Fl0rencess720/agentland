@@ -18,6 +18,29 @@ package v1alpha1
 
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+// ProvisioningMode defines how a session should be provisioned.
+// +kubebuilder:validation:Enum=Direct;PoolPreferred;PoolRequired
+type ProvisioningMode string
+
+const (
+	ProvisioningModeDirect        ProvisioningMode = "Direct"
+	ProvisioningModePoolPreferred ProvisioningMode = "PoolPreferred"
+	ProvisioningModePoolRequired  ProvisioningMode = "PoolRequired"
+)
+
+// ProvisioningSpec controls pool-based provisioning behavior.
+type ProvisioningSpec struct {
+	// +kubebuilder:default=Direct
+	// +optional
+	Mode ProvisioningMode `json:"mode,omitempty"`
+
+	// +optional
+	PoolRef string `json:"poolRef,omitempty"`
+
+	// +optional
+	Profile string `json:"profile,omitempty"`
+}
+
 // SandboxPoolSpec defines the desired state of SandboxPool.
 type SandboxPoolSpec struct {
 	// +kubebuilder:validation:Minimum=0

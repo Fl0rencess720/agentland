@@ -2,6 +2,8 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
+- bases/agentland.fl0rencess720.app_agentruntimes.yaml
+- bases/agentland.fl0rencess720.app_agentsessions.yaml
 - bases/agentland.fl0rencess720.app_codeinterpreters.yaml
 - bases/agentland.fl0rencess720.app_sandboxes.yaml
 - bases/agentland.fl0rencess720.app_sandboxclaims.yaml

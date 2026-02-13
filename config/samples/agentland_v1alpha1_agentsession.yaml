@@ -1,0 +1,11 @@
+apiVersion: agentland.fl0rencess720.app/v1alpha1
+kind: AgentSession
+metadata:
+  labels:
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: kustomize
+  name: agentsession-sample
+  namespace: agentland-sandboxes
+spec:
+  runtimeRef:
+    name: default-runtime

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -17,6 +18,8 @@ var (
 
 	MaxSessionDuration = 1 * time.Hour
 	MaxIdleDuration    = 15 * time.Minute
+
+	ErrSessionNotFound = errors.New("session not found")
 )
 
 type SessionStore struct {
@@ -102,6 +105,26 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sandboxID string) erro
 	}
 
 	return nil
+}
+
+// GetSession 获取 Session 信息
+func (s *SessionStore) GetSession(ctx context.Context, sandboxID string) (*SandboxInfo, error) {
+	key := keyPrefixSession + sandboxID
+
+	data, err := s.client.Get(ctx, key).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, ErrSessionNotFound
+		}
+		return nil, err
+	}
+
+	var info SandboxInfo
+	if err := json.Unmarshal([]byte(data), &info); err != nil {
+		return nil, err
+	}
+
+	return &info, nil
 }
 
 // ListInactiveSessions 返回超过 IdleTimeout 的 Session 列表
