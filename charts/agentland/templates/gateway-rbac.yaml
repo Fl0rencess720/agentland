@@ -1,0 +1,42 @@
+{{- if .Values.gateway.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.serviceAccount.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+{{- end }}
+---
+{{- if .Values.gateway.clusterRole.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.clusterRole.name) }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+{{- end }}
+---
+{{- if .Values.gateway.clusterRoleBinding.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.clusterRoleBinding.name) }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.clusterRole.name) }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.serviceAccount.name) }}
+    namespace: {{ .Values.namespaces.system }}
+{{- end }}

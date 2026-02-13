@@ -1,0 +1,44 @@
+{{- if .Values.rbac.metricsAuth.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.metricsAuth.roleName) }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.metricsAuth.roleBindingName) }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.metricsAuth.roleName) }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.serviceAccount.name) }}
+    namespace: {{ .Values.namespaces.system }}
+{{- end }}
+---
+{{- if .Values.rbac.metricsReader.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.rbac.metricsReader.roleName) }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+{{- end }}

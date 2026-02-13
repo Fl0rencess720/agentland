@@ -1,0 +1,146 @@
+nameOverride: ""
+fullnameOverride: ""
+
+namespaces:
+  createSystem: false
+  createSandboxes: true
+  system: agentland-system
+  sandboxes: agentland-sandboxes
+
+agentcore:
+  serviceAccount:
+    create: true
+    name: controller-manager
+
+  clusterRole:
+    create: true
+    name: manager-role
+
+  clusterRoleBinding:
+    create: true
+    name: manager-rolebinding
+
+  leaderElectionRole:
+    create: true
+    name: leader-election-role
+
+  leaderElectionRoleBinding:
+    create: true
+    name: leader-election-rolebinding
+
+  deployment:
+    name: controller-manager
+    replicas: 1
+    image:
+      repository: agentland-agentcore
+      tag: latest
+      pullPolicy: IfNotPresent
+    args:
+      - --metrics-bind-address=:8443
+      - --leader-elect
+      - --health-probe-bind-address=:8081
+      - --agent-core-port=8082
+    env:
+      AL_REDIS_ADDR: ""
+      AL_REDIS_PASSWORD: ""
+      AL_REDIS_DB: "0"
+    podSecurityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      runAsUser: 1000
+      runAsGroup: 1000
+      capabilities:
+        drop:
+          - ALL
+    resources:
+      limits:
+        cpu: 500m
+        memory: 128Mi
+      requests:
+        cpu: 10m
+        memory: 64Mi
+
+  agentcoreService:
+    enabled: true
+    name: agentcore
+    port: 8082
+    targetPortName: agentcore-grpc
+
+  metricsService:
+    enabled: true
+    name: controller-manager-metrics-service
+    port: 8443
+    targetPort: 8443
+
+gateway:
+  serviceAccount:
+    create: true
+    name: gateway
+
+  clusterRole:
+    create: true
+    name: gateway-secret-manager
+
+  clusterRoleBinding:
+    create: true
+    name: gateway-secret-manager
+
+  deployment:
+    enabled: true
+    name: gateway
+    replicas: 1
+    image:
+      repository: agentland-gateway
+      tag: latest
+      pullPolicy: IfNotPresent
+    args:
+      - --port=8080
+    env:
+      AL_REDIS_ADDR: ""
+      AL_REDIS_PASSWORD: ""
+      AL_REDIS_DB: "0"
+      AL_AGENTCORE_ADDRESS: ""
+      AL_SANDBOX_JWT_ISSUER: ""
+      AL_SANDBOX_JWT_AUDIENCE: sandbox
+      AL_SANDBOX_JWT_TTL: 5m
+      AL_SANDBOX_JWT_KID: default
+
+  service:
+    enabled: true
+    name: gateway
+    port: 8080
+    targetPortName: http
+
+redis:
+  deployment:
+    enabled: true
+    name: redis
+    replicas: 1
+    image:
+      repository: redis
+      tag: 7.2-alpine
+      pullPolicy: IfNotPresent
+
+  service:
+    enabled: true
+    name: redis
+    port: 6379
+    targetPortName: redis
+
+rbac:
+  metricsAuth:
+    create: true
+    roleName: metrics-auth-role
+    roleBindingName: metrics-auth-rolebinding
+  metricsReader:
+    create: true
+    roleName: metrics-reader
+  codeInterpreterHelperRoles:
+    create: true
+    adminName: codeinterpreter-admin-role
+    editorName: codeinterpreter-editor-role
+    viewerName: codeinterpreter-viewer-role

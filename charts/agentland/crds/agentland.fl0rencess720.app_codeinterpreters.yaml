@@ -169,8 +169,7 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               phase:
-                description: Records the current status, e.g., "Pending", "Running",
-                  "Failed"
+                description: Records the current status, e.g., "Pending", "Running", "Failed"
                 type: string
               podIP:
                 description: Records the IP address of the Pod related to the CodeInterpreter

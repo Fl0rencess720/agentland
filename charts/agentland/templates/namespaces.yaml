@@ -1,0 +1,19 @@
+{{- if .Values.namespaces.createSystem }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.system }}
+  labels:
+    app.kubernetes.io/part-of: agentland
+{{- end }}
+{{- if and .Values.namespaces.createSystem .Values.namespaces.createSandboxes }}
+---
+{{- end }}
+{{- if .Values.namespaces.createSandboxes }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.sandboxes }}
+  labels:
+    app.kubernetes.io/part-of: agentland
+{{- end }}

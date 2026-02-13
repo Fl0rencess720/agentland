@@ -12,6 +12,8 @@ PROTOC ?= protoc
 PROTO_DIR ?= idl
 PROTO_FILES ?= $(wildcard $(PROTO_DIR)/*.proto)
 PROTO_MODULE ?= github.com/Fl0rencess720/agentland
+CHART_DIR ?= charts/agentland
+CHART_CRDS_DIR ?= $(CHART_DIR)/crds
 
 # CONTAINER_TOOL defines the container tool to be used for building images.
 # Be aware that the target commands are only tested with Docker which is
@@ -49,6 +51,12 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+.PHONY: sync-chart-crds
+sync-chart-crds: manifests ## Sync generated CRDs into the Helm chart.
+	mkdir -p $(CHART_CRDS_DIR)
+	rm -f $(CHART_CRDS_DIR)/*.yaml
+	cp config/crd/bases/*.yaml $(CHART_CRDS_DIR)/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

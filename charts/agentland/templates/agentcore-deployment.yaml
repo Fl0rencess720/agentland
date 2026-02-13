@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.deployment.name) }}
+  namespace: {{ .Values.namespaces.system }}
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: agentland
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: {{ .Values.agentcore.deployment.replicas }}
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: agentland
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-manager
+        app.kubernetes.io/name: agentland
+    spec:
+      securityContext:
+{{ toYaml .Values.agentcore.deployment.podSecurityContext | indent 8 }}
+      containers:
+        - name: manager
+          command:
+            - /app/agentcore
+          args:
+{{ toYaml .Values.agentcore.deployment.args | indent 12 }}
+          image: "{{ .Values.agentcore.deployment.image.repository }}:{{ .Values.agentcore.deployment.image.tag }}"
+          imagePullPolicy: {{ .Values.agentcore.deployment.image.pullPolicy }}
+          env:
+            - name: AL_REDIS_ADDR
+              value: {{ default (printf "%s:%v" (include "agentland.componentName" (dict "root" . "name" .Values.redis.service.name)) .Values.redis.service.port) .Values.agentcore.deployment.env.AL_REDIS_ADDR | quote }}
+            - name: AL_REDIS_PASSWORD
+              value: {{ .Values.agentcore.deployment.env.AL_REDIS_PASSWORD | quote }}
+            - name: AL_REDIS_DB
+              value: {{ .Values.agentcore.deployment.env.AL_REDIS_DB | quote }}
+          ports:
+            - containerPort: 8082
+              name: agentcore-grpc
+          securityContext:
+{{ toYaml .Values.agentcore.deployment.containerSecurityContext | indent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+{{ toYaml .Values.agentcore.deployment.resources | indent 12 }}
+      serviceAccountName: {{ include "agentland.componentName" (dict "root" . "name" .Values.agentcore.serviceAccount.name) }}
+      terminationGracePeriodSeconds: 10

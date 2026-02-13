@@ -4,22 +4,22 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: codeinterpreters.agentland.fl0rencess720.app
+  name: agentsessions.agentland.fl0rencess720.app
 spec:
   group: agentland.fl0rencess720.app
   names:
-    kind: CodeInterpreter
-    listKind: CodeInterpreterList
-    plural: codeinterpreters
+    kind: AgentSession
+    listKind: AgentSessionList
+    plural: agentsessions
     shortNames:
-    - codei
-    singular: codeinterpreter
+    - ags
+    singular: agentsession
   scope: Namespaced
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: CodeInterpreter is the Schema for the codeinterpreters API
+        description: AgentSession is the Schema for the agentsessions API
         properties:
           apiVersion:
             description: |-
@@ -39,7 +39,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of CodeInterpreter
+            description: spec defines the desired state of AgentSession
             properties:
               maxSessionDuration:
                 default: 2h
@@ -71,6 +71,15 @@ spec:
                   profile:
                     type: string
                 type: object
+              runtimeRef:
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                type: object
               sandboxTemplate:
                 description: SandboxTemplate defines a generic pod startup template
                   for all sandbox types.
@@ -91,25 +100,15 @@ spec:
               sessionTimeout:
                 default: 15m
                 type: string
-            required:
-            - sandboxTemplate
             type: object
           status:
-            description: status defines the observed state of CodeInterpreter
+            description: status defines the observed state of AgentSession
             properties:
               claimName:
                 type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the CodeInterpreter resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: conditions represent the current state of the AgentSession
+                  resource.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -169,11 +168,8 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               phase:
-                description: Records the current status, e.g., "Pending", "Running",
-                  "Failed"
                 type: string
               podIP:
-                description: Records the IP address of the Pod related to the CodeInterpreter
                 type: string
               sandboxName:
                 type: string
