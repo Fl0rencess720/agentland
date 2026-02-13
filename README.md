@@ -41,7 +41,7 @@ Agent 调用链路如下：
 
 1. 客户端请求 `Gateway /api/agent-sessions/invocations/*path`
 2. Gateway 解析 `runtime_name/runtime_namespace`
-3. Gateway 调用 `AgentCore CreateAgentSession`
+3. Gateway 调用 `AgentCore.CreateAgentSession`
 4. AgentCore 创建带 `runtimeRef` 的 `AgentSession`
 5. `AgentSession` 控制器解析 `AgentRuntime` 并完成 Sandbox 资源编排
 6. Gateway 保留路径和方法反向代理到 Sandbox
