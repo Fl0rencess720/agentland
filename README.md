@@ -1,135 +1,62 @@
 # agentland
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+`agentland` 是一个面向 AI Agent 的 Kubernetes 沙箱运行时平台，支持代码执行场景和
+通用 Agent 调用场景。通过统一的 Gateway API 暴露能力，提供两种主要自定义资源定义（CRD）：
+`CodeInterpreter`（直接代码执行）和 `AgentSession`（通用 Agent 调用）。
 
-## Getting Started
+控制面由一组 Kubernetes 控制器组成，负责把自定义资源（CR）收敛为真实的
+Sandbox Pod。你可以通过预热池减少沙箱冷启动时延，通过 Gateway 签发的
+短时 JWT 进行鉴权。
 
-### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+## 项目能力
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+`agentland` 聚焦三类核心能力：会话化执行、Kubernetes 原生生命周期管理、
+以及安全请求转发。
 
-```sh
-make docker-build docker-push IMG=<some-registry>/agentland:tag
-```
+- 提供代码执行 API：`POST /api/code-runner/run`
+- 提供通用 Agent 调用 API：
+  `POST/GET /api/agent-sessions/invocations/*path`
+- 通过 `AgentRuntime` 抽象运行时模板，避免在请求链路中硬编码镜像
+- 通过 `SandboxPool + SandboxClaim` 提供预热池调度能力
+- 在 `agentcore` 内置基于空闲时长与最大会话时长的 GC 机制
+- 使用 JWT 在 Gateway 与 CodeInterpreter Sandbox Pod 之间做鉴权
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+## 架构概览
 
-**Install the CRDs into the cluster:**
+系统由三个核心组件和一组控制器/CRD 组成。
 
-```sh
-make install
-```
+1. **Gateway**：接收外部 HTTP 请求
+2. **AgentCore（controller manager + gRPC）**：创建会话类 CR 并等待就绪，将 CR 收敛为 `Sandbox` 与 Pod 状态
+3. **Korokd**：运行在 CodeInterpreter Sandbox Pod 内，负责代码执行和鉴权功能。
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+CodeInterpreter 代码执行链路如下：
 
-```sh
-make deploy IMG=<some-registry>/agentland:tag
-```
+1. 客户端请求 `Gateway /api/code-runner/run`
+2. Gateway 调用 `AgentCore.CreateCodeInterpreter`
+3. AgentCore 创建 `CodeInterpreter` CR
+4. 控制器创建 `SandboxClaim/Sandbox/Pod`（或直连 `Sandbox/Pod`）
+5. Gateway 反向代理到 Sandbox 内的 `Korokd /api/execute`
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+Agent 调用链路如下：
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+1. 客户端请求 `Gateway /api/agent-sessions/invocations/*path`
+2. Gateway 解析 `runtime_name/runtime_namespace`
+3. Gateway 调用 `AgentCore CreateAgentSession`
+4. AgentCore 创建带 `runtimeRef` 的 `AgentSession`
+5. `AgentSession` 控制器解析 `AgentRuntime` 并完成 Sandbox 资源编排
+6. Gateway 保留路径和方法反向代理到 Sandbox
 
-```sh
-kubectl apply -k config/samples/
-```
+## 核心 CRD
 
->**NOTE**: Ensure that the samples has default values to test it out.
+控制面 API Group 为 `agentland.fl0rencess720.app/v1alpha1`。
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+- `CodeInterpreter`：代码执行会话资源
+- `AgentRuntime`：可复用的 Agent 运行时模板，Agent 应用的镜像在此定义
+- `AgentSession`：通用 Agent 会话资源，引用 `AgentRuntime`
+- `Sandbox`：与实际运行 Pod 一一对应
+- `SandboxPool`：预热 Pod 池
+- `SandboxClaim`：从预热池中分配沙箱的请求
 
-```sh
-kubectl delete -k config/samples/
-```
+## 📄 License
 
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/agentland:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/agentland/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
-
-## License
-
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+agentland 采用 [Apache License 2.0](LICENSE) 开源许可证发布
