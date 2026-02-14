@@ -34,6 +34,14 @@ spec:
               value: {{ .Values.gateway.deployment.env.AL_REDIS_DB | quote }}
             - name: AL_AGENTCORE_ADDRESS
               value: {{ default (printf "%s:%v" (include "agentland.componentName" (dict "root" . "name" .Values.agentcore.agentcoreService.name)) .Values.agentcore.agentcoreService.port) .Values.gateway.deployment.env.AL_AGENTCORE_ADDRESS | quote }}
+            - name: AL_OTEL_ENABLED
+              value: {{ .Values.gateway.deployment.env.AL_OTEL_ENABLED | quote }}
+            - name: AL_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.gateway.deployment.env.AL_OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+            - name: AL_OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.gateway.deployment.env.AL_OTEL_EXPORTER_OTLP_INSECURE | quote }}
+            - name: AL_OTEL_TRACES_SAMPLE_RATIO
+              value: {{ .Values.gateway.deployment.env.AL_OTEL_TRACES_SAMPLE_RATIO | quote }}
             - name: AL_GATEWAY_NAMESPACE
               valueFrom:
                 fieldRef:

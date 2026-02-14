@@ -38,6 +38,14 @@ spec:
               value: {{ .Values.agentcore.deployment.env.AL_REDIS_PASSWORD | quote }}
             - name: AL_REDIS_DB
               value: {{ .Values.agentcore.deployment.env.AL_REDIS_DB | quote }}
+            - name: AL_OTEL_ENABLED
+              value: {{ .Values.agentcore.deployment.env.AL_OTEL_ENABLED | quote }}
+            - name: AL_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.agentcore.deployment.env.AL_OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+            - name: AL_OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .Values.agentcore.deployment.env.AL_OTEL_EXPORTER_OTLP_INSECURE | quote }}
+            - name: AL_OTEL_TRACES_SAMPLE_RATIO
+              value: {{ .Values.agentcore.deployment.env.AL_OTEL_TRACES_SAMPLE_RATIO | quote }}
           ports:
             - containerPort: 8082
               name: agentcore-grpc

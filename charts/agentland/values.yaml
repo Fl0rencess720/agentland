@@ -44,6 +44,10 @@ agentcore:
       AL_REDIS_ADDR: ""
       AL_REDIS_PASSWORD: ""
       AL_REDIS_DB: "0"
+      AL_OTEL_ENABLED: "false"
+      AL_OTEL_EXPORTER_OTLP_ENDPOINT: "tempo.grafana.svc.cluster.local:4317"
+      AL_OTEL_EXPORTER_OTLP_INSECURE: "true"
+      AL_OTEL_TRACES_SAMPLE_RATIO: "0.1"
     podSecurityContext:
       runAsNonRoot: true
       seccompProfile:
@@ -104,6 +108,10 @@ gateway:
       AL_REDIS_PASSWORD: ""
       AL_REDIS_DB: "0"
       AL_AGENTCORE_ADDRESS: ""
+      AL_OTEL_ENABLED: "false"
+      AL_OTEL_EXPORTER_OTLP_ENDPOINT: "tempo.grafana.svc.cluster.local:4317"
+      AL_OTEL_EXPORTER_OTLP_INSECURE: "true"
+      AL_OTEL_TRACES_SAMPLE_RATIO: "0.1"
       AL_SANDBOX_JWT_ISSUER: ""
       AL_SANDBOX_JWT_AUDIENCE: sandbox
       AL_SANDBOX_JWT_TTL: 5m
