@@ -29,6 +29,15 @@ import (
 type SandboxClaimReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Tracer trace.Tracer
+}
+
+func (r *SandboxClaimReconciler) startSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	tracer := r.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("controller.sandboxclaim")
+	}
+	return tracer.Start(ctx, name)
 }
 
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxclaims,verbs=get;list;watch;create;update;patch;delete
@@ -45,8 +54,7 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ctx = observability.ExtractContextFromAnnotations(ctx, claim.Annotations)
-	tracer := otel.Tracer("controller.sandboxclaim")
-	ctx, span := tracer.Start(ctx, "controller.sandboxclaim.reconcile")
+	ctx, span := r.startSpan(ctx, "controller.sandboxclaim.reconcile")
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
@@ -172,8 +180,7 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agentlandv1alpha1.SandboxClaim) (*corev1.Pod, error) {
-	tracer := otel.Tracer("controller.sandboxclaim")
-	ctx, span := tracer.Start(ctx, "controller.sandboxclaim.select_warm_pod")
+	ctx, span := r.startSpan(ctx, "controller.sandboxclaim.select_warm_pod")
 	defer span.End()
 
 	podList := &corev1.PodList{}
@@ -244,6 +251,10 @@ func (r *SandboxClaimReconciler) updateClaimStatus(ctx context.Context, oldStatu
 }
 
 func (r *SandboxClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Tracer == nil {
+		r.Tracer = otel.Tracer("controller.sandboxclaim")
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.SandboxClaim{}).
 		Complete(r)

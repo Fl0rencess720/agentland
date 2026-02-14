@@ -29,6 +29,15 @@ import (
 type SandboxReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Tracer trace.Tracer
+}
+
+func (r *SandboxReconciler) startSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	tracer := r.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("controller.sandbox")
+	}
+	return tracer.Start(ctx, name)
 }
 
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
@@ -43,8 +52,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ctx = observability.ExtractContextFromAnnotations(ctx, sandbox.Annotations)
-	tracer := otel.Tracer("controller.sandbox")
-	ctx, span := tracer.Start(ctx, "controller.sandbox.reconcile")
+	ctx, span := r.startSpan(ctx, "controller.sandbox.reconcile")
 	defer span.End()
 	span.SetAttributes(
 		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
@@ -95,8 +103,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentlandv1alpha1.Sandbox) (*corev1.Pod, error) {
 	logger := log.FromContext(ctx)
-	tracer := otel.Tracer("controller.sandbox")
-	ctx, span := tracer.Start(ctx, "controller.sandbox.reconcile_pod")
+	ctx, span := r.startSpan(ctx, "controller.sandbox.reconcile_pod")
 	defer span.End()
 
 	if podName := sandbox.Annotations[commonutils.PodNameAnnotation]; podName != "" {
@@ -206,6 +213,10 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 }
 
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Tracer == nil {
+		r.Tracer = otel.Tracer("controller.sandbox")
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.Sandbox{}).
 		Owns(&corev1.Pod{}).

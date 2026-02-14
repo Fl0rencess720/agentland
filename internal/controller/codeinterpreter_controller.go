@@ -42,6 +42,23 @@ import (
 type CodeInterpreterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Tracer trace.Tracer
+}
+
+func (r *CodeInterpreterReconciler) startSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	tracer := r.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("controller.codeinterpreter")
+	}
+	return tracer.Start(ctx, name)
+}
+
+func (r *CodeInterpreterReconciler) setBaseAttributes(span trace.Span, ctx context.Context, ci *agentlandv1alpha1.CodeInterpreter) {
+	span.SetAttributes(
+		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
+		attribute.String("agentland.session_id", ci.Name),
+		attribute.String("k8s.namespace", ci.Namespace),
+	)
 }
 
 // +kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=codeinterpreters,verbs=get;list;watch;create;update;patch;delete
@@ -60,14 +77,9 @@ func (r *CodeInterpreterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ctx = observability.ExtractContextFromAnnotations(ctx, ci.Annotations)
-	tracer := otel.Tracer("controller.codeinterpreter")
-	ctx, span := tracer.Start(ctx, "controller.codeinterpreter.reconcile")
+	ctx, span := r.startSpan(ctx, "controller.codeinterpreter.reconcile")
 	defer span.End()
-	span.SetAttributes(
-		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
-		attribute.String("agentland.session_id", ci.Name),
-		attribute.String("k8s.namespace", ci.Namespace),
-	)
+	r.setBaseAttributes(span, ctx, ci)
 
 	if !ci.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(ci, "codeinterpreter.finalizers.agentland.fl0rencess720.app") {
@@ -90,8 +102,7 @@ func (r *CodeInterpreterReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *CodeInterpreterReconciler) reconcileDirect(ctx context.Context, ci *agentlandv1alpha1.CodeInterpreter) (ctrl.Result, error) {
-	tracer := otel.Tracer("controller.codeinterpreter")
-	ctx, span := tracer.Start(ctx, "controller.codeinterpreter.reconcile_direct")
+	ctx, span := r.startSpan(ctx, "controller.codeinterpreter.reconcile_direct")
 	defer span.End()
 
 	profile := "default"
@@ -140,8 +151,7 @@ func (r *CodeInterpreterReconciler) reconcileDirect(ctx context.Context, ci *age
 }
 
 func (r *CodeInterpreterReconciler) reconcileViaClaim(ctx context.Context, ci *agentlandv1alpha1.CodeInterpreter, mode agentlandv1alpha1.ProvisioningMode) (ctrl.Result, error) {
-	tracer := otel.Tracer("controller.codeinterpreter")
-	ctx, span := tracer.Start(ctx, "controller.codeinterpreter.reconcile_via_claim")
+	ctx, span := r.startSpan(ctx, "controller.codeinterpreter.reconcile_via_claim")
 	defer span.End()
 
 	profile := "default"
@@ -228,8 +238,7 @@ func (r *CodeInterpreterReconciler) reconcileViaClaim(ctx context.Context, ci *a
 }
 
 func (r *CodeInterpreterReconciler) updateCodeInterpreterStatus(ctx context.Context, ci *agentlandv1alpha1.CodeInterpreter, claimName, sandboxName string) (ctrl.Result, error) {
-	tracer := otel.Tracer("controller.codeinterpreter")
-	ctx, span := tracer.Start(ctx, "controller.codeinterpreter.update_status")
+	ctx, span := r.startSpan(ctx, "controller.codeinterpreter.update_status")
 	defer span.End()
 
 	oldStatus := ci.Status.DeepCopy()
@@ -274,6 +283,10 @@ func (r *CodeInterpreterReconciler) updateCodeInterpreterStatus(ctx context.Cont
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *CodeInterpreterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Tracer == nil {
+		r.Tracer = otel.Tracer("controller.codeinterpreter")
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.CodeInterpreter{}).
 		Owns(&agentlandv1alpha1.SandboxClaim{}).
