@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/api/v1alpha1"
@@ -20,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/rand"
 )
 
 var KorokdPort = ":1883"
@@ -103,9 +103,12 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 		return nil, fmt.Errorf("failed to create codeinterpreter in k8s: %w", err)
 	}
 
-	sandboxID := result.GetName()
-	if sandboxID == "" && cr.GenerateName != "" {
-		sandboxID = cr.GenerateName + rand.String(8)
+	sandboxID := strings.TrimSpace(result.GetName())
+	if sandboxID == "" {
+		err := fmt.Errorf("created codeinterpreter has empty name")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "empty codeinterpreter name")
+		return nil, err
 	}
 	span.SetAttributes(attribute.String("agentland.session_id", sandboxID))
 
@@ -193,9 +196,12 @@ func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSess
 		return nil, fmt.Errorf("failed to create agentsession in k8s: %w", err)
 	}
 
-	sessionID := result.GetName()
-	if sessionID == "" && cr.GenerateName != "" {
-		sessionID = cr.GenerateName + rand.String(8)
+	sessionID := strings.TrimSpace(result.GetName())
+	if sessionID == "" {
+		err := fmt.Errorf("created agentsession has empty name")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "empty agentsession name")
+		return nil, err
 	}
 	span.SetAttributes(attribute.String("agentland.session_id", sessionID))
 
