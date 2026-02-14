@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -44,6 +45,7 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
 	"github.com/Fl0rencess720/agentland/pkg/common/conf"
 	"github.com/Fl0rencess720/agentland/pkg/common/logging"
+	"github.com/Fl0rencess720/agentland/pkg/common/observability"
 	"github.com/spf13/viper"
 	// +kubebuilder:scaffold:imports
 )
@@ -108,10 +110,38 @@ func main() {
 	_ = viper.BindEnv("warm_pool.default_mode", "AL_WARMPOOL_DEFAULT_MODE")
 	_ = viper.BindEnv("warm_pool.pool_ref", "AL_WARMPOOL_POOL_REF")
 	_ = viper.BindEnv("warm_pool.profile", "AL_WARMPOOL_PROFILE")
+	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
+	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
+	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
+	_ = viper.BindEnv("otel.sample_ratio", "AL_OTEL_TRACES_SAMPLE_RATIO")
 	viper.SetDefault("warm_pool.enabled", false)
 	viper.SetDefault("warm_pool.default_mode", "PoolPreferred")
 	viper.SetDefault("warm_pool.pool_ref", "")
 	viper.SetDefault("warm_pool.profile", "default")
+	viper.SetDefault("otel.enabled", false)
+	viper.SetDefault("otel.endpoint", "otel-collector:4317")
+	viper.SetDefault("otel.insecure", true)
+	viper.SetDefault("otel.sample_ratio", 0.1)
+
+	otelShutdown, err := observability.InitTracerProvider(context.Background(), observability.Config{
+		Enabled:        viper.GetBool("otel.enabled"),
+		ServiceName:    "agentland-agentcore",
+		ServiceVersion: "v1alpha1",
+		Endpoint:       viper.GetString("otel.endpoint"),
+		Insecure:       viper.GetBool("otel.insecure"),
+		SampleRatio:    viper.GetFloat64("otel.sample_ratio"),
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to initialize tracing")
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := otelShutdown(shutdownCtx); shutdownErr != nil {
+			setupLog.Error(shutdownErr, "failed to shutdown tracer provider")
+		}
+	}()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 

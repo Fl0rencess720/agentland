@@ -17,13 +17,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentlandv1alpha1 "github.com/Fl0rencess720/agentland/api/v1alpha1"
+	"github.com/Fl0rencess720/agentland/pkg/common/observability"
 	commonutils "github.com/Fl0rencess720/agentland/pkg/common/utils"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SandboxClaimReconciler reconciles a SandboxClaim object.
 type SandboxClaimReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Tracer trace.Tracer
+}
+
+func (r *SandboxClaimReconciler) startSpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	tracer := r.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer("controller.sandboxclaim")
+	}
+	return tracer.Start(ctx, name)
 }
 
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxclaims,verbs=get;list;watch;create;update;patch;delete
@@ -39,12 +53,23 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, claim); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	ctx = observability.ExtractContextFromAnnotations(ctx, claim.Annotations)
+	ctx, span := r.startSpan(ctx, "controller.sandboxclaim.reconcile")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
+		attribute.String("agentland.session_id", claim.Name),
+		attribute.String("k8s.namespace", claim.Namespace),
+		attribute.String("provisioning.profile", claim.Spec.Profile),
+		attribute.String("provisioning.pool_ref", claim.Spec.PoolRef),
+	)
 
 	if !claim.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
 
 	if claim.Spec.Template == nil {
+		span.SetStatus(codes.Error, "sandboxTemplate is required")
 		return ctrl.Result{}, fmt.Errorf("sandboxTemplate is required")
 	}
 
@@ -62,6 +87,11 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			claim.Status.Reason = "SandboxPending"
 		}
 		if err := r.updateClaimStatus(ctx, oldStatus, claim); err != nil {
+			if errors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "update claim status failed")
 			return ctrl.Result{}, err
 		}
 		if claim.Status.Phase != agentlandv1alpha1.SandboxClaimPhaseBound {
@@ -70,18 +100,28 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 	if !errors.IsNotFound(err) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get sandbox failed")
 		return ctrl.Result{}, err
 	}
 
 	pod, err := r.selectWarmPod(ctx, claim)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "select warm pod failed")
 		return ctrl.Result{}, err
 	}
+	span.SetAttributes(attribute.Bool("warm.hit", pod != nil))
 
 	if pod == nil && claim.Spec.FallbackPolicy == agentlandv1alpha1.FallbackPolicyForbidColdStart {
 		claim.Status.Phase = agentlandv1alpha1.SandboxClaimPhaseFailed
 		claim.Status.Reason = "NoWarmPod"
 		if err := r.updateClaimStatus(ctx, oldStatus, claim); err != nil {
+			if errors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "update failed claim status failed")
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -89,16 +129,21 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if pod != nil {
 		if err := r.adoptWarmPod(ctx, claim, pod); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "adopt warm pod failed")
 			return ctrl.Result{}, err
 		}
 		logger.V(1).Info("adopted warm pod", "claim", claim.Name, "pod", pod.Name)
+		span.AddEvent("warm.pod.selected", trace.WithAttributes(attribute.String("pod.name", pod.Name)))
+	} else {
+		span.AddEvent("warm.pod.not_found")
 	}
 
 	sandbox = &agentlandv1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        claim.Name,
 			Namespace:   claim.Namespace,
-			Annotations: map[string]string{},
+			Annotations: observability.PropagateTraceAnnotations(map[string]string{}, claim.Annotations),
 		},
 		Spec: agentlandv1alpha1.SandboxSpec{
 			Profile:  claim.Spec.Profile,
@@ -110,9 +155,13 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		sandbox.Annotations[commonutils.PodNameAnnotation] = pod.Name
 	}
 	if err := controllerutil.SetControllerReference(claim, sandbox, r.Scheme); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "set sandbox owner failed")
 		return ctrl.Result{}, err
 	}
 	if err := r.Create(ctx, sandbox); err != nil && !errors.IsAlreadyExists(err) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create sandbox failed")
 		return ctrl.Result{}, err
 	}
 
@@ -120,19 +169,34 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	claim.Status.SandboxName = claim.Name
 	claim.Status.Reason = "SandboxCreating"
 	if err := r.updateClaimStatus(ctx, oldStatus, claim); err != nil {
+		if errors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "update pending claim status failed")
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
 }
 
 func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agentlandv1alpha1.SandboxClaim) (*corev1.Pod, error) {
+	ctx, span := r.startSpan(ctx, "controller.sandboxclaim.select_warm_pod")
+	defer span.End()
+
 	podList := &corev1.PodList{}
 	selectorSet := labels.Set{commonutils.ProfileHashLabel: commonutils.NameHash(claim.Spec.Profile)}
 	if claim.Spec.PoolRef != "" {
 		selectorSet[commonutils.PoolLabel] = commonutils.NameHash(claim.Spec.PoolRef)
 	}
 	selector := labels.SelectorFromSet(selectorSet)
+	span.SetAttributes(
+		attribute.String("provisioning.pool_ref", claim.Spec.PoolRef),
+		attribute.String("provisioning.profile", claim.Spec.Profile),
+		attribute.String("k8s.selector", selector.String()),
+	)
 	if err := r.List(ctx, podList, &client.ListOptions{Namespace: claim.Namespace, LabelSelector: selector}); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "list warm pods failed")
 		return nil, err
 	}
 
@@ -148,6 +212,7 @@ func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agent
 		candidates = append(candidates, pod)
 	}
 	if len(candidates) == 0 {
+		span.SetAttributes(attribute.Bool("warm.hit", false))
 		return nil, nil
 	}
 
@@ -159,6 +224,10 @@ func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agent
 		return candidates[i].CreationTimestamp.Before(&candidates[j].CreationTimestamp)
 	})
 
+	span.SetAttributes(
+		attribute.Bool("warm.hit", true),
+		attribute.String("pod.name", candidates[0].Name),
+	)
 	return candidates[0], nil
 }
 
@@ -182,6 +251,10 @@ func (r *SandboxClaimReconciler) updateClaimStatus(ctx context.Context, oldStatu
 }
 
 func (r *SandboxClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Tracer == nil {
+		r.Tracer = otel.Tracer("controller.sandboxclaim")
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.SandboxClaim{}).
 		Complete(r)

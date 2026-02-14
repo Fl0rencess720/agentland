@@ -3,18 +3,24 @@ package agentcore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/api/v1alpha1"
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
 	"github.com/Fl0rencess720/agentland/pkg/common/consts"
+	"github.com/Fl0rencess720/agentland/pkg/common/observability"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/metadata"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/rand"
 )
 
 var KorokdPort = ":1883"
@@ -32,6 +38,17 @@ var agentSessionGVR = schema.GroupVersionResource{
 }
 
 func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
+	ctx = withIncomingRequestID(ctx)
+	tracer := otel.Tracer("agentcore.service")
+	ctx, span := tracer.Start(ctx, "agentcore.create_codeinterpreter", trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+
+	requestID := observability.RequestIDFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("request.id", requestID),
+		attribute.String("sandbox.language", req.GetLanguage()),
+	)
+
 	cr := &v1alpha1.CodeInterpreter{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: codeInterpreterGVR.GroupVersion().String(),
@@ -40,6 +57,7 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "session-",
 			Namespace:    consts.AgentLandSandboxesNamespace,
+			Annotations:  observability.InjectContextToAnnotations(ctx, nil),
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
 			Template: &v1alpha1.SandboxTemplate{
@@ -71,6 +89,8 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cr)
 	if err != nil {
 		zap.L().Error("Failed to convert CodeInterpreter to unstructured", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "convert codeinterpreter failed")
 		return nil, fmt.Errorf("failed to convert CR to unstructured: %w", err)
 	}
 	uObj := &unstructured.Unstructured{Object: objMap}
@@ -78,16 +98,24 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 	result, err := s.k8sClient.Resource(codeInterpreterGVR).Namespace(cr.Namespace).Create(ctx, uObj, metav1.CreateOptions{})
 	if err != nil {
 		zap.L().Error("Failed to create CodeInterpreter in k8s", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create codeinterpreter CR failed")
 		return nil, fmt.Errorf("failed to create codeinterpreter in k8s: %w", err)
 	}
 
-	sandboxID := result.GetName()
-	if sandboxID == "" && cr.GenerateName != "" {
-		sandboxID = cr.GenerateName + rand.String(8)
+	sandboxID := strings.TrimSpace(result.GetName())
+	if sandboxID == "" {
+		err := fmt.Errorf("created codeinterpreter has empty name")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "empty codeinterpreter name")
+		return nil, err
 	}
+	span.SetAttributes(attribute.String("agentland.session_id", sandboxID))
 
 	grpcEndpoint, err := s.waitSessionReady(ctx, codeInterpreterGVR, cr.Namespace, sandboxID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "wait session ready failed")
 		return nil, err
 	}
 
@@ -98,7 +126,15 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 }
 
 func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSessionRequest) (*pb.CreateAgentSessionResponse, error) {
+	ctx = withIncomingRequestID(ctx)
+	tracer := otel.Tracer("agentcore.service")
+	ctx, span := tracer.Start(ctx, "agentcore.create_agentsession", trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+
+	span.SetAttributes(attribute.String("request.id", observability.RequestIDFromContext(ctx)))
+
 	if req.GetRuntimeName() == "" {
+		span.SetStatus(codes.Error, "runtime_name is required")
 		return nil, fmt.Errorf("runtime_name is required")
 	}
 
@@ -115,6 +151,7 @@ func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSess
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "session-",
 			Namespace:    consts.AgentLandSandboxesNamespace,
+			Annotations:  observability.InjectContextToAnnotations(ctx, nil),
 		},
 		Spec: v1alpha1.AgentSessionSpec{
 			RuntimeRef: &v1alpha1.RuntimeReference{
@@ -145,6 +182,8 @@ func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSess
 	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cr)
 	if err != nil {
 		zap.L().Error("Failed to convert AgentSession to unstructured", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "convert agentsession failed")
 		return nil, fmt.Errorf("failed to convert CR to unstructured: %w", err)
 	}
 	uObj := &unstructured.Unstructured{Object: objMap}
@@ -152,16 +191,24 @@ func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSess
 	result, err := s.k8sClient.Resource(agentSessionGVR).Namespace(cr.Namespace).Create(ctx, uObj, metav1.CreateOptions{})
 	if err != nil {
 		zap.L().Error("Failed to create AgentSession in k8s", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create agentsession CR failed")
 		return nil, fmt.Errorf("failed to create agentsession in k8s: %w", err)
 	}
 
-	sessionID := result.GetName()
-	if sessionID == "" && cr.GenerateName != "" {
-		sessionID = cr.GenerateName + rand.String(8)
+	sessionID := strings.TrimSpace(result.GetName())
+	if sessionID == "" {
+		err := fmt.Errorf("created agentsession has empty name")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "empty agentsession name")
+		return nil, err
 	}
+	span.SetAttributes(attribute.String("agentland.session_id", sessionID))
 
 	grpcEndpoint, err := s.waitSessionReady(ctx, agentSessionGVR, cr.Namespace, sessionID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "wait session ready failed")
 		return nil, err
 	}
 
@@ -208,10 +255,22 @@ func (s *Server) DeleteAgentSession(ctx context.Context, req *pb.DeleteAgentSess
 }
 
 func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionResource, namespace, sessionID string) (string, error) {
+	tracer := otel.Tracer("agentcore.service")
+	ctx, span := tracer.Start(ctx, "agentcore.wait_session_ready")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
+		attribute.String("agentland.session_id", sessionID),
+		attribute.String("k8s.namespace", namespace),
+		attribute.String("k8s.resource", gvr.Resource),
+	)
+
 	watcher, err := s.k8sClient.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: "metadata.name=" + sessionID,
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "watch resource failed")
 		return "", fmt.Errorf("failed to watch resource: %w", err)
 	}
 	defer watcher.Stop()
@@ -223,6 +282,7 @@ func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionRe
 		select {
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
+				span.SetStatus(codes.Error, "watch channel closed")
 				return "", fmt.Errorf("watch channel closed")
 			}
 
@@ -239,7 +299,9 @@ func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionRe
 			phase, _, _ := unstructured.NestedString(status, "phase")
 			podIP, _, _ := unstructured.NestedString(status, "podIP")
 			if phase == "Running" && podIP != "" {
+				span.AddEvent("sandbox.running", trace.WithAttributes(attribute.String("sandbox.pod_ip", podIP)))
 				if s.sessionStore == nil {
+					span.SetStatus(codes.Error, "session store is nil")
 					return "", fmt.Errorf("session store is nil")
 				}
 
@@ -252,21 +314,40 @@ func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionRe
 				}
 
 				if err := s.sessionStore.CreateSession(ctx, sessionInfo); err != nil {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, "create session failed")
 					return "", fmt.Errorf("create session failed: %w", err)
 				}
+				span.SetAttributes(attribute.String("sandbox.pod_ip", podIP))
 				return podIP + KorokdPort, nil
 			}
 			if phase == "Failed" {
 				reason, message := extractCondition(status, "Accepted")
 				if reason != "" || message != "" {
+					span.SetStatus(codes.Error, "session provisioning failed")
 					return "", fmt.Errorf("session provisioning failed: reason=%s message=%s", reason, message)
 				}
+				span.SetStatus(codes.Error, "session provisioning failed")
 				return "", fmt.Errorf("session provisioning failed: phase=Failed")
 			}
 		case <-timeoutCtx.Done():
+			span.RecordError(timeoutCtx.Err())
+			span.SetStatus(codes.Error, "timeout waiting for sandbox")
 			return "", fmt.Errorf("timeout waiting for sandbox to be ready")
 		}
 	}
+}
+
+func withIncomingRequestID(ctx context.Context) context.Context {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ctx
+	}
+	requestIDs := md.Get(observability.RequestIDHeader)
+	if len(requestIDs) == 0 || requestIDs[0] == "" {
+		return ctx
+	}
+	return observability.ContextWithRequestID(ctx, requestIDs[0])
 }
 
 func extractCondition(status map[string]interface{}, conditionType string) (string, string) {

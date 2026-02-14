@@ -18,6 +18,7 @@ type Server struct {
 
 func NewServer(cfg *config.Config) (*Server, error) {
 	e := gin.New()
+	e.Use(tracingMiddleware())
 	e.Use(gin.Recovery(), ginZap.Ginzap(zap.L(), time.RFC3339, false), ginZap.RecoveryWithZap(zap.L(), false))
 
 	app := e.Group("/api")

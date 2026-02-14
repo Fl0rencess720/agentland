@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestAgentCoreSuite(t *testing.T) {
@@ -26,10 +28,33 @@ type AgentCoreSuite struct {
 	suite.Suite
 }
 
+func installGenerateNameReactor(client *fake.FakeDynamicClient) {
+	seed := 0
+	reaction := func(action k8stesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(k8stesting.CreateAction)
+		if !ok {
+			return false, nil, nil
+		}
+		obj, ok := createAction.GetObject().(*unstructured.Unstructured)
+		if !ok {
+			return false, nil, nil
+		}
+		if obj.GetName() == "" && obj.GetGenerateName() != "" {
+			seed++
+			obj.SetName(fmt.Sprintf("%sut-%d", obj.GetGenerateName(), seed))
+		}
+		return false, nil, nil
+	}
+
+	client.PrependReactor("create", codeInterpreterGVR.Resource, reaction)
+	client.PrependReactor("create", agentSessionGVR.Resource, reaction)
+}
+
 func (s *AgentCoreSuite) TestCreateSandbox() {
 	scheme := runtime.NewScheme()
 	s.NoError(v1alpha1.AddToScheme(scheme))
 	fakeDynamicClient := fake.NewSimpleDynamicClient(scheme)
+	installGenerateNameReactor(fakeDynamicClient)
 	mockStore := &mockSessionStore{}
 
 	server := &Server{
@@ -95,6 +120,7 @@ func (s *AgentCoreSuite) TestCreateSandboxWithWarmPoolProvisioning() {
 	scheme := runtime.NewScheme()
 	s.NoError(v1alpha1.AddToScheme(scheme))
 	fakeDynamicClient := fake.NewSimpleDynamicClient(scheme)
+	installGenerateNameReactor(fakeDynamicClient)
 	mockStore := &mockSessionStore{}
 
 	server := &Server{
@@ -168,6 +194,7 @@ func (s *AgentCoreSuite) TestCreateAgentSession() {
 	scheme := runtime.NewScheme()
 	s.NoError(v1alpha1.AddToScheme(scheme))
 	fakeDynamicClient := fake.NewSimpleDynamicClient(scheme)
+	installGenerateNameReactor(fakeDynamicClient)
 	mockStore := &mockSessionStore{}
 
 	server := &Server{
@@ -232,6 +259,7 @@ func (s *AgentCoreSuite) TestCreateAgentSession_FailedPhaseReturnsDetailedError(
 	scheme := runtime.NewScheme()
 	s.NoError(v1alpha1.AddToScheme(scheme))
 	fakeDynamicClient := fake.NewSimpleDynamicClient(scheme)
+	installGenerateNameReactor(fakeDynamicClient)
 	mockStore := &mockSessionStore{}
 
 	server := &Server{

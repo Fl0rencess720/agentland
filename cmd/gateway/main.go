@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Fl0rencess720/agentland/pkg/common/conf"
 	"github.com/Fl0rencess720/agentland/pkg/common/logging"
+	"github.com/Fl0rencess720/agentland/pkg/common/observability"
 	"github.com/Fl0rencess720/agentland/pkg/gateway"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/sandboxjwt"
@@ -45,6 +47,10 @@ func main() {
 	_ = viper.BindEnv("sandbox.jwt.kid", "AL_SANDBOX_JWT_KID")
 	_ = viper.BindEnv("agent_runtime.default_name", "AL_AGENT_RUNTIME_DEFAULT_NAME")
 	_ = viper.BindEnv("agent_runtime.default_namespace", "AL_AGENT_RUNTIME_DEFAULT_NAMESPACE")
+	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
+	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
+	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
+	_ = viper.BindEnv("otel.sample_ratio", "AL_OTEL_TRACES_SAMPLE_RATIO")
 
 	viper.SetDefault("agentcore.address", "agentland-agentcore:8082")
 	viper.SetDefault("sandbox.jwt.private_key_path", "/tmp/agentland/jwt/private.pem")
@@ -57,6 +63,30 @@ func main() {
 	viper.SetDefault("sandbox.jwt.kid", "default")
 	viper.SetDefault("agent_runtime.default_name", "default-runtime")
 	viper.SetDefault("agent_runtime.default_namespace", "agentland-sandboxes")
+	viper.SetDefault("otel.enabled", false)
+	viper.SetDefault("otel.endpoint", "otel-collector:4317")
+	viper.SetDefault("otel.insecure", true)
+	viper.SetDefault("otel.sample_ratio", 0.1)
+
+	otelShutdown, err := observability.InitTracerProvider(context.Background(), observability.Config{
+		Enabled:        viper.GetBool("otel.enabled"),
+		ServiceName:    "agentland-gateway",
+		ServiceVersion: "v1alpha1",
+		Endpoint:       viper.GetString("otel.endpoint"),
+		Insecure:       viper.GetBool("otel.insecure"),
+		SampleRatio:    viper.GetFloat64("otel.sample_ratio"),
+	})
+	if err != nil {
+		zap.L().Fatal("Initialize tracing failed", zap.Error(err))
+		return
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := otelShutdown(shutdownCtx); shutdownErr != nil {
+			zap.L().Warn("Shutdown tracer provider failed", zap.Error(shutdownErr))
+		}
+	}()
 
 	privateKeyPath, err := sandboxjwt.EnsureGatewaySigningKey(context.Background(), sandboxjwt.BootstrapConfig{
 		IdentitySecretName:      viper.GetString("sandbox.jwt.identity_secret_name"),
