@@ -45,6 +45,7 @@ func main() {
 	_ = viper.BindEnv("sandbox.jwt.audience", "AL_SANDBOX_JWT_AUDIENCE")
 	_ = viper.BindEnv("sandbox.jwt.ttl", "AL_SANDBOX_JWT_TTL")
 	_ = viper.BindEnv("sandbox.jwt.kid", "AL_SANDBOX_JWT_KID")
+	_ = viper.BindEnv("harud.port", "AL_HARUD_PORT")
 	_ = viper.BindEnv("agent_runtime.default_name", "AL_AGENT_RUNTIME_DEFAULT_NAME")
 	_ = viper.BindEnv("agent_runtime.default_namespace", "AL_AGENT_RUNTIME_DEFAULT_NAMESPACE")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
@@ -61,6 +62,7 @@ func main() {
 	viper.SetDefault("sandbox.jwt.audience", "sandbox")
 	viper.SetDefault("sandbox.jwt.ttl", "5m")
 	viper.SetDefault("sandbox.jwt.kid", "default")
+	viper.SetDefault("harud.port", "1885")
 	viper.SetDefault("agent_runtime.default_name", "default-runtime")
 	viper.SetDefault("agent_runtime.default_namespace", "agentland-sandboxes")
 	viper.SetDefault("otel.enabled", false)
@@ -107,6 +109,7 @@ func main() {
 		SandboxJWTAudience:           viper.GetString("sandbox.jwt.audience"),
 		SandboxJWTTTL:                viper.GetDuration("sandbox.jwt.ttl"),
 		SandboxJWTKID:                viper.GetString("sandbox.jwt.kid"),
+		HarudPort:                    viper.GetString("harud.port"),
 		DefaultAgentRuntimeName:      viper.GetString("agent_runtime.default_name"),
 		DefaultAgentRuntimeNamespace: viper.GetString("agent_runtime.default_namespace"),
 	}
