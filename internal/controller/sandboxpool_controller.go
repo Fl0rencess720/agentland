@@ -22,7 +22,9 @@ import (
 // SandboxPoolReconciler reconciles a SandboxPool object.
 type SandboxPoolReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme     *runtime.Scheme
+	HarudImage string
+	HarudPort  int32
 }
 
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxpools,verbs=get;list;watch;create;update;patch;delete
@@ -140,17 +142,25 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 				Command:         pool.Spec.Template.Command,
 				Args:            pool.Spec.Template.Args,
 				VolumeMounts: []corev1.VolumeMount{{
-					Name:      "sandbox-jwt-public-key",
+					Name:      sandboxJWTVolumeName,
 					MountPath: "/var/run/agentland/jwt",
 					ReadOnly:  true,
+				}, {
+					Name:      workspaceVolumeName,
+					MountPath: workspaceMountPath,
 				}},
-			}},
+			}, buildHarudContainer(r.HarudImage, r.HarudPort)},
 			Volumes: []corev1.Volume{{
-				Name: "sandbox-jwt-public-key",
+				Name: sandboxJWTVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName: "gateway-sandbox-jwt-public-key",
 					},
+				},
+			}, {
+				Name: workspaceVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
 			}},
 		},

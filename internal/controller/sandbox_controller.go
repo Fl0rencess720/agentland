@@ -28,8 +28,10 @@ import (
 // SandboxReconciler reconciles a Sandbox object.
 type SandboxReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Tracer trace.Tracer
+	Scheme     *runtime.Scheme
+	Tracer     trace.Tracer
+	HarudImage string
+	HarudPort  int32
 }
 
 func (r *SandboxReconciler) startSpan(ctx context.Context, name string) (context.Context, trace.Span) {
@@ -171,17 +173,25 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 				Command:         sandbox.Spec.Template.Command,
 				Args:            sandbox.Spec.Template.Args,
 				VolumeMounts: []corev1.VolumeMount{{
-					Name:      "sandbox-jwt-public-key",
+					Name:      sandboxJWTVolumeName,
 					MountPath: "/var/run/agentland/jwt",
 					ReadOnly:  true,
+				}, {
+					Name:      workspaceVolumeName,
+					MountPath: workspaceMountPath,
 				}},
-			}},
+			}, buildHarudContainer(r.HarudImage, r.HarudPort)},
 			Volumes: []corev1.Volume{{
-				Name: "sandbox-jwt-public-key",
+				Name: sandboxJWTVolumeName,
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName: "gateway-sandbox-jwt-public-key",
 					},
+				},
+			}, {
+				Name: workspaceVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
 			}},
 		},
