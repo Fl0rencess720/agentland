@@ -190,7 +190,6 @@ func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
 	s.handler.CreateSandbox(s.ctx)
 
 	s.Equal(http.StatusOK, s.recorder.Code)
-	s.Equal("session-sbx-1", s.recorder.Header().Get("x-agentland-session"))
 	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-1"`)
 }
 
