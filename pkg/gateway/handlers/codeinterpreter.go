@@ -49,15 +49,35 @@ type tokenSigner interface {
 	Sign(sessionID, subject string, version int64) (string, error)
 }
 
-type ExecuteCodeReq struct {
-	Language string `json:"language" binding:"required"`
-	Code     string `json:"code" binding:"required"`
+type CreateSandboxReq struct {
+	Language string `json:"language"`
 }
 
-type ExecuteCodeResp struct {
-	Stdout string `json:"stdout"`
-	Stderr string `json:"stderr"`
+type CreateSandboxResp struct {
+	SandboxID string `json:"sandbox_id"`
 }
+
+type CreateContextReq struct {
+	Language string `json:"language"`
+	CWD      string `json:"cwd,omitempty"`
+}
+
+type ExecuteContextReq struct {
+	Code      string `json:"code"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
+}
+
+type proxySandboxRequestOpts struct {
+	target       *url.URL
+	method       string
+	path         string
+	bodyBytes    []byte
+	sandboxToken string
+	sessionID    string
+	requestID    string
+}
+
+const sessionHeader = "x-agentland-session"
 
 func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 	h := &CodeInterpreterHandler{}
@@ -106,135 +126,245 @@ func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 
 	h.agentCoreServiceClient = pb.NewAgentCoreServiceClient(conn)
 
-	group.POST("/run", h.ExecuteCode)
+	// POST /code-runner/sandboxes 创建 CodeInterpreter 沙箱
+	group.POST("/sandboxes", h.CreateSandbox)
+	// POST /code-runner/contexts 在指定 sandbox 中创建可复用执行上下文
+	group.POST("/contexts", h.CreateContext)
+	// POST /code-runner/contexts/:contextId/execute 在 context 中执行代码
+	group.POST("/contexts/:contextId/execute", h.ExecuteInContext)
+	// DELETE /code-runner/contexts/:contextId 删除 context 并释放资源
+	group.DELETE("/contexts/:contextId", h.DeleteContext)
 }
 
-func (h *CodeInterpreterHandler) ExecuteCode(ctx *gin.Context) {
-	tracer := otel.Tracer("gateway.codeinterpreter")
-	reqCtx, reqSpan := tracer.Start(ctx.Request.Context(), "gateway.codeinterpreter.request")
-	defer reqSpan.End()
-
+func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
+	reqCtx := ctx.Request.Context()
 	requestID := observability.RequestIDFromContext(reqCtx)
-	reqCtx = observability.ContextWithRequestID(reqCtx, requestID)
-	ctx.Request = ctx.Request.WithContext(reqCtx)
 	ctx.Writer.Header().Set(observability.RequestIDHeader, requestID)
-	reqSpan.SetAttributes(attribute.String("request.id", requestID))
 
-	bodyBytes, err := io.ReadAll(ctx.Request.Body)
-	if err != nil {
-		zap.L().Error("Read request body failed", zap.Error(err))
-		reqSpan.RecordError(err)
-		reqSpan.SetStatus(codes.Error, "read request body failed")
+	var req CreateSandboxReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
 		response.ErrorResponse(ctx, response.FormError)
 		return
 	}
 
-	var req ExecuteCodeReq
-	if err := json.Unmarshal(bodyBytes, &req); err != nil || req.Language == "" || req.Code == "" {
-		zap.L().Error("Bind request failed", zap.Error(err))
-		if err != nil {
-			reqSpan.RecordError(err)
-		}
-		reqSpan.SetStatus(codes.Error, "invalid request payload")
+	// 检查语言是否支持
+	if req.Language != "python" {
 		response.ErrorResponse(ctx, response.FormError)
 		return
 	}
-	reqSpan.SetAttributes(attribute.String("sandbox.language", req.Language))
 
-	resolveCtx, resolveSpan := tracer.Start(reqCtx, "gateway.codeinterpreter.resolve_session")
-	ctx.Request = ctx.Request.WithContext(resolveCtx)
-	sandboxInfo, err := h.resolveSandbox(resolveCtx, ctx.GetHeader("x-agentland-session"), req.Language)
-	resolveSpan.End()
+	// 调用 agentcore 创建沙箱
+	sandboxInfo, err := h.createSandbox(reqCtx, req.Language)
 	if err != nil {
-		zap.L().Error("Resolve sandbox failed", zap.Error(err))
-		reqSpan.RecordError(err)
-		reqSpan.SetStatus(codes.Error, "resolve sandbox failed")
 		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
-	reqSpan.SetAttributes(attribute.String("agentland.session_id", sandboxInfo.SandboxID))
 
+	// 更新沙箱状态
 	if err := h.sessionStore.UpdateLatestActivity(reqCtx, sandboxInfo.SandboxID); err != nil {
 		zap.L().Warn("Update latest activity failed", zap.String("sandboxID", sandboxInfo.SandboxID), zap.Error(err))
 	}
 
+	response.SuccessResponse(ctx, CreateSandboxResp{
+		SandboxID: sandboxInfo.SandboxID,
+	})
+}
+
+func (h *CodeInterpreterHandler) CreateContext(ctx *gin.Context) {
+	reqCtx := ctx.Request.Context()
+	requestID := observability.RequestIDFromContext(reqCtx)
+	ctx.Writer.Header().Set(observability.RequestIDHeader, requestID)
+
+	// 读取请求体 Bytes
+	bodyBytes, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	var req CreateContextReq
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	// 检查语言是否支持
+	if req.Language != "python" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	// 从请求头获取 sessionID
+	sessionID := ctx.GetHeader(sessionHeader)
+	if sessionID == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	// 从 Redis 获取沙箱信息
+	sandboxInfo, err := h.sessionStore.GetSession(reqCtx, sessionID)
+	if err != nil {
+		if errors.Is(err, db.ErrSessionNotFound) {
+			response.ErrorResponse(ctx, response.FormError)
+			return
+		}
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+
+	// 更新沙箱状态
+	if err := h.sessionStore.UpdateLatestActivity(reqCtx, sandboxInfo.SandboxID); err != nil {
+		zap.L().Warn("Update latest activity failed", zap.String("sandboxID", sandboxInfo.SandboxID), zap.Error(err))
+	}
+
+	// 认证
 	sandboxToken, err := h.issueSandboxToken(sandboxInfo.SandboxID)
 	if err != nil {
-		zap.L().Error("Issue sandbox token failed", zap.String("sandboxID", sandboxInfo.SandboxID), zap.Error(err))
-		reqSpan.RecordError(err)
-		reqSpan.SetStatus(codes.Error, "issue sandbox token failed")
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+
+	// 解析反向代理请求目标
+	target, err := resolveSandboxTarget(sandboxInfo.GrpcEndpoint)
+	if err != nil {
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+
+	// 把当前 sandbox 会话 ID 回写到响应头里
+	ctx.Writer.Header().Set(sessionHeader, sandboxInfo.SandboxID)
+
+	// 反向代理到沙箱
+	h.proxySandboxRequest(ctx, proxySandboxRequestOpts{
+		target:       target,
+		method:       http.MethodPost,
+		path:         "/api/contexts",
+		bodyBytes:    bodyBytes,
+		sandboxToken: sandboxToken,
+		sessionID:    sandboxInfo.SandboxID,
+		requestID:    requestID,
+	})
+}
+
+func (h *CodeInterpreterHandler) ExecuteInContext(ctx *gin.Context) {
+	reqCtx := ctx.Request.Context()
+	requestID := observability.RequestIDFromContext(reqCtx)
+	ctx.Writer.Header().Set(observability.RequestIDHeader, requestID)
+
+	bodyBytes, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	var req ExecuteContextReq
+	if err := json.Unmarshal(bodyBytes, &req); err != nil || strings.TrimSpace(req.Code) == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	if req.TimeoutMs != 0 && (req.TimeoutMs < 100 || req.TimeoutMs > 300000) {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	sessionID := ctx.GetHeader(sessionHeader)
+	if sessionID == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+
+	sandboxInfo, err := h.sessionStore.GetSession(reqCtx, sessionID)
+	if err != nil {
+		if errors.Is(err, db.ErrSessionNotFound) {
+			response.ErrorResponse(ctx, response.FormError)
+			return
+		}
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+
+	if err := h.sessionStore.UpdateLatestActivity(reqCtx, sessionID); err != nil {
+		zap.L().Warn("Update latest activity failed", zap.String("sandboxID", sessionID), zap.Error(err))
+	}
+
+	sandboxToken, err := h.issueSandboxToken(sessionID)
+	if err != nil {
 		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
 
 	target, err := resolveSandboxTarget(sandboxInfo.GrpcEndpoint)
 	if err != nil {
-		zap.L().Error("Parse sandbox url failed", zap.Error(err))
-		reqSpan.RecordError(err)
-		reqSpan.SetStatus(codes.Error, "invalid sandbox endpoint")
 		response.ErrorResponse(ctx, response.ServerError)
 		return
 	}
-	reqSpan.SetAttributes(attribute.String("sandbox.endpoint", target.String()))
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = h.sandboxTransport
-	proxyCtx, proxySpan := tracer.Start(reqCtx, "gateway.codeinterpreter.proxy_execute")
-	defer proxySpan.End()
-
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Method = http.MethodPost
-		req.URL.Path = "/api/execute"
-		req.Host = target.Host
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		req.ContentLength = int64(len(bodyBytes))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Del("Authorization")
-		if sandboxToken != "" {
-			req.Header.Set("Authorization", "Bearer "+sandboxToken)
-		}
-		req.Header.Set(observability.RequestIDHeader, requestID)
-		otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-		req.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
-		}
+	contextID := ctx.Param("contextId")
+	if contextID == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
 	}
 
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		resp.Header.Set("x-agentland-session", sandboxInfo.SandboxID)
-		proxySpan.SetAttributes(attribute.Int("sandbox.execute.status_code", resp.StatusCode))
-		return nil
-	}
+	ctx.Writer.Header().Set(sessionHeader, sessionID)
 
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		zap.L().Error("Reverse proxy execute failed", zap.Error(err))
-		proxySpan.RecordError(err)
-		proxySpan.SetStatus(codes.Error, "sandbox proxy failed")
-		http.Error(w, "sandbox unreachable", http.StatusBadGateway)
-	}
-
-	ctx.Request = ctx.Request.WithContext(proxyCtx)
-	proxy.ServeHTTP(closeNotifySafeWriter{ResponseWriter: ctx.Writer}, ctx.Request)
+	h.proxySandboxRequest(ctx, proxySandboxRequestOpts{
+		target:       target,
+		method:       http.MethodPost,
+		path:         "/api/contexts/" + contextID + "/execute",
+		bodyBytes:    bodyBytes,
+		sandboxToken: sandboxToken,
+		sessionID:    sessionID,
+		requestID:    requestID,
+	})
 }
 
-func (h *CodeInterpreterHandler) resolveSandbox(ctx context.Context, sessionID, language string) (*db.SandboxInfo, error) {
+func (h *CodeInterpreterHandler) DeleteContext(ctx *gin.Context) {
+	reqCtx := ctx.Request.Context()
+	requestID := observability.RequestIDFromContext(reqCtx)
+	ctx.Writer.Header().Set(observability.RequestIDHeader, requestID)
+
+	sessionID := strings.TrimSpace(ctx.GetHeader(sessionHeader))
 	if sessionID == "" {
-		return h.createSandbox(ctx, language)
+		response.ErrorResponse(ctx, response.FormError)
+		return
 	}
-
-	sandboxInfo, err := h.sessionStore.GetSession(ctx, sessionID)
-	if err == nil {
-		return sandboxInfo, nil
+	sandboxInfo, err := h.sessionStore.GetSession(reqCtx, sessionID)
+	if err != nil {
+		if errors.Is(err, db.ErrSessionNotFound) {
+			response.ErrorResponse(ctx, response.FormError)
+			return
+		}
+		response.ErrorResponse(ctx, response.ServerError)
+		return
 	}
-
-	if !errors.Is(err, db.ErrSessionNotFound) {
-		return nil, fmt.Errorf("get sandbox info failed: %w", err)
+	if err := h.sessionStore.UpdateLatestActivity(reqCtx, sessionID); err != nil {
+		zap.L().Warn("Update latest activity failed", zap.String("sandboxID", sessionID), zap.Error(err))
 	}
-
-	zap.L().Warn("Session not found, creating new sandbox", zap.String("sessionID", sessionID))
-	return h.createSandbox(ctx, language)
+	sandboxToken, err := h.issueSandboxToken(sessionID)
+	if err != nil {
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+	target, err := resolveSandboxTarget(sandboxInfo.GrpcEndpoint)
+	if err != nil {
+		response.ErrorResponse(ctx, response.ServerError)
+		return
+	}
+	contextID := strings.TrimSpace(ctx.Param("contextId"))
+	if contextID == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+	ctx.Writer.Header().Set(sessionHeader, sessionID)
+	h.proxySandboxRequest(ctx, proxySandboxRequestOpts{
+		target:       target,
+		method:       http.MethodDelete,
+		path:         "/api/contexts/" + contextID,
+		sandboxToken: sandboxToken,
+		sessionID:    sessionID,
+		requestID:    requestID,
+	})
 }
 
 func (h *CodeInterpreterHandler) createSandbox(ctx context.Context, language string) (*db.SandboxInfo, error) {
@@ -272,6 +402,53 @@ func (h *CodeInterpreterHandler) issueSandboxToken(sessionID string) (string, er
 		return "", err
 	}
 	return token, nil
+}
+
+func (h *CodeInterpreterHandler) proxySandboxRequest(ctx *gin.Context, opts proxySandboxRequestOpts) {
+	proxy := httputil.NewSingleHostReverseProxy(opts.target)
+	proxy.Transport = h.sandboxTransport
+
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Method = opts.method
+		req.URL.Path = opts.path
+		req.Host = opts.target.Host
+		req.URL.RawQuery = ctx.Request.URL.RawQuery
+		req.Header = ctx.Request.Header.Clone()
+		req.Header.Del("Authorization")
+		if opts.sandboxToken != "" {
+			req.Header.Set("Authorization", "Bearer "+opts.sandboxToken)
+		}
+		req.Header.Set(observability.RequestIDHeader, opts.requestID)
+		if opts.sessionID != "" {
+			req.Header.Set(sessionHeader, opts.sessionID)
+		}
+		otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+
+		if opts.bodyBytes != nil {
+			req.Body = io.NopCloser(bytes.NewReader(opts.bodyBytes))
+			req.ContentLength = int64(len(opts.bodyBytes))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(opts.bodyBytes)), nil
+			}
+			req.Header.Set("Content-Type", "application/json")
+		}
+	}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if opts.sessionID != "" {
+			resp.Header.Set(sessionHeader, opts.sessionID)
+		}
+		return nil
+	}
+
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		zap.L().Error("Reverse proxy request failed", zap.Error(err))
+		response.ErrorResponse(ctx, response.ServerError)
+	}
+
+	proxy.ServeHTTP(closeNotifySafeWriter{ResponseWriter: ctx.Writer}, ctx.Request)
 }
 
 func resolveSandboxTarget(endpoint string) (*url.URL, error) {

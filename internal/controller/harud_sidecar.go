@@ -35,7 +35,7 @@ func buildHarudContainer(image string, port int32) corev1.Container {
 	return corev1.Container{
 		Name:            harudContainerName,
 		Image:           harudImageOrDefault(image),
-		ImagePullPolicy: corev1.PullIfNotPresent,
+		ImagePullPolicy: corev1.PullAlways,
 		Ports: []corev1.ContainerPort{{
 			Name:          "harud-http",
 			ContainerPort: harudPortOrDefault(port),

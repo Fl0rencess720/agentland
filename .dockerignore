@@ -9,3 +9,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include embedded helper scripts required by go:embed
+!pkg/korokd/handlers/ipykernel_helper.py

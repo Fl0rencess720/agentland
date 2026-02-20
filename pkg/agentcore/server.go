@@ -32,6 +32,8 @@ type Server struct {
 
 	sessionStore sessionStore
 
+	korokdImage string
+
 	warmPoolEnabled     bool
 	warmPoolDefaultMode string
 	warmPoolPoolRef     string
@@ -65,6 +67,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		listener:     lis,
 		k8sClient:    cfg.K8sClient,
 		sessionStore: db.NewSessionStore(),
+		korokdImage:  cfg.KorokdImage,
 
 		warmPoolEnabled:     cfg.WarmPoolEnabled,
 		warmPoolDefaultMode: cfg.WarmPoolDefaultMode,

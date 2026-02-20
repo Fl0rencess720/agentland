@@ -7,6 +7,8 @@ type Config struct {
 
 	K8sClient *dynamic.DynamicClient
 
+	KorokdImage string
+
 	WarmPoolEnabled     bool
 	WarmPoolDefaultMode string
 	WarmPoolPoolRef     string

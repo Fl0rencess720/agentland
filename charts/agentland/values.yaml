@@ -32,9 +32,9 @@ agentcore:
     name: controller-manager
     replicas: 1
     image:
-      repository: agentland-agentcore
+      repository: fl0rences720/agentland-agentcore
       tag: latest
-      pullPolicy: IfNotPresent
+      pullPolicy: Always
     args:
       - --metrics-bind-address=:8443
       - --leader-elect
@@ -44,7 +44,8 @@ agentcore:
       AL_REDIS_ADDR: ""
       AL_REDIS_PASSWORD: ""
       AL_REDIS_DB: "0"
-      AL_HARUD_IMAGE: "harud:latest"
+      AL_KOROKD_IMAGE: "fl0rences720/agentland-korokd:latest"
+      AL_HARUD_IMAGE: "fl0rences720/agentland-harud:latest"
       AL_HARUD_PORT: "1885"
       AL_OTEL_ENABLED: "false"
       AL_OTEL_EXPORTER_OTLP_ENDPOINT: "tempo.grafana.svc.cluster.local:4317"
@@ -100,9 +101,9 @@ gateway:
     name: gateway
     replicas: 1
     image:
-      repository: agentland-gateway
+      repository: fl0rences720/agentland-gateway
       tag: latest
-      pullPolicy: IfNotPresent
+      pullPolicy: Always
     args:
       - --port=8080
     env:

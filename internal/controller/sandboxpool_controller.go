@@ -138,7 +138,7 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 			Containers: []corev1.Container{{
 				Name:            "main",
 				Image:           pool.Spec.Template.Image,
-				ImagePullPolicy: corev1.PullIfNotPresent,
+				ImagePullPolicy: corev1.PullAlways,
 				Command:         pool.Spec.Template.Command,
 				Args:            pool.Spec.Template.Args,
 				VolumeMounts: []corev1.VolumeMount{{

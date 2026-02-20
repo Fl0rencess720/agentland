@@ -127,203 +127,141 @@ func (s *CodeInterpreterSuite) SetupTest() {
 	}
 }
 
-func (s *CodeInterpreterSuite) TestExecuteCode_BindError() {
-	req := httptest.NewRequest("POST", "/run", bytes.NewBufferString("{bad_json"))
-	req.Header.Set("Content-Type", "application/json")
-	s.ctx.Request = req
-
-	s.handler.ExecuteCode(s.ctx)
-
-	s.Equal(400, s.recorder.Code)
-	s.mockAgentCoreClient.AssertNotCalled(s.T(), "CreateCodeInterpreter")
-}
-
-func (s *CodeInterpreterSuite) TestExecuteCode_CreateSandboxError() {
-	reqBody := ExecuteCodeReq{Language: "python", Code: "print('hello')"}
-	jsonBytes, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
-	req.Header.Set("Content-Type", "application/json")
-	s.ctx.Request = req
-
-	s.mockAgentCoreClient.On("CreateCodeInterpreter",
-		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "python"},
-	).Return(nil, errors.New("rpc connection failed"))
-
-	s.handler.ExecuteCode(s.ctx)
-
-	s.Equal(500, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), "Server Error")
-}
-
-func (s *CodeInterpreterSuite) TestExecuteCode_EmptyEndpointError() {
-	reqBody := ExecuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
-	jsonBytes, _ := json.Marshal(reqBody)
-	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
-	req.Header.Set("Content-Type", "application/json")
-	s.ctx.Request = req
-
-	s.mockAgentCoreClient.On("CreateCodeInterpreter",
-		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "go"},
-	).Return(&pb.CreateSandboxResponse{
-		SandboxId:    "sandbox-uuid-1234",
-		GrpcEndpoint: "",
-	}, nil)
-
-	s.handler.ExecuteCode(s.ctx)
-
-	s.Equal(500, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), "Server Error")
-}
-
-func (s *CodeInterpreterSuite) TestExecuteCode_ProxySuccess() {
-	reqBody := ExecuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
-	jsonBytes, _ := json.Marshal(reqBody)
-
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		s.Equal(http.MethodPost, r.Method)
-		s.Equal("/api/execute", r.URL.Path)
-		s.Equal("application/json", r.Header.Get("Content-Type"))
-
-		body, err := io.ReadAll(r.Body)
-		s.NoError(err)
-		s.JSONEq(string(jsonBytes), string(body))
-
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"exit_code":0,"stdout":"1\n","stderr":""}`)),
-		}
-		resp.Header.Set("Content-Type", "application/json")
-		return resp, nil
-	})
-
-	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
-	req.Header.Set("Content-Type", "application/json")
-	s.ctx.Request = req
-
-	s.mockAgentCoreClient.On("CreateCodeInterpreter",
-		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "go"},
-	).Return(&pb.CreateSandboxResponse{
-		SandboxId:    "sandbox-uuid-1234",
-		GrpcEndpoint: "sandbox.test:1883",
-	}, nil)
-
-	s.handler.ExecuteCode(s.ctx)
-
-	s.Equal(200, s.recorder.Code)
-	s.JSONEq(`{"exit_code":0,"stdout":"1\n","stderr":""}`, s.recorder.Body.String())
-}
-
-func (s *CodeInterpreterSuite) TestExecuteCode_ProxyUnreachable() {
-	reqBody := ExecuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
-	jsonBytes, _ := json.Marshal(reqBody)
-
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return nil, errors.New("dial tcp: connection refused")
-	})
-
-	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
-	req.Header.Set("Content-Type", "application/json")
-	s.ctx.Request = req
-
-	s.mockAgentCoreClient.On("CreateCodeInterpreter",
-		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "go"},
-	).Return(&pb.CreateSandboxResponse{
-		SandboxId:    "sandbox-uuid-1234",
-		GrpcEndpoint: "sandbox.test:1883",
-	}, nil)
-
-	s.handler.ExecuteCode(s.ctx)
-
-	s.Equal(502, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), "sandbox unreachable")
-}
-
-func (s *CodeInterpreterSuite) TestExecuteCode_InjectsSandboxJWTAuthorizationHeader() {
-	reqBody := ExecuteCodeReq{Language: "go", Code: "fmt.Println(1)"}
-	jsonBytes, _ := json.Marshal(reqBody)
-
-	s.handler.sandboxTokenSigner = &mockTokenSigner{
-		signFn: func(sessionID, subject string, version int64) (string, error) {
-			s.Equal("sandbox-uuid-1234", sessionID)
-			return "sandbox.jwt.token", nil
-		},
-	}
-
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		s.Equal("Bearer sandbox.jwt.token", r.Header.Get("Authorization"))
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"exit_code":0,"stdout":"1\n","stderr":""}`)),
-		}
-		resp.Header.Set("Content-Type", "application/json")
-		return resp, nil
-	})
-
-	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer client-token")
-	s.ctx.Request = req
-
-	s.mockAgentCoreClient.On("CreateCodeInterpreter",
-		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "go"},
-	).Return(&pb.CreateSandboxResponse{
-		SandboxId:    "sandbox-uuid-1234",
-		GrpcEndpoint: "sandbox.test:1883",
-	}, nil)
-
-	s.handler.ExecuteCode(s.ctx)
-
-	s.Equal(200, s.recorder.Code)
-}
-
-func (s *CodeInterpreterSuite) TestExecuteCode_SessionNotFoundFallbackCreateSandbox() {
-	reqBody := ExecuteCodeReq{Language: "python", Code: "print(1+2)"}
+func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
+	reqBody := CreateContextReq{Language: "python", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
 		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
-			s.Equal("stale-session", sandboxID)
-			return nil, db.ErrSessionNotFound
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{
+				SandboxID:    "session-1",
+				GrpcEndpoint: "sandbox.test:1883",
+			}, nil
 		},
 	}
 
 	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, r.Method)
+		s.Equal("/api/contexts", r.URL.Path)
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
 		body, err := io.ReadAll(r.Body)
 		s.NoError(err)
 		s.JSONEq(string(jsonBytes), string(body))
 		resp := &http.Response{
-			StatusCode: http.StatusOK,
+			StatusCode: http.StatusCreated,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"exit_code":0,"stdout":"3\n","stderr":""}`)),
+			Body: io.NopCloser(strings.NewReader(
+				`{"context_id":"ctx-1","language":"python","cwd":"/workspace","state":"ready","created_at":"2026-02-17T08:30:00Z"}`,
+			)),
 		}
 		resp.Header.Set("Content-Type", "application/json")
 		return resp, nil
 	})
 
-	req := httptest.NewRequest("POST", "/run", bytes.NewBuffer(jsonBytes))
+	req := httptest.NewRequest("POST", "/contexts", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-agentland-session", "stale-session")
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+
+	s.handler.CreateContext(s.ctx)
+
+	s.Equal(http.StatusCreated, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
+}
+
+func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
+	reqBody := CreateSandboxReq{Language: "python"}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/sandboxes", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
 	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
 		&pb.CreateSandboxRequest{Language: "python"},
 	).Return(&pb.CreateSandboxResponse{
-		SandboxId:    "session-new123",
+		SandboxId:    "session-sbx-1",
 		GrpcEndpoint: "sandbox.test:1883",
 	}, nil).Once()
 
-	s.handler.ExecuteCode(s.ctx)
+	s.handler.CreateSandbox(s.ctx)
 
-	s.Equal(200, s.recorder.Code)
-	s.Equal("session-new123", s.recorder.Header().Get("x-agentland-session"))
-	s.JSONEq(`{"exit_code":0,"stdout":"3\n","stderr":""}`, s.recorder.Body.String())
-	s.mockAgentCoreClient.AssertExpectations(s.T())
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-sbx-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-1"`)
+}
+
+func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
+	reqBody := CreateContextReq{Language: "python", CWD: "/workspace"}
+	jsonBytes, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/contexts", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	s.ctx.Request = req
+
+	s.handler.CreateContext(s.ctx)
+
+	s.Equal(http.StatusBadRequest, s.recorder.Code)
+	s.Contains(s.recorder.Body.String(), `"msg":"Form Error"`)
+}
+
+func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
+	reqBody := ExecuteContextReq{Code: "print(1)"}
+	jsonBytes, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest("POST", "/contexts/ctx-1/execute", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	s.ctx.Request = req
+	s.ctx.Params = gin.Params{{Key: "contextId", Value: "ctx-1"}}
+
+	s.handler.ExecuteInContext(s.ctx)
+
+	s.Equal(http.StatusBadRequest, s.recorder.Code)
+	s.Contains(s.recorder.Body.String(), `"msg":"Form Error"`)
+}
+
+func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
+	reqBody := ExecuteContextReq{Code: "print(1)", TimeoutMs: 30000}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{
+				SandboxID:    "session-1",
+				GrpcEndpoint: "sandbox.test:1883",
+			}, nil
+		},
+	}
+
+	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, r.Method)
+		s.Equal("/api/contexts/ctx-1/execute", r.URL.Path)
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
+		body, err := io.ReadAll(r.Body)
+		s.NoError(err)
+		s.JSONEq(string(jsonBytes), string(body))
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"context_id":"ctx-1","execution_count":1,"exit_code":0,"stdout":"1\n","stderr":"","duration_ms":5}`,
+			)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest("POST", "/contexts/ctx-1/execute", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+	s.ctx.Params = gin.Params{{Key: "contextId", Value: "ctx-1"}}
+
+	s.handler.ExecuteInContext(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
 }

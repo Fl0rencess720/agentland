@@ -110,6 +110,7 @@ func main() {
 	_ = viper.BindEnv("warm_pool.default_mode", "AL_WARMPOOL_DEFAULT_MODE")
 	_ = viper.BindEnv("warm_pool.pool_ref", "AL_WARMPOOL_POOL_REF")
 	_ = viper.BindEnv("warm_pool.profile", "AL_WARMPOOL_PROFILE")
+	_ = viper.BindEnv("korokd.image", "AL_KOROKD_IMAGE")
 	_ = viper.BindEnv("harud.image", "AL_HARUD_IMAGE")
 	_ = viper.BindEnv("harud.port", "AL_HARUD_PORT")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
@@ -120,6 +121,7 @@ func main() {
 	viper.SetDefault("warm_pool.default_mode", "PoolPreferred")
 	viper.SetDefault("warm_pool.pool_ref", "")
 	viper.SetDefault("warm_pool.profile", "default")
+	viper.SetDefault("korokd.image", "korokd:latest")
 	viper.SetDefault("harud.image", "harud:latest")
 	viper.SetDefault("harud.port", 1885)
 	viper.SetDefault("otel.enabled", false)
@@ -303,6 +305,7 @@ func main() {
 	agentCoreCfg := &config.Config{
 		Port:                agentCorePort,
 		K8sClient:           k8sClient,
+		KorokdImage:         viper.GetString("korokd.image"),
 		WarmPoolEnabled:     viper.GetBool("warm_pool.enabled"),
 		WarmPoolDefaultMode: viper.GetString("warm_pool.default_mode"),
 		WarmPoolPoolRef:     viper.GetString("warm_pool.pool_ref"),
