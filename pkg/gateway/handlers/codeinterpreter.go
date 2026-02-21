@@ -44,6 +44,12 @@ type ExecuteInContextReq struct {
 	TimeoutMs int    `json:"timeout_ms,omitempty"`
 }
 
+type WriteFSFileReq struct {
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Encoding string `json:"encoding,omitempty"`
+}
+
 // InitCodeInterpreterApi 注册路由并在内部完成 Handler 字段的初始化
 func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 	client, err := BuildAgentCoreClient(viper.GetString("agentcore.address"))
@@ -72,6 +78,9 @@ func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 
 	group.GET("/fs/tree", h.GetFSTree)
 	group.GET("/fs/file", h.GetFSFile)
+	group.POST("/fs/file", h.WriteFSFile)
+	group.POST("/fs/upload", h.UploadFSFile)
+	group.GET("/fs/download", h.DownloadFSFile)
 }
 
 func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
@@ -154,6 +163,33 @@ func (h *CodeInterpreterHandler) GetFSTree(ctx *gin.Context) {
 
 func (h *CodeInterpreterHandler) GetFSFile(ctx *gin.Context) {
 	h.forwardToSandbox(ctx, ctx.Request.Method, "/api/fs/file", nil)
+}
+
+func (h *CodeInterpreterHandler) WriteFSFile(ctx *gin.Context) {
+	var req WriteFSFileReq
+	bodyBytes, ok := bindJSONWithBody(ctx, &req)
+	if !ok || strings.TrimSpace(req.Path) == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+	h.forwardToSandbox(ctx, http.MethodPost, "/api/fs/file", bodyBytes)
+}
+
+func (h *CodeInterpreterHandler) UploadFSFile(ctx *gin.Context) {
+	contentType := strings.ToLower(strings.TrimSpace(ctx.GetHeader("Content-Type")))
+	if !strings.HasPrefix(contentType, "multipart/form-data") {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+	h.forwardToSandbox(ctx, http.MethodPost, "/api/fs/upload", nil)
+}
+
+func (h *CodeInterpreterHandler) DownloadFSFile(ctx *gin.Context) {
+	if strings.TrimSpace(ctx.Query("path")) == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+	h.forwardToSandbox(ctx, http.MethodGet, "/api/fs/download", nil)
 }
 
 func (h *CodeInterpreterHandler) forwardToSandbox(ctx *gin.Context, method, path string, body []byte) {

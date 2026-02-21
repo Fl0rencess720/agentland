@@ -31,3 +31,6 @@ go.work
 
 # playground
 playground/
+
+# local agent instructions
+AGENTS.md
