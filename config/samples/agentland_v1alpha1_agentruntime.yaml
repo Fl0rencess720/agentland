@@ -8,4 +8,4 @@ metadata:
   namespace: agentland-sandboxes
 spec:
   sandboxTemplate:
-    image: korokd:latest
+    image: fl0rences720/agentland-korokd:latest

@@ -116,7 +116,13 @@ func (e *ProxyEngine) Forward(ctx *gin.Context, cfg ProxyConfig) {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		zap.L().Error("Reverse proxy request failed", zap.String("target", cfg.Target.String()), zap.Error(err))
+		zap.L().Error(
+			"Reverse proxy request failed",
+			zap.String("target", cfg.Target.String()),
+			zap.String("session_id", cfg.SessionID),
+			zap.String("request_id", cfg.RequestID),
+			zap.Error(err),
+		)
 		http.Error(w, "sandbox unreachable", http.StatusBadGateway)
 	}
 
