@@ -2,12 +2,16 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Fl0rencess720/agentland/pkg/common/sandboxtoken"
 	"github.com/gin-gonic/gin"
 )
 
-const claimsContextKey = "sandboxJWTClaims"
+const (
+	claimsContextKey = "sandboxJWTClaims"
+	sessionHeaderKey = "x-agentland-session"
+)
 
 type tokenVerifier interface {
 	Verify(token string) (*sandboxtoken.Claims, error)
@@ -29,6 +33,16 @@ func SandboxAuth(verifier tokenVerifier) gin.HandlerFunc {
 		claims, err := verifier.Verify(token)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid sandbox token"})
+			return
+		}
+
+		sessionID := strings.TrimSpace(c.GetHeader(sessionHeaderKey))
+		if sessionID == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "missing x-agentland-session header"})
+			return
+		}
+		if claims.SessionID != sessionID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "session header does not match sandbox token"})
 			return
 		}
 

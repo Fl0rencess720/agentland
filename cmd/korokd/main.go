@@ -29,11 +29,15 @@ func main() {
 	_ = viper.BindEnv("sandbox.jwt.issuer", "AL_SANDBOX_JWT_ISSUER")
 	_ = viper.BindEnv("sandbox.jwt.audience", "AL_SANDBOX_JWT_AUDIENCE")
 	_ = viper.BindEnv("sandbox.jwt.clock_skew", "AL_SANDBOX_JWT_CLOCK_SKEW")
+	_ = viper.BindEnv("korokd.workspace_root", "AL_KOROKD_WORKSPACE_ROOT")
+	_ = viper.BindEnv("korokd.max_file_bytes", "AL_KOROKD_MAX_FILE_BYTES")
 
 	viper.SetDefault("sandbox.jwt.public_key_path", "/var/run/agentland/jwt/public.pem")
 	viper.SetDefault("sandbox.jwt.issuer", "agentland-gateway")
 	viper.SetDefault("sandbox.jwt.audience", "sandbox")
 	viper.SetDefault("sandbox.jwt.clock_skew", "30s")
+	viper.SetDefault("korokd.workspace_root", "/workspace")
+	viper.SetDefault("korokd.max_file_bytes", 1048576)
 
 	cfg := &config.Config{
 		Port:                 *port,
@@ -41,6 +45,8 @@ func main() {
 		SandboxJWTIssuer:     viper.GetString("sandbox.jwt.issuer"),
 		SandboxJWTAudience:   viper.GetString("sandbox.jwt.audience"),
 		SandboxJWTClockSkew:  viper.GetDuration("sandbox.jwt.clock_skew"),
+		WorkspaceRoot:        viper.GetString("korokd.workspace_root"),
+		MaxFileBytes:         viper.GetInt64("korokd.max_file_bytes"),
 	}
 	server, err := korokd.NewServer(cfg)
 	if err != nil {

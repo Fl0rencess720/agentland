@@ -1,11 +1,13 @@
 apiVersion: agentland.fl0rencess720.app/v1alpha1
-kind: AgentRuntime
+kind: SandboxPool
 metadata:
   labels:
     app.kubernetes.io/name: agentland
     app.kubernetes.io/managed-by: kustomize
-  name: default-runtime
+  name: sandboxpool-sample
   namespace: agentland-sandboxes
 spec:
+  replicas: 2
+  profile: default
   sandboxTemplate:
     image: fl0rences720/agentland-korokd:latest

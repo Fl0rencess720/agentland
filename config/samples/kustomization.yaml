@@ -3,4 +3,5 @@ resources:
 - agentland_v1alpha1_agentruntime.yaml
 - agentland_v1alpha1_agentsession.yaml
 - agentland_v1alpha1_codeinterpreter.yaml
+- agentland_v1alpha1_sandboxpool.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -34,8 +34,6 @@ spec:
               value: {{ .Values.gateway.deployment.env.AL_REDIS_DB | quote }}
             - name: AL_AGENTCORE_ADDRESS
               value: {{ default (printf "%s:%v" (include "agentland.componentName" (dict "root" . "name" .Values.agentcore.agentcoreService.name)) .Values.agentcore.agentcoreService.port) .Values.gateway.deployment.env.AL_AGENTCORE_ADDRESS | quote }}
-            - name: AL_HARUD_PORT
-              value: {{ default "1885" .Values.gateway.deployment.env.AL_HARUD_PORT | quote }}
             - name: AL_OTEL_ENABLED
               value: {{ .Values.gateway.deployment.env.AL_OTEL_ENABLED | quote }}
             - name: AL_OTEL_EXPORTER_OTLP_ENDPOINT

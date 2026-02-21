@@ -38,6 +38,8 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	api := r.Group("/api")
 	api.Use(middleware.SandboxAuth(verifier))
 	handlers.InitCodeInterpreterApi(api)
+	handlers.InitFSApi(api, cfg.WorkspaceRoot, cfg.MaxFileBytes)
+	handlers.InitProxyApi(api, handlers.ProxyOptions{})
 
 	s.httpServer = &http.Server{
 		Addr:              ":" + cfg.Port,

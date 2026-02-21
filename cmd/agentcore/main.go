@@ -110,8 +110,7 @@ func main() {
 	_ = viper.BindEnv("warm_pool.default_mode", "AL_WARMPOOL_DEFAULT_MODE")
 	_ = viper.BindEnv("warm_pool.pool_ref", "AL_WARMPOOL_POOL_REF")
 	_ = viper.BindEnv("warm_pool.profile", "AL_WARMPOOL_PROFILE")
-	_ = viper.BindEnv("harud.image", "AL_HARUD_IMAGE")
-	_ = viper.BindEnv("harud.port", "AL_HARUD_PORT")
+	_ = viper.BindEnv("korokd.image", "AL_KOROKD_IMAGE")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
 	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
 	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
@@ -120,8 +119,7 @@ func main() {
 	viper.SetDefault("warm_pool.default_mode", "PoolPreferred")
 	viper.SetDefault("warm_pool.pool_ref", "")
 	viper.SetDefault("warm_pool.profile", "default")
-	viper.SetDefault("harud.image", "harud:latest")
-	viper.SetDefault("harud.port", 1885)
+	viper.SetDefault("korokd.image", "korokd:latest")
 	viper.SetDefault("otel.enabled", false)
 	viper.SetDefault("otel.endpoint", "otel-collector:4317")
 	viper.SetDefault("otel.insecure", true)
@@ -266,20 +264,16 @@ func main() {
 	}
 
 	if err := (&controller.SandboxReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		HarudImage: viper.GetString("harud.image"),
-		HarudPort:  int32(viper.GetInt("harud.port")),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
 		os.Exit(1)
 	}
 
 	if err := (&controller.SandboxPoolReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
-		HarudImage: viper.GetString("harud.image"),
-		HarudPort:  int32(viper.GetInt("harud.port")),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SandboxPool")
 		os.Exit(1)
@@ -303,6 +297,7 @@ func main() {
 	agentCoreCfg := &config.Config{
 		Port:                agentCorePort,
 		K8sClient:           k8sClient,
+		KorokdImage:         viper.GetString("korokd.image"),
 		WarmPoolEnabled:     viper.GetBool("warm_pool.enabled"),
 		WarmPoolDefaultMode: viper.GetString("warm_pool.default_mode"),
 		WarmPoolPoolRef:     viper.GetString("warm_pool.pool_ref"),

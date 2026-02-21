@@ -23,7 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-var KorokdPort = ":1883"
+var (
+	KorokdPort  = ":1883"
+	KorokdImage = "korokd:latest"
+)
 
 var codeInterpreterGVR = schema.GroupVersionResource{
 	Group:    "agentland.fl0rencess720.app",
@@ -49,6 +52,11 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 		attribute.String("sandbox.language", req.GetLanguage()),
 	)
 
+	korokdImage := s.korokdImage
+	if korokdImage == "" {
+		korokdImage = KorokdImage
+	}
+
 	cr := &v1alpha1.CodeInterpreter{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: codeInterpreterGVR.GroupVersion().String(),
@@ -61,7 +69,7 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
 			Template: &v1alpha1.SandboxTemplate{
-				Image:   "korokd:latest",
+				Image:   korokdImage,
 				Command: []string{},
 				Args:    []string{},
 			},

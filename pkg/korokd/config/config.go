@@ -9,4 +9,7 @@ type Config struct {
 	SandboxJWTIssuer     string        `json:"sandbox_jwt_issuer"`
 	SandboxJWTAudience   string        `json:"sandbox_jwt_audience"`
 	SandboxJWTClockSkew  time.Duration `json:"sandbox_jwt_clock_skew"`
+
+	WorkspaceRoot string `json:"workspace_root"`
+	MaxFileBytes  int64  `json:"max_file_bytes"`
 }
