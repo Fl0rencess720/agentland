@@ -62,10 +62,56 @@ func TestSandboxAuth_AcceptsValidToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/execute", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("x-agentland-session", "session-1")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestSandboxAuth_RejectMissingSessionHeader(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+
+	signer, verifier := newSignerAndVerifier(t)
+	token, err := signer.Sign("session-1", "", 0)
+	require.NoError(t, err)
+
+	router := gin.New()
+	router.Use(SandboxAuth(verifier))
+	router.POST("/api/execute", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/execute", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), "missing x-agentland-session header")
+}
+
+func TestSandboxAuth_RejectSessionHeaderMismatch(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+
+	signer, verifier := newSignerAndVerifier(t)
+	token, err := signer.Sign("session-1", "", 0)
+	require.NoError(t, err)
+
+	router := gin.New()
+	router.Use(SandboxAuth(verifier))
+	router.POST("/api/execute", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/execute", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("x-agentland-session", "session-2")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), "session header does not match sandbox token")
 }
 
 func newSignerAndVerifier(t *testing.T) (*sandboxtoken.Signer, *sandboxtoken.Verifier) {

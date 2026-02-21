@@ -40,10 +40,6 @@ spec:
               value: {{ .Values.agentcore.deployment.env.AL_REDIS_DB | quote }}
             - name: AL_KOROKD_IMAGE
               value: {{ default "fl0rences720/agentland-korokd:latest" .Values.agentcore.deployment.env.AL_KOROKD_IMAGE | quote }}
-            - name: AL_HARUD_IMAGE
-              value: {{ default "fl0rences720/agentland-harud:latest" .Values.agentcore.deployment.env.AL_HARUD_IMAGE | quote }}
-            - name: AL_HARUD_PORT
-              value: {{ default "1885" .Values.agentcore.deployment.env.AL_HARUD_PORT | quote }}
             - name: AL_OTEL_ENABLED
               value: {{ .Values.agentcore.deployment.env.AL_OTEL_ENABLED | quote }}
             - name: AL_OTEL_EXPORTER_OTLP_ENDPOINT

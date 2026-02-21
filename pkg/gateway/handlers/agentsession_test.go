@@ -42,13 +42,12 @@ func (s *AgentSessionHandlerSuite) SetupTest() {
 	s.mockAgentCoreClient = new(MockAgentCoreServiceClient)
 
 	s.handler = &AgentSessionHandler{
-		agentCoreServiceClient: s.mockAgentCoreClient,
-		sandboxTransport:       http.DefaultTransport,
-		sessionStore:           &mockSessionStore{},
-		defaultRuntimeName:     "default-runtime",
-		defaultRuntimeNS:       "agentland-sandboxes",
-		harudPort:              "1885",
-		sandboxTokenSigner: &mockTokenSigner{
+		agentCoreClient:    s.mockAgentCoreClient,
+		proxyEngine:        &ProxyEngine{Transport: http.DefaultTransport},
+		sessionStore:       &mockSessionStore{},
+		defaultRuntimeName: "default-runtime",
+		defaultRuntimeNS:   "agentland-sandboxes",
+		tokenSigner: &mockTokenSigner{
 			signFn: func(sessionID, subject string, version int64) (string, error) {
 				return "agent.jwt.token", nil
 			},
@@ -60,7 +59,7 @@ func (s *AgentSessionHandlerSuite) TestInvoke_CreateSessionAndProxy() {
 	payload := map[string]any{"prompt": "hello"}
 	jsonBytes, _ := json.Marshal(payload)
 
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodPost, r.Method)
 		s.Equal("/chat", r.URL.Path)
 		s.Equal("trace=1", r.URL.RawQuery)
@@ -111,7 +110,7 @@ func (s *AgentSessionHandlerSuite) TestInvoke_ReuseSessionFromHeader() {
 		},
 	}
 
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -133,59 +132,6 @@ func (s *AgentSessionHandlerSuite) TestInvoke_ReuseSessionFromHeader() {
 	s.mockAgentCoreClient.AssertNotCalled(s.T(), "CreateAgentSession")
 }
 
-func (s *AgentSessionHandlerSuite) TestGetFSTree_ProxySuccess() {
-	s.handler.sessionStore = &mockSessionStore{
-		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
-			s.Equal("session-1", sandboxID)
-			return &db.SandboxInfo{SandboxID: "session-1", GrpcEndpoint: "sandbox.test:1883"}, nil
-		},
-	}
-
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		s.Equal(http.MethodGet, r.Method)
-		s.Equal("sandbox.test:1885", r.URL.Host)
-		s.Equal("/api/fs/tree", r.URL.Path)
-		s.Equal("path=src&depth=2", r.URL.RawQuery)
-		s.Equal("Bearer agent.jwt.token", r.Header.Get("Authorization"))
-		s.Equal("session-1", r.Header.Get("x-agentland-session"))
-
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"root":"src","nodes":[]}`)),
-		}
-		resp.Header.Set("Content-Type", "application/json")
-		return resp, nil
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/session-1/fs/tree?path=src&depth=2", nil)
-	s.ctx.Request = req
-	s.ctx.Params = gin.Params{{Key: "sessionId", Value: "session-1"}}
-
-	s.handler.GetFSTree(s.ctx)
-
-	s.Equal(http.StatusOK, s.recorder.Code)
-	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
-	s.JSONEq(`{"root":"src","nodes":[]}`, s.recorder.Body.String())
-}
-
-func (s *AgentSessionHandlerSuite) TestGetFSTree_SessionNotFound() {
-	s.handler.sessionStore = &mockSessionStore{
-		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
-			return nil, db.ErrSessionNotFound
-		},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/missing/fs/tree", nil)
-	s.ctx.Request = req
-	s.ctx.Params = gin.Params{{Key: "sessionId", Value: "missing"}}
-
-	s.handler.GetFSTree(s.ctx)
-
-	s.Equal(http.StatusNotFound, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), "session not found")
-}
-
 func (s *AgentSessionHandlerSuite) TestProxyByPort_SubPathSuccess() {
 	s.handler.sessionStore = &mockSessionStore{
 		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
@@ -193,9 +139,9 @@ func (s *AgentSessionHandlerSuite) TestProxyByPort_SubPathSuccess() {
 		},
 	}
 
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodGet, r.Method)
-		s.Equal("sandbox.test:1885", r.URL.Host)
+		s.Equal("sandbox.test:1883", r.URL.Host)
 		s.Equal("/api/proxy/by-port/5173/assets/app.js", r.URL.Path)
 		s.Equal("scheme=http&v=1", r.URL.RawQuery)
 		s.Equal("Bearer agent.jwt.token", r.Header.Get("Authorization"))

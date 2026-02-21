@@ -10,11 +10,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
+	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
+	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -90,6 +95,38 @@ func TestCodeInterpreterSuite(t *testing.T) {
 	suite.Run(t, &CodeInterpreterSuite{})
 }
 
+func TestInitCodeInterpreterApi_RegistersSessionFSRoutes(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+
+	privatePath, _, err := testutil.WriteTestRSAKeys(t.TempDir())
+	require.NoError(t, err)
+
+	prevAddress := viper.GetString("agentcore.address")
+	t.Cleanup(func() {
+		viper.Set("agentcore.address", prevAddress)
+	})
+	viper.Set("agentcore.address", "dns:///127.0.0.1:18082")
+
+	cfg := &config.Config{
+		SandboxJWTPrivatePath:        privatePath,
+		SandboxJWTIssuer:             "agentland-gateway",
+		SandboxJWTAudience:           "sandbox",
+		SandboxJWTTTL:                5 * time.Minute,
+		SandboxJWTKID:                "default",
+		DefaultAgentRuntimeName:      "default-runtime",
+		DefaultAgentRuntimeNamespace: "agentland-sandboxes",
+	}
+
+	r := gin.New()
+	api := r.Group("/api")
+	InitCodeInterpreterApi(api.Group("/code-runner"), cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/code-runner/fs/tree?path=.", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.NotEqual(t, http.StatusNotFound, rec.Code)
+}
+
 type CodeInterpreterSuite struct {
 	suite.Suite
 	recorder            *httptest.ResponseRecorder
@@ -116,10 +153,10 @@ func (s *CodeInterpreterSuite) SetupTest() {
 	s.mockAgentCoreClient = new(MockAgentCoreServiceClient)
 
 	s.handler = &CodeInterpreterHandler{
-		agentCoreServiceClient: s.mockAgentCoreClient,
-		sandboxTransport:       http.DefaultTransport,
-		sessionStore:           &mockSessionStore{},
-		sandboxTokenSigner: &mockTokenSigner{
+		agentCoreClient: s.mockAgentCoreClient,
+		proxyEngine:     &ProxyEngine{Transport: http.DefaultTransport},
+		sessionStore:    &mockSessionStore{},
+		tokenSigner: &mockTokenSigner{
 			signFn: func(sessionID, subject string, version int64) (string, error) {
 				return "default.jwt.token", nil
 			},
@@ -141,7 +178,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
 		},
 	}
 
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodPost, r.Method)
 		s.Equal("/api/contexts", r.URL.Path)
 		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
@@ -207,7 +244,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
-	reqBody := ExecuteContextReq{Code: "print(1)"}
+	reqBody := ExecuteInContextReq{Code: "print(1)"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/contexts/ctx-1/execute", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -221,7 +258,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
-	reqBody := ExecuteContextReq{Code: "print(1)", TimeoutMs: 30000}
+	reqBody := ExecuteInContextReq{Code: "print(1)", TimeoutMs: 30000}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -234,7 +271,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 		},
 	}
 
-	s.handler.sandboxTransport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodPost, r.Method)
 		s.Equal("/api/contexts/ctx-1/execute", r.URL.Path)
 		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
@@ -263,4 +300,57 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 	s.Equal(http.StatusOK, s.recorder.Code)
 	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
 	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
+}
+
+func (s *CodeInterpreterSuite) TestGetFSTree_ProxySuccess() {
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{SandboxID: "session-1", GrpcEndpoint: "sandbox.test:1883"}, nil
+		},
+	}
+
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, r.Method)
+		s.Equal("sandbox.test:1883", r.URL.Host)
+		s.Equal("/api/fs/tree", r.URL.Path)
+		s.Equal("path=src&depth=2", r.URL.RawQuery)
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
+		s.Equal("session-1", r.Header.Get("x-agentland-session"))
+
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"root":"src","nodes":[]}`)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/fs/tree?path=src&depth=2", nil)
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+
+	s.handler.GetFSTree(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.JSONEq(`{"root":"src","nodes":[]}`, s.recorder.Body.String())
+}
+
+func (s *CodeInterpreterSuite) TestGetFSTree_SessionNotFound() {
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			return nil, db.ErrSessionNotFound
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/fs/tree", nil)
+	req.Header.Set("x-agentland-session", "missing")
+	s.ctx.Request = req
+
+	s.handler.GetFSTree(s.ctx)
+
+	s.Equal(http.StatusNotFound, s.recorder.Code)
+	s.Contains(s.recorder.Body.String(), "session not found")
 }
