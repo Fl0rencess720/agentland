@@ -31,7 +31,17 @@ import (
 const (
 	SessionHeader  = "x-agentland-session"
 	LanguagePython = "python"
+	LanguageShell  = "shell"
 )
+
+func isSupportedCodeLanguage(language string) bool {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case LanguagePython, LanguageShell:
+		return true
+	default:
+		return false
+	}
+}
 
 type SessionStore interface {
 	GetSession(ctx context.Context, sandboxID string) (*db.SandboxInfo, error)

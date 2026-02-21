@@ -87,7 +87,12 @@ func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
 	reqCtx, requestID := initRequestContext(ctx)
 
 	var req CreateSandboxReq
-	if err := ctx.ShouldBindJSON(&req); err != nil || req.Language != LanguagePython {
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+	req.Language = strings.ToLower(strings.TrimSpace(req.Language))
+	if !isSupportedCodeLanguage(req.Language) {
 		response.ErrorResponse(ctx, response.FormError)
 		return
 	}
@@ -121,7 +126,7 @@ func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
 func (h *CodeInterpreterHandler) CreateContext(ctx *gin.Context) {
 	var req CreateContextReq
 	bodyBytes, ok := bindJSONWithBody(ctx, &req)
-	if !ok || req.Language != LanguagePython {
+	if !ok || !isSupportedCodeLanguage(req.Language) {
 		response.ErrorResponse(ctx, response.FormError)
 		return
 	}

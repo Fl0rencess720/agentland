@@ -210,6 +210,48 @@ func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
 	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
 }
 
+func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
+	reqBody := CreateContextReq{Language: "shell", CWD: "/workspace"}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{
+				SandboxID:    "session-1",
+				GrpcEndpoint: "sandbox.test:1883",
+			}, nil
+		},
+	}
+
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, r.Method)
+		s.Equal("/api/contexts", r.URL.Path)
+		body, err := io.ReadAll(r.Body)
+		s.NoError(err)
+		s.JSONEq(string(jsonBytes), string(body))
+		resp := &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"context_id":"ctx-shell-1","language":"shell","cwd":"/workspace","state":"ready","created_at":"2026-02-17T08:30:00Z"}`,
+			)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest("POST", "/contexts", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+
+	s.handler.CreateContext(s.ctx)
+
+	s.Equal(http.StatusCreated, s.recorder.Code)
+	s.Contains(s.recorder.Body.String(), `"language":"shell"`)
+}
+
 func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
 	reqBody := CreateSandboxReq{Language: "python"}
 	jsonBytes, _ := json.Marshal(reqBody)
@@ -230,6 +272,39 @@ func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
 
 	s.Equal(http.StatusOK, s.recorder.Code)
 	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-1"`)
+}
+
+func (s *CodeInterpreterSuite) TestCreateSandbox_ShellSuccess() {
+	reqBody := CreateSandboxReq{Language: "shell"}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/sandboxes", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	s.ctx.Request = req
+
+	s.mockAgentCoreClient.On("CreateCodeInterpreter",
+		mock.Anything,
+		&pb.CreateSandboxRequest{Language: "shell"},
+	).Return(&pb.CreateSandboxResponse{
+		SandboxId:    "session-sbx-shell",
+		GrpcEndpoint: "sandbox.test:1883",
+	}, nil).Once()
+
+	s.handler.CreateSandbox(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-shell"`)
+}
+
+func (s *CodeInterpreterSuite) TestCreateSandbox_InvalidLanguage() {
+	req := httptest.NewRequest("POST", "/sandboxes", strings.NewReader(`{"language":"ruby"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.ctx.Request = req
+
+	s.handler.CreateSandbox(s.ctx)
+
+	s.Equal(http.StatusBadRequest, s.recorder.Code)
+	s.Contains(s.recorder.Body.String(), `"msg":"Form Error"`)
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
