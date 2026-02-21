@@ -100,6 +100,21 @@ func TestFSHandler_GetTree_AllowsAbsolutePath(t *testing.T) {
 	require.Equal(t, "outside.txt", resp.Nodes[0].Path)
 }
 
+func TestFSHandler_GetTree_RejectRelativeTraversal(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	root := t.TempDir()
+
+	router := gin.New()
+	group := router.Group("/api")
+	InitFSApi(group, root, 1024)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/fs/tree?path=../../etc&depth=5", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), "path escapes workspace root")
+}
+
 func TestFSHandler_GetFile_UTF8(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	root := t.TempDir()
@@ -206,6 +221,35 @@ func TestFSHandler_WriteFile_UTF8(t *testing.T) {
 	require.Equal(t, reqBody.Content, string(data))
 }
 
+func TestFSHandler_WriteFile_RejectRelativeTraversal(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+
+	router := gin.New()
+	group := router.Group("/api")
+	InitFSApi(group, root, 1024)
+
+	reqBody := WriteFSFileReq{
+		Path:    "../escape.txt",
+		Content: "blocked",
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/fs/file", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Contains(t, w.Body.String(), "path escapes workspace root")
+
+	_, statErr := os.Stat(filepath.Join(base, "escape.txt"))
+	require.Error(t, statErr)
+	require.True(t, os.IsNotExist(statErr))
+}
+
 func TestFSHandler_UploadFile(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	root := t.TempDir()
@@ -249,9 +293,9 @@ func TestFSHandler_UploadFile_RejectJSONBody(t *testing.T) {
 	group := router.Group("/api")
 	InitFSApi(group, root, 1024)
 
-	reqBody := UploadFSFileReq{
-		LocalFilePath:  "/tmp/a.csv",
-		TargetFilePath: "/workspace/a.csv",
+	reqBody := map[string]string{
+		"local_file_path":  "/tmp/a.csv",
+		"target_file_path": "/workspace/a.csv",
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	require.NoError(t, err)

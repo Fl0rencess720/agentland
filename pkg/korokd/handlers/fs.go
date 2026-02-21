@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +24,8 @@ const (
 	// 文件读写接口的默认文本编码
 	defaultFileEncoding = "utf8"
 )
+
+var errPathEscapesWorkspaceRoot = errors.New("path escapes workspace root")
 
 // FSHandler 封装文件系统相关接口所需的运行参数
 type FSHandler struct {
@@ -67,12 +70,6 @@ type WriteFSFileResp struct {
 	Encoding string `json:"encoding"`
 }
 
-// UploadFSFileReq 上传文件接口请求体
-type UploadFSFileReq struct {
-	LocalFilePath  string `json:"local_file_path"`
-	TargetFilePath string `json:"target_file_path"`
-}
-
 // TransferFSFileResp 上传/下载文件接口响应体
 type TransferFSFileResp struct {
 	SourcePath string `json:"source_path"`
@@ -106,7 +103,11 @@ func (h *FSHandler) GetFSTree(c *gin.Context) {
 		response.ErrorResponse(c, response.FormError)
 		return
 	}
-	targetPath, cleanedRoot := resolveWorkspacePath(h.workspaceRoot, rootPath)
+	targetPath, cleanedRoot, err := resolveWorkspacePath(h.workspaceRoot, rootPath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
 
 	info, err := os.Stat(targetPath)
 	if err != nil {
@@ -207,7 +208,11 @@ func (h *FSHandler) GetFSFile(c *gin.Context) {
 		response.ErrorResponse(c, response.FormError)
 		return
 	}
-	targetPath, cleanedPath := resolveWorkspacePath(h.workspaceRoot, filePath)
+	targetPath, cleanedPath, err := resolveWorkspacePath(h.workspaceRoot, filePath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
 
 	info, err := os.Lstat(targetPath)
 	if err != nil {
@@ -275,7 +280,11 @@ func (h *FSHandler) WriteFSFile(c *gin.Context) {
 		response.ErrorResponse(c, response.FormError)
 		return
 	}
-	targetPath, cleanedPath := resolveWorkspacePath(h.workspaceRoot, path)
+	targetPath, cleanedPath, err := resolveWorkspacePath(h.workspaceRoot, path)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
 
 	data, err := decodeContent(req.Content, encoding)
 	if err != nil {
@@ -317,7 +326,11 @@ func (h *FSHandler) UploadFSFile(c *gin.Context) {
 	}
 	defer file.Close()
 
-	resolvedTargetPath, cleanedTargetPath := resolveWorkspacePath(h.workspaceRoot, targetPath)
+	resolvedTargetPath, cleanedTargetPath, err := resolveWorkspacePath(h.workspaceRoot, targetPath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := ensureParentDir(resolvedTargetPath); err != nil {
 		response.ErrorResponse(c, response.ServerError)
@@ -352,7 +365,11 @@ func (h *FSHandler) DownloadFSFile(c *gin.Context) {
 		return
 	}
 
-	resolvedSourcePath, cleanedSourcePath := resolveWorkspacePath(h.workspaceRoot, sourcePath)
+	resolvedSourcePath, cleanedSourcePath, err := resolveWorkspacePath(h.workspaceRoot, sourcePath)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
 
 	info, err := os.Lstat(resolvedSourcePath)
 	if err != nil {
@@ -453,7 +470,7 @@ func decodeContent(content, encoding string) ([]byte, error) {
 }
 
 // resolveWorkspacePath 将请求路径解析为实际路径，并返回清洗后的路径字符串
-func resolveWorkspacePath(workspaceRoot, requested string) (string, string) {
+func resolveWorkspacePath(workspaceRoot, requested string) (string, string, error) {
 	root := filepath.Clean(workspaceRoot)
 	path := strings.TrimSpace(requested)
 	if path == "" {
@@ -461,9 +478,18 @@ func resolveWorkspacePath(workspaceRoot, requested string) (string, string) {
 	}
 	cleanedPath := filepath.Clean(path)
 	if filepath.IsAbs(cleanedPath) {
-		return cleanedPath, cleanedPath
+		return cleanedPath, cleanedPath, nil
 	}
-	return filepath.Clean(filepath.Join(root, cleanedPath)), cleanedPath
+
+	target := filepath.Clean(filepath.Join(root, cleanedPath))
+	relToRoot, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", "", err
+	}
+	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
+		return "", "", errPathEscapesWorkspaceRoot
+	}
+	return target, cleanedPath, nil
 }
 
 // ensureParentDir 确保目标文件的父目录存在，不存在则自动创建

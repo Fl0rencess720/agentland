@@ -50,11 +50,6 @@ type WriteFSFileReq struct {
 	Encoding string `json:"encoding,omitempty"`
 }
 
-type UploadFSFileReq struct {
-	LocalFilePath  string `json:"local_file_path"`
-	TargetFilePath string `json:"target_file_path"`
-}
-
 // InitCodeInterpreterApi 注册路由并在内部完成 Handler 字段的初始化
 func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 	client, err := BuildAgentCoreClient(viper.GetString("agentcore.address"))
