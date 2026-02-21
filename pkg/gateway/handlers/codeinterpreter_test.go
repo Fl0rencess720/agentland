@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -353,4 +355,133 @@ func (s *CodeInterpreterSuite) TestGetFSTree_SessionNotFound() {
 
 	s.Equal(http.StatusNotFound, s.recorder.Code)
 	s.Contains(s.recorder.Body.String(), "session not found")
+}
+
+func (s *CodeInterpreterSuite) TestWriteFSFile_ProxySuccess() {
+	reqBody := WriteFSFileReq{
+		Path:     "/home/user/data.txt",
+		Content:  "这是测试数据\n第二行数据",
+		Encoding: "utf-8",
+	}
+	jsonBytes, _ := json.Marshal(reqBody)
+
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{SandboxID: "session-1", GrpcEndpoint: "sandbox.test:1883"}, nil
+		},
+	}
+
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, r.Method)
+		s.Equal("/api/fs/file", r.URL.Path)
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
+		body, err := io.ReadAll(r.Body)
+		s.NoError(err)
+		s.JSONEq(string(jsonBytes), string(body))
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"path":"/home/user/data.txt","size":26,"encoding":"utf8"}`)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/fs/file", bytes.NewBuffer(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+
+	s.handler.WriteFSFile(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Contains(s.recorder.Body.String(), `"/home/user/data.txt"`)
+}
+
+func (s *CodeInterpreterSuite) TestUploadFSFile_ProxySuccess() {
+	var reqBody bytes.Buffer
+	writer := multipart.NewWriter(&reqBody)
+	part, err := writer.CreateFormFile("file", "dataset.csv")
+	s.NoError(err)
+	_, err = part.Write([]byte("name,value\nalice,1\n"))
+	s.NoError(err)
+	s.NoError(writer.WriteField("target_file_path", "/workspace/dataset.csv"))
+	s.NoError(writer.Close())
+
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{SandboxID: "session-1", GrpcEndpoint: "sandbox.test:1883"}, nil
+		},
+	}
+
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, r.Method)
+		s.Equal("/api/fs/upload", r.URL.Path)
+		s.True(strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data"))
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
+		body, readErr := io.ReadAll(r.Body)
+		s.NoError(readErr)
+		s.Contains(string(body), "name=\"target_file_path\"")
+		s.Contains(string(body), "/workspace/dataset.csv")
+		s.Contains(string(body), "name,value")
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"code":200,"msg":"success","data":{"source_path":"dataset.csv","target_path":"/workspace/dataset.csv","size":123}}`)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/fs/upload", &reqBody)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+
+	s.handler.UploadFSFile(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Contains(s.recorder.Body.String(), `"/workspace/dataset.csv"`)
+}
+
+func (s *CodeInterpreterSuite) TestDownloadFSFile_ProxySuccess() {
+	path := "/workspace/result.csv"
+	queryPath := url.QueryEscape(path)
+
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{SandboxID: "session-1", GrpcEndpoint: "sandbox.test:1883"}, nil
+		},
+	}
+
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, r.Method)
+		s.Equal("/api/fs/download", r.URL.Path)
+		s.Equal("path="+queryPath, r.URL.RawQuery)
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("id,score\n1,100\n")),
+		}
+		resp.Header.Set("Content-Type", "application/octet-stream")
+		resp.Header.Set("Content-Disposition", "attachment; filename=\"result.csv\"")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/fs/download?path="+queryPath, nil)
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+
+	s.handler.DownloadFSFile(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Equal("id,score\n1,100\n", s.recorder.Body.String())
+	s.Contains(s.recorder.Header().Get("Content-Disposition"), "result.csv")
 }
