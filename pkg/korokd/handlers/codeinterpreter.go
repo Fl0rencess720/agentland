@@ -64,7 +64,7 @@ func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
 		return
 	}
 
-	ctx, err := h.contexts.create(req.CWD)
+	ctx, err := h.contexts.create(req.Language, req.CWD)
 	if err != nil {
 		response.ErrorResponse(c, response.ServerError)
 		return
