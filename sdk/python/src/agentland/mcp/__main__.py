@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import os
 from typing import Sequence
 
+from .._mcp_args import add_mcp_arguments, env_base_url, env_timeout
 from .server import create_server
 
 
@@ -19,22 +19,10 @@ def serve_mcp(*, transport: str, base_url: str, timeout: int) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Agentland MCP server")
-    parser.add_argument(
-        "--transport",
-        choices=("stdio", "streamable-http"),
-        default="stdio",
-        help="MCP transport type.",
-    )
-    parser.add_argument(
-        "--base-url",
-        default=os.getenv("AGENTLAND_BASE_URL", "http://127.0.0.1:8080"),
-        help="Gateway base URL.",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=int(os.getenv("AGENTLAND_TIMEOUT", "30")),
-        help="HTTP request timeout in seconds.",
+    add_mcp_arguments(
+        parser,
+        default_base_url=env_base_url(),
+        default_timeout=env_timeout(),
     )
     return parser
 
@@ -51,4 +39,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

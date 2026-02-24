@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from threading import Thread
 from typing import Any
 
@@ -66,10 +67,16 @@ class CodeInterpreterToolBridge:
         def _run() -> None:
             try:
                 context.delete()
-            except SDKError:
-                pass
-            except Exception:
-                pass
+            except SDKError as exc:
+                print(
+                    f"agentland-sdk: Failed to delete context asynchronously: {exc}",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                print(
+                    f"agentland-sdk: Unexpected error during async context deletion: {exc}",
+                    file=sys.stderr,
+                )
 
         Thread(target=_run, daemon=True).start()
 
@@ -117,4 +124,3 @@ class CodeInterpreterToolBridge:
         if encoding.strip():
             return sandbox.fs.write(path=path, content=content, encoding=encoding)
         return sandbox.fs.write(path=path, content=content)
-

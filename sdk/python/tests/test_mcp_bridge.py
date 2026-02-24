@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -91,6 +92,15 @@ class _FakeSandbox:
         return cls.last
 
 
+class _ImmediateThread:
+    def __init__(self, target, daemon: bool = False) -> None:  # type: ignore[no-untyped-def]
+        self._target = target
+        self.daemon = daemon
+
+    def start(self) -> None:
+        self._target()
+
+
 class MCPBridgeTests(unittest.TestCase):
     @mock.patch("agentland.mcp.bridge.Sandbox", _FakeSandbox)
     def test_sandbox_create_default_language(self) -> None:
@@ -137,7 +147,19 @@ class MCPBridgeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge.fs_file_get(sandbox_id=" ", path="/workspace/a.txt")
 
+    @mock.patch("agentland.mcp.bridge.Thread", _ImmediateThread)
+    def test_async_delete_logs_unexpected_error(self) -> None:
+        bridge = CodeInterpreterToolBridge(base_url="http://127.0.0.1:8080", timeout=30)
+
+        class _BrokenContext:
+            def delete(self) -> None:
+                raise RuntimeError("boom")
+
+        stderr = io.StringIO()
+        with mock.patch("agentland.mcp.bridge.sys.stderr", stderr):
+            bridge._delete_context_async(_BrokenContext())
+        self.assertIn("Unexpected error during async context deletion: boom", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
-
