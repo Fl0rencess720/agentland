@@ -21,10 +21,12 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/dynamic"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -63,6 +65,19 @@ func init() {
 
 	utilruntime.Must(agentlandv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+}
+
+func parseImagePullPolicy(raw string) corev1.PullPolicy {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case strings.ToLower(string(corev1.PullAlways)):
+		return corev1.PullAlways
+	case strings.ToLower(string(corev1.PullIfNotPresent)):
+		return corev1.PullIfNotPresent
+	case strings.ToLower(string(corev1.PullNever)):
+		return corev1.PullNever
+	default:
+		return corev1.PullAlways
+	}
 }
 
 // nolint:gocyclo
@@ -111,6 +126,7 @@ func main() {
 	_ = viper.BindEnv("warm_pool.pool_ref", "AL_WARMPOOL_POOL_REF")
 	_ = viper.BindEnv("warm_pool.profile", "AL_WARMPOOL_PROFILE")
 	_ = viper.BindEnv("korokd.image", "AL_KOROKD_IMAGE")
+	_ = viper.BindEnv("korokd.image_pull_policy", "AL_KOROKD_IMAGE_PULL_POLICY")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
 	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
 	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
@@ -120,10 +136,18 @@ func main() {
 	viper.SetDefault("warm_pool.pool_ref", "")
 	viper.SetDefault("warm_pool.profile", "default")
 	viper.SetDefault("korokd.image", "korokd:latest")
+	viper.SetDefault("korokd.image_pull_policy", string(corev1.PullAlways))
 	viper.SetDefault("otel.enabled", false)
 	viper.SetDefault("otel.endpoint", "otel-collector:4317")
 	viper.SetDefault("otel.insecure", true)
 	viper.SetDefault("otel.sample_ratio", 0.1)
+
+	korokdImagePullPolicyRaw := viper.GetString("korokd.image_pull_policy")
+	korokdImagePullPolicy := parseImagePullPolicy(korokdImagePullPolicyRaw)
+	normalizedKorokdPullPolicy := strings.ToLower(strings.TrimSpace(korokdImagePullPolicyRaw))
+	if normalizedKorokdPullPolicy != "" && normalizedKorokdPullPolicy != "always" && normalizedKorokdPullPolicy != "ifnotpresent" && normalizedKorokdPullPolicy != "never" {
+		setupLog.Info("invalid korokd image pull policy; fallback to Always", "value", korokdImagePullPolicyRaw)
+	}
 
 	otelShutdown, err := observability.InitTracerProvider(context.Background(), observability.Config{
 		Enabled:        viper.GetBool("otel.enabled"),
@@ -264,16 +288,18 @@ func main() {
 	}
 
 	if err := (&controller.SandboxReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		ImagePullPolicy: korokdImagePullPolicy,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
 		os.Exit(1)
 	}
 
 	if err := (&controller.SandboxPoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		ImagePullPolicy: korokdImagePullPolicy,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SandboxPool")
 		os.Exit(1)

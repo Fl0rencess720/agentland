@@ -38,8 +38,18 @@ spec:
               value: {{ .Values.agentcore.deployment.env.AL_REDIS_PASSWORD | quote }}
             - name: AL_REDIS_DB
               value: {{ .Values.agentcore.deployment.env.AL_REDIS_DB | quote }}
+            - name: AL_WARMPOOL_ENABLED
+              value: {{ default "true" .Values.agentcore.deployment.env.AL_WARMPOOL_ENABLED | quote }}
+            - name: AL_WARMPOOL_DEFAULT_MODE
+              value: {{ default "PoolPreferred" .Values.agentcore.deployment.env.AL_WARMPOOL_DEFAULT_MODE | quote }}
+            - name: AL_WARMPOOL_POOL_REF
+              value: {{ .Values.agentcore.deployment.env.AL_WARMPOOL_POOL_REF | quote }}
+            - name: AL_WARMPOOL_PROFILE
+              value: {{ default "default" .Values.agentcore.deployment.env.AL_WARMPOOL_PROFILE | quote }}
             - name: AL_KOROKD_IMAGE
               value: {{ default "fl0rences720/agentland-korokd:latest" .Values.agentcore.deployment.env.AL_KOROKD_IMAGE | quote }}
+            - name: AL_KOROKD_IMAGE_PULL_POLICY
+              value: {{ default "Always" .Values.agentcore.deployment.env.AL_KOROKD_IMAGE_PULL_POLICY | quote }}
             - name: AL_OTEL_ENABLED
               value: {{ .Values.agentcore.deployment.env.AL_OTEL_ENABLED | quote }}
             - name: AL_OTEL_EXPORTER_OTLP_ENDPOINT
