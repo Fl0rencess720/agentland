@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from typing import Sequence
 
 
@@ -25,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mcp_parser.add_argument(
         "--base-url",
-        default="http://127.0.0.1:8080",
+        default=os.getenv("AGENTLAND_BASE_URL", "http://127.0.0.1:8080"),
         help="Gateway base URL.",
     )
     mcp_parser.add_argument(
@@ -55,4 +56,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
