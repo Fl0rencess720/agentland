@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Fl0rencess720/agentland/pkg/common/sandboxtoken"
+	"github.com/Fl0rencess720/agentland/pkg/common/utils"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/config"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/handlers"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/middleware"
@@ -25,7 +25,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	r.Use(gin.Recovery())
 	r.GET("/health", s.HealthHandler)
 
-	verifier, err := sandboxtoken.NewVerifierFromConfig(sandboxtoken.VerifierConfig{
+	verifier, err := utils.NewVerifierFromConfig(utils.VerifierConfig{
 		PublicKeyPath: cfg.SandboxJWTPublicPath,
 		Issuer:        cfg.SandboxJWTIssuer,
 		Audience:      cfg.SandboxJWTAudience,

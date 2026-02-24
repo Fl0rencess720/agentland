@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Fl0rencess720/agentland/pkg/common/sandboxtoken"
 	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
+	"github.com/Fl0rencess720/agentland/pkg/common/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -114,12 +114,12 @@ func TestSandboxAuth_RejectSessionHeaderMismatch(t *testing.T) {
 	require.Contains(t, w.Body.String(), "session header does not match sandbox token")
 }
 
-func newSignerAndVerifier(t *testing.T) (*sandboxtoken.Signer, *sandboxtoken.Verifier) {
+func newSignerAndVerifier(t *testing.T) (*utils.Signer, *utils.Verifier) {
 	t.Helper()
 
 	privatePath, publicPath, err := testutil.WriteTestRSAKeys(t.TempDir())
 	require.NoError(t, err)
-	signer, err := sandboxtoken.NewSignerFromConfig(sandboxtoken.SignerConfig{
+	signer, err := utils.NewSignerFromConfig(utils.SignerConfig{
 		PrivateKeyPath: privatePath,
 		Issuer:         "agentland-gateway",
 		Audience:       "sandbox",
@@ -127,7 +127,7 @@ func newSignerAndVerifier(t *testing.T) (*sandboxtoken.Signer, *sandboxtoken.Ver
 	})
 	require.NoError(t, err)
 
-	verifier, err := sandboxtoken.NewVerifierFromConfig(sandboxtoken.VerifierConfig{
+	verifier, err := utils.NewVerifierFromConfig(utils.VerifierConfig{
 		PublicKeyPath: publicPath,
 		Issuer:        "agentland-gateway",
 		Audience:      "sandbox",

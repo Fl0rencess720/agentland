@@ -1,4 +1,4 @@
-package sandboxtoken
+package utils
 
 import (
 	"os"

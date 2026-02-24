@@ -23,20 +23,48 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o korokd ./cmd/korokd
 
-FROM alpine:3.19
+FROM ubuntu:22.04
 
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-    apk --no-cache add ca-certificates python3 py3-pip && \
-    python3 -m pip install --no-cache-dir --break-system-packages ipykernel==6.29.5
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      bash \
+      curl \
+      git openssh-client \
+      jq \
+      procps \
+      iproute2 \
+      python3 python3-pip \
+      tini \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+RUN python3 -m pip install --no-cache-dir -U pip \
+    && python3 -m pip install --no-cache-dir ipykernel==6.29.5
+
+RUN python3 -m pip install --no-cache-dir -U pip \
+ && python3 -m pip install --no-cache-dir ipykernel==6.29.5
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm config set fund false \
+    && npm config set audit false \
+    && npm i -g agent-browser \
+    && agent-browser install \
+    && npx playwright install-deps \
+    && npm cache clean --force
 
 WORKDIR /app
 
 COPY --from=builder /workspace/korokd .
 
-RUN adduser -D -u 1000 apiserver
-USER apiserver
-
 EXPOSE 1883
 
-ENTRYPOINT ["/app/korokd"]
+ENTRYPOINT ["/usr/bin/tini","--","/app/korokd"]
 CMD ["--port=1883"]

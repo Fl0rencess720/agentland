@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func TestFSHandler_GetTree_HidesDotFilesByDefault(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp GetFSTreeResp
+	var resp models.GetFSTreeResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 
 	paths := make([]string, 0, len(resp.Nodes))
@@ -72,7 +73,7 @@ func TestFSHandler_GetTree_IncludeHidden(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp GetFSTreeResp
+	var resp models.GetFSTreeResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 	require.Len(t, resp.Nodes, 1)
 	require.Equal(t, ".hidden.txt", resp.Nodes[0].Path)
@@ -93,7 +94,7 @@ func TestFSHandler_GetTree_AllowsAbsolutePath(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp GetFSTreeResp
+	var resp models.GetFSTreeResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 	require.Equal(t, filepath.ToSlash(filepath.Clean(absRoot)), resp.Root)
 	require.Len(t, resp.Nodes, 1)
@@ -129,7 +130,7 @@ func TestFSHandler_GetFile_UTF8(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp GetFSFileResp
+	var resp models.GetFSFileResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 	require.Equal(t, "main.ts", resp.Path)
 	require.Equal(t, "utf8", resp.Encoding)
@@ -151,7 +152,7 @@ func TestFSHandler_GetFile_Base64(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp GetFSFileResp
+	var resp models.GetFSFileResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 	require.Equal(t, base64.StdEncoding.EncodeToString(bin), resp.Content)
 }
@@ -198,7 +199,7 @@ func TestFSHandler_WriteFile_UTF8(t *testing.T) {
 	group := router.Group("/api")
 	InitFSApi(group, root, 1024)
 
-	reqBody := WriteFSFileReq{
+	reqBody := models.WriteFSFileReq{
 		Path:     targetPath,
 		Content:  "这是测试数据\n第二行数据",
 		Encoding: "utf-8",
@@ -212,7 +213,7 @@ func TestFSHandler_WriteFile_UTF8(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp WriteFSFileResp
+	var resp models.WriteFSFileResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 	require.Equal(t, filepath.ToSlash(filepath.Clean(targetPath)), resp.Path)
 
@@ -231,7 +232,7 @@ func TestFSHandler_WriteFile_RejectRelativeTraversal(t *testing.T) {
 	group := router.Group("/api")
 	InitFSApi(group, root, 1024)
 
-	reqBody := WriteFSFileReq{
+	reqBody := models.WriteFSFileReq{
 		Path:    "../escape.txt",
 		Content: "blocked",
 	}
@@ -275,7 +276,7 @@ func TestFSHandler_UploadFile(t *testing.T) {
 	router.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp TransferFSFileResp
+	var resp models.UploadFSFileResp
 	decodeFSSuccessData(t, w.Body.Bytes(), &resp)
 	require.Equal(t, "dataset.csv", resp.SourcePath)
 	require.Equal(t, filepath.ToSlash(filepath.Clean(targetPath)), resp.TargetPath)
