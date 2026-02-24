@@ -28,8 +28,9 @@ import (
 // SandboxReconciler reconciles a Sandbox object.
 type SandboxReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Tracer trace.Tracer
+	Scheme          *runtime.Scheme
+	Tracer          trace.Tracer
+	ImagePullPolicy corev1.PullPolicy
 }
 
 func (r *SandboxReconciler) startSpan(ctx context.Context, name string) (context.Context, trace.Span) {
@@ -157,6 +158,10 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 	}
 
 	labels := map[string]string{commonutils.SandboxLabel: commonutils.NameHash(sandbox.Name)}
+	pullPolicy := r.ImagePullPolicy
+	if pullPolicy == "" {
+		pullPolicy = corev1.PullAlways
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandbox.Name,
@@ -167,7 +172,7 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 			Containers: []corev1.Container{{
 				Name:            "main",
 				Image:           sandbox.Spec.Template.Image,
-				ImagePullPolicy: corev1.PullAlways,
+				ImagePullPolicy: pullPolicy,
 				Command:         sandbox.Spec.Template.Command,
 				Args:            sandbox.Spec.Template.Args,
 				VolumeMounts: []corev1.VolumeMount{{

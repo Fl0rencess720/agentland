@@ -22,7 +22,8 @@ import (
 // SandboxPoolReconciler reconciles a SandboxPool object.
 type SandboxPoolReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	ImagePullPolicy corev1.PullPolicy
 }
 
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxpools,verbs=get;list;watch;create;update;patch;delete
@@ -126,6 +127,10 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 		commonutils.PoolLabel:        commonutils.NameHash(pool.Name),
 		commonutils.ProfileHashLabel: commonutils.NameHash(pool.Spec.Profile),
 	}
+	pullPolicy := r.ImagePullPolicy
+	if pullPolicy == "" {
+		pullPolicy = corev1.PullAlways
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-", pool.Name),
@@ -136,7 +141,7 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 			Containers: []corev1.Container{{
 				Name:            "main",
 				Image:           pool.Spec.Template.Image,
-				ImagePullPolicy: corev1.PullAlways,
+				ImagePullPolicy: pullPolicy,
 				Command:         pool.Spec.Template.Command,
 				Args:            pool.Spec.Template.Args,
 				VolumeMounts: []corev1.VolumeMount{{
