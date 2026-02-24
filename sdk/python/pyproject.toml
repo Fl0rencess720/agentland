@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Agentland Python SDK for code-runner sandbox APIs."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+  "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+agentland = "agentland.cli:main"
 
 [project.optional-dependencies]
 dev = []
