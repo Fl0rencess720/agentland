@@ -16,7 +16,11 @@ const (
 	PodNameAnnotation = "agentland.fl0rencess720.app/pod-name"
 )
 
-const DefaultRequeueInterval = 500 * time.Millisecond
+const (
+	DefaultRequeueInterval  = 500 * time.Millisecond
+	ConflictRequeueInterval = 100 * time.Millisecond
+	FallbackRequeueInterval = 2 * time.Second
+)
 
 func NameHash(name string) string {
 	h := fnv.New32a()

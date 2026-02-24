@@ -12,9 +12,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	agentlandv1alpha1 "github.com/Fl0rencess720/agentland/api/v1alpha1"
 	"github.com/Fl0rencess720/agentland/pkg/common/observability"
@@ -85,7 +87,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !equality.Semantic.DeepEqual(oldStatus, &sandbox.Status) {
 		if err := r.Status().Update(ctx, sandbox); err != nil {
 			if errors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+				return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 			}
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "update sandbox status failed")
@@ -94,7 +96,8 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if sandbox.Status.Phase != string(corev1.PodRunning) || sandbox.Status.PodIP == "" {
-		return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+		// Pod lifecycle updates will trigger reconcile via Owns(&corev1.Pod{}).
+		return ctrl.Result{}, nil
 	}
 
 	span.AddEvent("sandbox.running", trace.WithAttributes(attribute.String("sandbox.pod_ip", sandbox.Status.PodIP)))
@@ -230,9 +233,22 @@ func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.Tracer = otel.Tracer("controller.sandbox")
 	}
 
+	podLabelPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      commonutils.SandboxLabel,
+				Operator: metav1.LabelSelectorOpExists,
+				Values:   []string{},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.Sandbox{}).
-		Owns(&corev1.Pod{}).
+		Owns(&corev1.Pod{}, builder.WithPredicates(podLabelPredicate)).
 		Named("sandbox").
 		Complete(r)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
 	"github.com/Fl0rencess720/agentland/pkg/common/consts"
 	"github.com/stretchr/testify/suite"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -50,6 +51,43 @@ func installGenerateNameReactor(client *fake.FakeDynamicClient) {
 	client.PrependReactor("create", agentSessionGVR.Resource, reaction)
 }
 
+func upsertSandboxStatus(client *fake.FakeDynamicClient, sandboxName, phase, podIP string) {
+	ctx := context.Background()
+	resource := client.Resource(sandboxGVR).Namespace(consts.AgentLandSandboxesNamespace)
+
+	obj, err := resource.Get(ctx, sandboxName, metav1.GetOptions{})
+	if err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return
+		}
+		obj = &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": v1alpha1.GroupVersion.String(),
+				"kind":       "Sandbox",
+				"metadata": map[string]interface{}{
+					"name":      sandboxName,
+					"namespace": consts.AgentLandSandboxesNamespace,
+				},
+				"spec": map[string]interface{}{
+					"sandboxTemplate": map[string]interface{}{"image": "korokd:latest"},
+				},
+			},
+		}
+	}
+
+	status := map[string]interface{}{"phase": phase}
+	if podIP != "" {
+		status["podIP"] = podIP
+	}
+	_ = unstructured.SetNestedMap(obj.Object, status, "status")
+
+	if obj.GetResourceVersion() == "" {
+		_, _ = resource.Create(ctx, obj, metav1.CreateOptions{})
+		return
+	}
+	_, _ = resource.Update(ctx, obj, metav1.UpdateOptions{})
+}
+
 func (s *AgentCoreSuite) TestCreateSandbox() {
 	scheme := runtime.NewScheme()
 	s.NoError(v1alpha1.AddToScheme(scheme))
@@ -76,14 +114,7 @@ func (s *AgentCoreSuite) TestCreateSandbox() {
 				if err != nil || len(list.Items) == 0 {
 					continue
 				}
-
-				obj := list.Items[0].DeepCopy()
-				status := map[string]interface{}{
-					"phase": "Running",
-					"podIP": "10.42.0.10",
-				}
-				_ = unstructured.SetNestedMap(obj.Object, status, "status")
-				_, _ = fakeDynamicClient.Resource(codeInterpreterGVR).Namespace(consts.AgentLandSandboxesNamespace).Update(context.Background(), obj, metav1.UpdateOptions{})
+				upsertSandboxStatus(fakeDynamicClient, list.Items[0].GetName(), "Running", "10.42.0.10")
 			}
 		}
 	}()
@@ -146,14 +177,7 @@ func (s *AgentCoreSuite) TestCreateSandboxWithWarmPoolProvisioning() {
 				if err != nil || len(list.Items) == 0 {
 					continue
 				}
-
-				obj := list.Items[0].DeepCopy()
-				status := map[string]interface{}{
-					"phase": "Running",
-					"podIP": "10.42.0.11",
-				}
-				_ = unstructured.SetNestedMap(obj.Object, status, "status")
-				_, _ = fakeDynamicClient.Resource(codeInterpreterGVR).Namespace(consts.AgentLandSandboxesNamespace).Update(context.Background(), obj, metav1.UpdateOptions{})
+				upsertSandboxStatus(fakeDynamicClient, list.Items[0].GetName(), "Running", "10.42.0.11")
 			}
 		}
 	}()
@@ -216,14 +240,7 @@ func (s *AgentCoreSuite) TestCreateAgentSession() {
 				if err != nil || len(list.Items) == 0 {
 					continue
 				}
-
-				obj := list.Items[0].DeepCopy()
-				status := map[string]interface{}{
-					"phase": "Running",
-					"podIP": "10.42.0.12",
-				}
-				_ = unstructured.SetNestedMap(obj.Object, status, "status")
-				_, _ = fakeDynamicClient.Resource(agentSessionGVR).Namespace(consts.AgentLandSandboxesNamespace).Update(context.Background(), obj, metav1.UpdateOptions{})
+				upsertSandboxStatus(fakeDynamicClient, list.Items[0].GetName(), "Running", "10.42.0.12")
 			}
 		}
 	}()
