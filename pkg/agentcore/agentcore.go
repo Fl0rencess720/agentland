@@ -40,6 +40,12 @@ var agentSessionGVR = schema.GroupVersionResource{
 	Resource: "agentsessions",
 }
 
+var sandboxGVR = schema.GroupVersionResource{
+	Group:    "agentland.fl0rencess720.app",
+	Version:  "v1alpha1",
+	Resource: "sandboxes",
+}
+
 func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
 	ctx = withIncomingRequestID(ctx)
 	tracer := otel.Tracer("agentcore.service")
@@ -120,7 +126,7 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 	}
 	span.SetAttributes(attribute.String("agentland.session_id", sandboxID))
 
-	grpcEndpoint, err := s.waitSessionReady(ctx, codeInterpreterGVR, cr.Namespace, sandboxID)
+	grpcEndpoint, err := s.waitSessionReady(ctx, sandboxGVR, codeInterpreterGVR, cr.Namespace, sandboxID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "wait session ready failed")
@@ -213,7 +219,7 @@ func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSess
 	}
 	span.SetAttributes(attribute.String("agentland.session_id", sessionID))
 
-	grpcEndpoint, err := s.waitSessionReady(ctx, agentSessionGVR, cr.Namespace, sessionID)
+	grpcEndpoint, err := s.waitSessionReady(ctx, sandboxGVR, agentSessionGVR, cr.Namespace, sessionID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "wait session ready failed")
@@ -262,7 +268,7 @@ func (s *Server) DeleteAgentSession(ctx context.Context, req *pb.DeleteAgentSess
 	return &pb.DeleteAgentSessionResponse{}, nil
 }
 
-func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionResource, namespace, sessionID string) (string, error) {
+func (s *Server) waitSessionReady(ctx context.Context, readyGVR, failureGVR schema.GroupVersionResource, namespace, sessionID string) (string, error) {
 	tracer := otel.Tracer("agentcore.service")
 	ctx, span := tracer.Start(ctx, "agentcore.wait_session_ready")
 	defer span.End()
@@ -270,28 +276,39 @@ func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionRe
 		attribute.String("request.id", observability.RequestIDFromContext(ctx)),
 		attribute.String("agentland.session_id", sessionID),
 		attribute.String("k8s.namespace", namespace),
-		attribute.String("k8s.resource", gvr.Resource),
+		attribute.String("k8s.ready_resource", readyGVR.Resource),
+		attribute.String("k8s.failure_resource", failureGVR.Resource),
 	)
 
-	watcher, err := s.k8sClient.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+	readyWatcher, err := s.k8sClient.Resource(readyGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: "metadata.name=" + sessionID,
 	})
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "watch resource failed")
-		return "", fmt.Errorf("failed to watch resource: %w", err)
+		span.SetStatus(codes.Error, "watch ready resource failed")
+		return "", fmt.Errorf("failed to watch ready resource: %w", err)
 	}
-	defer watcher.Stop()
+	defer readyWatcher.Stop()
+
+	failureWatcher, err := s.k8sClient.Resource(failureGVR).Namespace(namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + sessionID,
+	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "watch failure resource failed")
+		return "", fmt.Errorf("failed to watch failure resource: %w", err)
+	}
+	defer failureWatcher.Stop()
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	for {
 		select {
-		case event, ok := <-watcher.ResultChan():
+		case event, ok := <-readyWatcher.ResultChan():
 			if !ok {
-				span.SetStatus(codes.Error, "watch channel closed")
-				return "", fmt.Errorf("watch channel closed")
+				span.SetStatus(codes.Error, "ready watch channel closed")
+				return "", fmt.Errorf("ready watch channel closed")
 			}
 
 			unstructuredObj, ok := event.Object.(*unstructured.Unstructured)
@@ -330,14 +347,41 @@ func (s *Server) waitSessionReady(ctx context.Context, gvr schema.GroupVersionRe
 				return podIP + KorokdPort, nil
 			}
 			if phase == "Failed" {
-				reason, message := extractCondition(status, "Accepted")
+				reason, message := extractCondition(status, "")
 				if reason != "" || message != "" {
-					span.SetStatus(codes.Error, "session provisioning failed")
+					span.SetStatus(codes.Error, "ready resource failed")
 					return "", fmt.Errorf("session provisioning failed: reason=%s message=%s", reason, message)
 				}
-				span.SetStatus(codes.Error, "session provisioning failed")
+				span.SetStatus(codes.Error, "ready resource failed")
 				return "", fmt.Errorf("session provisioning failed: phase=Failed")
 			}
+		case event, ok := <-failureWatcher.ResultChan():
+			if !ok {
+				span.SetStatus(codes.Error, "failure watch channel closed")
+				return "", fmt.Errorf("failure watch channel closed")
+			}
+
+			unstructuredObj, ok := event.Object.(*unstructured.Unstructured)
+			if !ok {
+				continue
+			}
+
+			status, found, nestedErr := unstructured.NestedMap(unstructuredObj.Object, "status")
+			if nestedErr != nil || !found {
+				continue
+			}
+
+			phase, _, _ := unstructured.NestedString(status, "phase")
+			if phase != "Failed" {
+				continue
+			}
+			reason, message := extractCondition(status, "Accepted")
+			if reason != "" || message != "" {
+				span.SetStatus(codes.Error, "failure resource failed")
+				return "", fmt.Errorf("session provisioning failed: reason=%s message=%s", reason, message)
+			}
+			span.SetStatus(codes.Error, "failure resource failed")
+			return "", fmt.Errorf("session provisioning failed: phase=Failed")
 		case <-timeoutCtx.Done():
 			span.RecordError(timeoutCtx.Err())
 			span.SetStatus(codes.Error, "timeout waiting for sandbox")

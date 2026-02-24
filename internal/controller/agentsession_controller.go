@@ -107,7 +107,7 @@ func (r *AgentSessionReconciler) resolveSessionConfig(ctx context.Context, agent
 					fmt.Sprintf("runtimeRef %s/%s not found", runtimeNamespace, agentSession.Spec.RuntimeRef.Name)); statusErr != nil {
 					return nil, nil, statusErr
 				}
-				result := ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}
+				result := ctrl.Result{RequeueAfter: commonutils.FallbackRequeueInterval}
 				return nil, &result, nil
 			}
 			return nil, nil, err
@@ -252,7 +252,7 @@ func (r *AgentSessionReconciler) reconcileViaClaim(ctx context.Context, agentSes
 				if !errors.IsConflict(err) {
 					return ctrl.Result{}, err
 				}
-				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+				return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 			}
 		}
 		return ctrl.Result{}, nil
@@ -270,7 +270,9 @@ func (r *AgentSessionReconciler) updateAgentSessionStatus(ctx context.Context, a
 	agentSession.Status.PodIP = ""
 
 	sandbox := &agentlandv1alpha1.Sandbox{}
+	sandboxObserved := false
 	if err := r.Get(ctx, client.ObjectKey{Namespace: agentSession.Namespace, Name: sandboxName}, sandbox); err == nil {
+		sandboxObserved = true
 		agentSession.Status.SandboxName = sandbox.Name
 		agentSession.Status.Phase = sandbox.Status.Phase
 		agentSession.Status.PodIP = sandbox.Status.PodIP
@@ -283,12 +285,15 @@ func (r *AgentSessionReconciler) updateAgentSessionStatus(ctx context.Context, a
 			if !errors.IsConflict(err) {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+			return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 		}
 	}
 
 	if agentSession.Status.Phase != string(corev1.PodRunning) || agentSession.Status.PodIP == "" {
-		return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+		if !sandboxObserved {
+			return ctrl.Result{RequeueAfter: commonutils.FallbackRequeueInterval}, nil
+		}
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil

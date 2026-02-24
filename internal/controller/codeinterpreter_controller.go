@@ -228,7 +228,7 @@ func (r *CodeInterpreterReconciler) reconcileViaClaim(ctx context.Context, ci *a
 					span.SetStatus(codes.Error, "update codeinterpreter status failed")
 					return ctrl.Result{}, err
 				}
-				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+				return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 			}
 		}
 		return ctrl.Result{}, nil
@@ -249,7 +249,9 @@ func (r *CodeInterpreterReconciler) updateCodeInterpreterStatus(ctx context.Cont
 	ci.Status.PodIP = ""
 
 	sandbox := &agentlandv1alpha1.Sandbox{}
+	sandboxObserved := false
 	if err := r.Get(ctx, client.ObjectKey{Namespace: ci.Namespace, Name: sandboxName}, sandbox); err == nil {
+		sandboxObserved = true
 		ci.Status.SandboxName = sandbox.Name
 		ci.Status.Phase = sandbox.Status.Phase
 		ci.Status.PodIP = sandbox.Status.PodIP
@@ -270,12 +272,16 @@ func (r *CodeInterpreterReconciler) updateCodeInterpreterStatus(ctx context.Cont
 				span.SetStatus(codes.Error, "status update failed")
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+			return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 		}
 	}
 
 	if ci.Status.Phase != string(corev1.PodRunning) || ci.Status.PodIP == "" {
-		return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+		// Sandbox events drive normal propagation; use a slower fallback only before Sandbox appears.
+		if !sandboxObserved {
+			return ctrl.Result{RequeueAfter: commonutils.FallbackRequeueInterval}, nil
+		}
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil

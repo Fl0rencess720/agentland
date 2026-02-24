@@ -88,14 +88,15 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		if err := r.updateClaimStatus(ctx, oldStatus, claim); err != nil {
 			if errors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+				return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 			}
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "update claim status failed")
 			return ctrl.Result{}, err
 		}
 		if claim.Status.Phase != agentlandv1alpha1.SandboxClaimPhaseBound {
-			return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+			// Sandbox updates will trigger reconcile via Owns(&Sandbox{}).
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, nil
 	}
@@ -118,7 +119,7 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		claim.Status.Reason = "NoWarmPod"
 		if err := r.updateClaimStatus(ctx, oldStatus, claim); err != nil {
 			if errors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+				return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 			}
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "update failed claim status failed")
@@ -170,13 +171,13 @@ func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	claim.Status.Reason = "SandboxCreating"
 	if err := r.updateClaimStatus(ctx, oldStatus, claim); err != nil {
 		if errors.IsConflict(err) {
-			return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+			return ctrl.Result{RequeueAfter: commonutils.ConflictRequeueInterval}, nil
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "update pending claim status failed")
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: commonutils.DefaultRequeueInterval}, nil
+	return ctrl.Result{RequeueAfter: commonutils.FallbackRequeueInterval}, nil
 }
 
 func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agentlandv1alpha1.SandboxClaim) (*corev1.Pod, error) {
@@ -257,5 +258,6 @@ func (r *SandboxClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.SandboxClaim{}).
+		Owns(&agentlandv1alpha1.Sandbox{}).
 		Complete(r)
 }
