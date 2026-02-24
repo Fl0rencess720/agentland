@@ -7,7 +7,6 @@ import (
 
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/handlers"
-	mcpapi "github.com/Fl0rencess720/agentland/pkg/gateway/handlers/mcp"
 	ginZap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -21,9 +20,6 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	e := gin.New()
 	e.Use(tracingMiddleware())
 	e.Use(gin.Recovery(), ginZap.Ginzap(zap.L(), time.RFC3339, false), ginZap.RecoveryWithZap(zap.L(), false))
-
-	mcpHandler := mcpapi.NewMCPHandler(cfg)
-	e.Any("/mcp", gin.WrapH(mcpHandler))
 
 	app := e.Group("/api")
 	{
