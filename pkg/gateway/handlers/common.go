@@ -14,7 +14,7 @@ import (
 
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
 	"github.com/Fl0rencess720/agentland/pkg/common/observability"
-	"github.com/Fl0rencess720/agentland/pkg/common/sandboxtoken"
+	"github.com/Fl0rencess720/agentland/pkg/common/utils"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
@@ -159,7 +159,7 @@ func BuildAgentCoreClient(address string) (pb.AgentCoreServiceClient, error) {
 }
 
 func BuildTokenSigner(cfg *config.Config) (TokenSigner, error) {
-	return sandboxtoken.NewSignerFromConfig(sandboxtoken.SignerConfig{
+	return utils.NewSignerFromConfig(utils.SignerConfig{
 		PrivateKeyPath: cfg.SandboxJWTPrivatePath,
 		Issuer:         cfg.SandboxJWTIssuer,
 		Audience:       cfg.SandboxJWTAudience,

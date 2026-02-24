@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
 	"github.com/gin-gonic/gin"
 )
@@ -31,50 +32,6 @@ var errPathEscapesWorkspaceRoot = errors.New("path escapes workspace root")
 type FSHandler struct {
 	workspaceRoot string
 	maxFileBytes  int64
-}
-
-// GetFSTreeResp 获取文件树接口返回的数据结构
-type GetFSTreeResp struct {
-	Root  string       `json:"root"`
-	Nodes []FSTreeNode `json:"nodes"`
-}
-
-// FSTreeNode 文件树中的单个节点，可能是目录或文件
-type FSTreeNode struct {
-	Path    string `json:"path"`
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Size    int64  `json:"size,omitempty"`
-	ModTime string `json:"modTime,omitempty"`
-}
-
-// GetFSFileResp 读取文件接口响应体
-type GetFSFileResp struct {
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	Encoding string `json:"encoding"`
-	Content  string `json:"content"`
-}
-
-// WriteFSFileReq 写入文件接口请求体
-type WriteFSFileReq struct {
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Encoding string `json:"encoding,omitempty"`
-}
-
-// WriteFSFileResp 写入文件接口响应体
-type WriteFSFileResp struct {
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	Encoding string `json:"encoding"`
-}
-
-// TransferFSFileResp 上传/下载文件接口响应体
-type TransferFSFileResp struct {
-	SourcePath string `json:"source_path"`
-	TargetPath string `json:"target_path"`
-	Size       int64  `json:"size"`
 }
 
 // InitFSApi 注册 fs 相关 HTTP 路由并初始化处理器
@@ -123,7 +80,7 @@ func (h *FSHandler) GetFSTree(c *gin.Context) {
 		return
 	}
 
-	nodes := make([]FSTreeNode, 0)
+	nodes := make([]models.FSTreeNode, 0)
 	walkErr := filepath.WalkDir(targetPath, func(curr string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -159,7 +116,7 @@ func (h *FSHandler) GetFSTree(c *gin.Context) {
 			return nil
 		}
 
-		node := FSTreeNode{
+		node := models.FSTreeNode{
 			Path: rel,
 			Name: d.Name(),
 		}
@@ -189,7 +146,7 @@ func (h *FSHandler) GetFSTree(c *gin.Context) {
 		return nodes[i].Path < nodes[j].Path
 	})
 
-	response.SuccessResponse(c, GetFSTreeResp{
+	response.SuccessResponse(c, models.GetFSTreeResp{
 		Root:  filepath.ToSlash(cleanedRoot),
 		Nodes: nodes,
 	})
@@ -253,7 +210,7 @@ func (h *FSHandler) GetFSFile(c *gin.Context) {
 		content = base64.StdEncoding.EncodeToString(data)
 	}
 
-	response.SuccessResponse(c, GetFSFileResp{
+	response.SuccessResponse(c, models.GetFSFileResp{
 		Path:     filepath.ToSlash(cleanedPath),
 		Size:     int64(len(data)),
 		Encoding: encoding,
@@ -263,7 +220,7 @@ func (h *FSHandler) GetFSFile(c *gin.Context) {
 
 // WriteFSFile 将请求内容按指定编码写入目标文件
 func (h *FSHandler) WriteFSFile(c *gin.Context) {
-	var req WriteFSFileReq
+	var req models.WriteFSFileReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorResponse(c, response.FormError)
 		return
@@ -301,7 +258,7 @@ func (h *FSHandler) WriteFSFile(c *gin.Context) {
 		return
 	}
 
-	response.SuccessResponse(c, WriteFSFileResp{
+	response.SuccessResponse(c, models.WriteFSFileResp{
 		Path:     filepath.ToSlash(cleanedPath),
 		Size:     int64(len(data)),
 		Encoding: encoding,
@@ -350,7 +307,7 @@ func (h *FSHandler) UploadFSFile(c *gin.Context) {
 		return
 	}
 
-	response.SuccessResponse(c, TransferFSFileResp{
+	response.SuccessResponse(c, models.UploadFSFileResp{
 		SourcePath: header.Filename,
 		TargetPath: filepath.ToSlash(cleanedTargetPath),
 		Size:       size,

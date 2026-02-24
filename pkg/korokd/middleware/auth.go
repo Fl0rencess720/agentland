@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Fl0rencess720/agentland/pkg/common/sandboxtoken"
+	"github.com/Fl0rencess720/agentland/pkg/common/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,7 +14,7 @@ const (
 )
 
 type tokenVerifier interface {
-	Verify(token string) (*sandboxtoken.Claims, error)
+	Verify(token string) (*utils.Claims, error)
 }
 
 func SandboxAuth(verifier tokenVerifier) gin.HandlerFunc {
@@ -24,7 +24,7 @@ func SandboxAuth(verifier tokenVerifier) gin.HandlerFunc {
 			return
 		}
 
-		token, err := sandboxtoken.ParseBearerToken(c.GetHeader("Authorization"))
+		token, err := utils.ParseBearerToken(c.GetHeader("Authorization"))
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid authorization header"})
 			return
@@ -51,11 +51,11 @@ func SandboxAuth(verifier tokenVerifier) gin.HandlerFunc {
 	}
 }
 
-func ClaimsFromContext(c *gin.Context) (*sandboxtoken.Claims, bool) {
+func ClaimsFromContext(c *gin.Context) (*utils.Claims, bool) {
 	v, ok := c.Get(claimsContextKey)
 	if !ok {
 		return nil, false
 	}
-	claims, ok := v.(*sandboxtoken.Claims)
+	claims, ok := v.(*utils.Claims)
 	return claims, ok
 }
