@@ -98,23 +98,24 @@ func (s *CommonSuite) TestReadRequestBodyError() {
 }
 
 func (s *CommonSuite) TestBindJSONWithBody() {
-	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"language":"python"}`))
+	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"language":"python","cwd":"/workspace"}`))
 
-	var req CreateSandboxReq
+	var req CreateContextReq
 	body, ok := bindJSONWithBody(s.ctx, &req)
 	s.True(ok)
 	s.Equal("python", req.Language)
-	s.Equal(`{"language":"python"}`, string(body))
+	s.Equal("/workspace", req.CWD)
+	s.Equal(`{"language":"python","cwd":"/workspace"}`, string(body))
 
 	restored, err := io.ReadAll(s.ctx.Request.Body)
 	s.NoError(err)
-	s.Equal(`{"language":"python"}`, string(restored))
+	s.Equal(`{"language":"python","cwd":"/workspace"}`, string(restored))
 }
 
 func (s *CommonSuite) TestBindJSONWithBodyInvalidJSON() {
 	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"language":`))
 
-	var req CreateSandboxReq
+	var req CreateContextReq
 	body, ok := bindJSONWithBody(s.ctx, &req)
 	s.False(ok)
 	s.Nil(body)

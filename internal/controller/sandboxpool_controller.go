@@ -12,8 +12,10 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	agentlandv1alpha1 "github.com/Fl0rencess720/agentland/api/v1alpha1"
 	commonutils "github.com/Fl0rencess720/agentland/pkg/common/utils"
@@ -182,9 +184,22 @@ func (r *SandboxPoolReconciler) updatePoolStatus(ctx context.Context, oldStatus 
 }
 
 func (r *SandboxPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	podLabelPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      commonutils.PoolLabel,
+				Operator: metav1.LabelSelectorOpExists,
+				Values:   []string{},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentlandv1alpha1.SandboxPool{}).
-		Owns(&corev1.Pod{}).
+		Owns(&corev1.Pod{}, builder.WithPredicates(podLabelPredicate)).
 		Named("sandboxpool").
 		Complete(r)
 }

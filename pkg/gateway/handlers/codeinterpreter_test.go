@@ -253,16 +253,12 @@ func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
 }
 
 func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
-	reqBody := CreateSandboxReq{Language: "python"}
-	jsonBytes, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest("POST", "/sandboxes", bytes.NewBuffer(jsonBytes))
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest("POST", "/sandboxes", nil)
 	s.ctx.Request = req
 
 	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "python"},
+		&pb.CreateSandboxRequest{},
 	).Return(&pb.CreateSandboxResponse{
 		SandboxId:    "session-sbx-1",
 		GrpcEndpoint: "sandbox.test:1883",
@@ -274,37 +270,23 @@ func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
 	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-1"`)
 }
 
-func (s *CodeInterpreterSuite) TestCreateSandbox_ShellSuccess() {
-	reqBody := CreateSandboxReq{Language: "shell"}
-	jsonBytes, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest("POST", "/sandboxes", bytes.NewBuffer(jsonBytes))
+func (s *CodeInterpreterSuite) TestCreateSandbox_IgnoresBody() {
+	req := httptest.NewRequest("POST", "/sandboxes", strings.NewReader(`{"language":"ruby"}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.ctx.Request = req
 
 	s.mockAgentCoreClient.On("CreateCodeInterpreter",
 		mock.Anything,
-		&pb.CreateSandboxRequest{Language: "shell"},
+		&pb.CreateSandboxRequest{},
 	).Return(&pb.CreateSandboxResponse{
-		SandboxId:    "session-sbx-shell",
+		SandboxId:    "session-sbx-body-ignored",
 		GrpcEndpoint: "sandbox.test:1883",
 	}, nil).Once()
 
 	s.handler.CreateSandbox(s.ctx)
 
 	s.Equal(http.StatusOK, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-shell"`)
-}
-
-func (s *CodeInterpreterSuite) TestCreateSandbox_InvalidLanguage() {
-	req := httptest.NewRequest("POST", "/sandboxes", strings.NewReader(`{"language":"ruby"}`))
-	req.Header.Set("Content-Type", "application/json")
-	s.ctx.Request = req
-
-	s.handler.CreateSandbox(s.ctx)
-
-	s.Equal(http.StatusBadRequest, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), `"msg":"Form Error"`)
+	s.Contains(s.recorder.Body.String(), `"sandbox_id":"session-sbx-body-ignored"`)
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {

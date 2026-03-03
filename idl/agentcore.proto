@@ -16,7 +16,6 @@ service SandboxService {
 }
 
 message CreateSandboxRequest {
-  string language = 1;
 }
 
 message CreateSandboxResponse {

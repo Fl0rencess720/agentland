@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agentland.sandbox import SDKError, Sandbox
+from agentland.sandbox import ExecutionResult, SDKError, Sandbox
 
 
 class _FakeResponse:
@@ -34,7 +34,7 @@ class SandboxSDKTest(unittest.TestCase):
             ).encode("utf-8"),
         )
 
-        sandbox = Sandbox.create(language="python")
+        sandbox = Sandbox.create()
         self.assertEqual("session-1", sandbox.sandbox_id)
 
     @mock.patch("agentland.sandbox._http.httpx.request")
@@ -74,8 +74,17 @@ class SandboxSDKTest(unittest.TestCase):
         ctx = sandbox.context.create(language="python", cwd="/workspace")
         self.assertEqual("ctx-1", ctx.context_id)
         out = ctx.exec("print('ok')", timeout_ms=30000)
-        self.assertEqual(0, out["exit_code"])
-        self.assertEqual("ok\n", out["stdout"])
+        self.assertIsInstance(out, ExecutionResult)
+        self.assertEqual("ctx-1", out.context_id)
+        self.assertEqual(1, out.execution_count)
+        self.assertEqual(0, out.exit_code)
+        self.assertEqual("ok\n", out.stdout)
+        self.assertEqual("", out.stderr)
+        self.assertEqual(3, out.duration_ms)
+        with self.assertRaises(TypeError):
+            _ = out["stdout"]  # type: ignore[index]
+        with self.assertRaises(AttributeError):
+            _ = out.get("stdout", "")  # type: ignore[attr-defined]
         deleted = ctx.delete()
         self.assertEqual("ctx-1", deleted["context_id"])
 
@@ -157,7 +166,7 @@ class SandboxSDKTest(unittest.TestCase):
         )
 
         with self.assertRaises(SDKError) as ctx:
-            Sandbox.create("python")
+            Sandbox.create()
         self.assertEqual(400, ctx.exception.http_status)
         self.assertEqual(1, ctx.exception.code)
 

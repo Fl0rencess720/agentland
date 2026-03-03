@@ -29,8 +29,8 @@ class CodeInterpreterToolBridge:
             return "python"
         return normalized
 
-    def sandbox_create(self, *, language: str | None = None) -> dict[str, Any]:
-        sandbox = Sandbox.create(language=self._normalize_language(language))
+    def sandbox_create(self) -> dict[str, Any]:
+        sandbox = Sandbox.create()
         return {"sandbox_id": sandbox.sandbox_id}
 
     def code_execute(
@@ -55,9 +55,15 @@ class CodeInterpreterToolBridge:
             )
             timeout = timeout_ms if timeout_ms > 0 else 30000
             out = context.exec(code, timeout_ms=timeout)
-            if not str(out.get("context_id", "")).strip():
-                out["context_id"] = context.context_id
-            return out
+            context_id = out.context_id.strip() or context.context_id
+            return {
+                "context_id": context_id,
+                "execution_count": out.execution_count,
+                "exit_code": out.exit_code,
+                "stdout": out.stdout,
+                "stderr": out.stderr,
+                "duration_ms": out.duration_ms,
+            }
         finally:
             if context is not None:
                 self._delete_context_async(context)

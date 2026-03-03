@@ -33,9 +33,9 @@ def create_server(*, base_url: str, timeout: int = 30) -> "FastMCP":
     bridge = CodeInterpreterToolBridge(base_url=base_url, timeout=timeout)
 
     @mcp.tool()
-    async def sandbox_create(language: str = "") -> dict:
+    async def sandbox_create() -> dict:
         """Create a code runner sandbox session."""
-        return await asyncio.to_thread(bridge.sandbox_create, language=language)
+        return await asyncio.to_thread(bridge.sandbox_create)
 
     @mcp.tool()
     async def code_execute(
@@ -106,4 +106,3 @@ def create_server(*, base_url: str, timeout: int = 30) -> "FastMCP":
         )
 
     return mcp
-

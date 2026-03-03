@@ -26,10 +26,6 @@ type CodeInterpreterHandler struct {
 	proxyEngine     *ProxyEngine
 }
 
-type CreateSandboxReq struct {
-	Language string `json:"language"`
-}
-
 type CreateSandboxResp struct {
 	SandboxID string `json:"sandbox_id"`
 }
@@ -86,17 +82,6 @@ func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
 	reqCtx, requestID := initRequestContext(ctx)
 
-	var req CreateSandboxReq
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		response.ErrorResponse(ctx, response.FormError)
-		return
-	}
-	req.Language = strings.ToLower(strings.TrimSpace(req.Language))
-	if !isSupportedCodeLanguage(req.Language) {
-		response.ErrorResponse(ctx, response.FormError)
-		return
-	}
-
 	tracer := otel.Tracer("gateway.codeinterpreter")
 	reqCtx, span := tracer.Start(reqCtx, "gateway.codeinterpreter.create_rpc")
 	defer span.End()
@@ -105,9 +90,8 @@ func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
 		reqCtx = metadata.AppendToOutgoingContext(reqCtx, observability.RequestIDHeader, requestID)
 		span.SetAttributes(attribute.String("request.id", requestID))
 	}
-	span.SetAttributes(attribute.String("sandbox.language", req.Language))
 
-	resp, err := h.agentCoreClient.CreateCodeInterpreter(reqCtx, &pb.CreateSandboxRequest{Language: req.Language})
+	resp, err := h.agentCoreClient.CreateCodeInterpreter(reqCtx, &pb.CreateSandboxRequest{})
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "create codeinterpreter rpc failed")
