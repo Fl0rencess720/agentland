@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/common/observability"
 	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
@@ -89,7 +90,7 @@ func (s *CommonSuite) TestReadRequestBody() {
 
 func (s *CommonSuite) TestReadRequestBodyError() {
 	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", nil)
-	s.ctx.Request.Body = errReadCloser{err: errors.New("boom")}
+	s.ctx.Request.Body = errReadCloser{err: fmt.Errorf("boom")}
 
 	body, ok := readRequestBody(s.ctx)
 	s.False(ok)
@@ -100,7 +101,7 @@ func (s *CommonSuite) TestReadRequestBodyError() {
 func (s *CommonSuite) TestBindJSONWithBody() {
 	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"language":"python","cwd":"/workspace"}`))
 
-	var req CreateContextReq
+	var req models.CreateContextReq
 	body, ok := bindJSONWithBody(s.ctx, &req)
 	s.True(ok)
 	s.Equal("python", req.Language)
@@ -115,7 +116,7 @@ func (s *CommonSuite) TestBindJSONWithBody() {
 func (s *CommonSuite) TestBindJSONWithBodyInvalidJSON() {
 	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"language":`))
 
-	var req CreateContextReq
+	var req models.CreateContextReq
 	body, ok := bindJSONWithBody(s.ctx, &req)
 	s.False(ok)
 	s.Nil(body)

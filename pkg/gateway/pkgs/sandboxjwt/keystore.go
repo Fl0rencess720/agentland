@@ -7,7 +7,6 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -273,10 +272,10 @@ func publicKeyPEMFromPrivatePEM(privatePEM []byte) ([]byte, error) {
 func parseRSAPrivateKeyPEM(data []byte) (*rsa.PrivateKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil {
-		return nil, errors.New("invalid private key pem")
+		return nil, fmt.Errorf("invalid private key pem")
 	}
 	if len(bytes.TrimSpace(rest)) > 0 {
-		return nil, errors.New("extra data found in private key pem")
+		return nil, fmt.Errorf("extra data found in private key pem")
 	}
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key, nil
@@ -287,7 +286,7 @@ func parseRSAPrivateKeyPEM(data []byte) (*rsa.PrivateKey, error) {
 	}
 	key, ok := keyAny.(*rsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("private key is not RSA")
+		return nil, fmt.Errorf("private key is not RSA")
 	}
 	return key, nil
 }

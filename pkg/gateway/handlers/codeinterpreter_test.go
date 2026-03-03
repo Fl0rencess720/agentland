@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
@@ -58,7 +59,7 @@ func (m *mockTokenSigner) Sign(sessionID, subject string, version int64) (string
 	if m.signFn != nil {
 		return m.signFn(sessionID, subject, version)
 	}
-	return "", errors.New("sign not implemented")
+	return "", fmt.Errorf("sign not implemented")
 }
 
 func (m *MockAgentCoreServiceClient) CreateCodeInterpreter(ctx context.Context, in *pb.CreateSandboxRequest, opts ...grpc.CallOption) (*pb.CreateSandboxResponse, error) {
@@ -167,7 +168,7 @@ func (s *CodeInterpreterSuite) SetupTest() {
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
-	reqBody := CreateContextReq{Language: "python", CWD: "/workspace"}
+	reqBody := models.CreateContextReq{Language: "python", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -211,7 +212,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
-	reqBody := CreateContextReq{Language: "shell", CWD: "/workspace"}
+	reqBody := models.CreateContextReq{Language: "shell", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -290,7 +291,7 @@ func (s *CodeInterpreterSuite) TestCreateSandbox_IgnoresBody() {
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
-	reqBody := CreateContextReq{Language: "python", CWD: "/workspace"}
+	reqBody := models.CreateContextReq{Language: "python", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/contexts", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -303,7 +304,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
-	reqBody := ExecuteInContextReq{Code: "print(1)"}
+	reqBody := models.ExecuteContextReq{Code: "print(1)"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/contexts/ctx-1/execute", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -317,7 +318,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
-	reqBody := ExecuteInContextReq{Code: "print(1)", TimeoutMs: 30000}
+	reqBody := models.ExecuteContextReq{Code: "print(1)", TimeoutMs: 30000}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -415,7 +416,7 @@ func (s *CodeInterpreterSuite) TestGetFSTree_SessionNotFound() {
 }
 
 func (s *CodeInterpreterSuite) TestWriteFSFile_ProxySuccess() {
-	reqBody := WriteFSFileReq{
+	reqBody := models.WriteFSFileReq{
 		Path:     "/home/user/data.txt",
 		Content:  "这是测试数据\n第二行数据",
 		Encoding: "utf-8",

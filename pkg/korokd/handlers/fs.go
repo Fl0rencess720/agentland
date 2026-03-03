@@ -26,7 +26,7 @@ const (
 	defaultFileEncoding = "utf8"
 )
 
-var errPathEscapesWorkspaceRoot = errors.New("path escapes workspace root")
+var errPathEscapesWorkspaceRoot = fmt.Errorf("path escapes workspace root")
 
 // FSHandler 封装文件系统相关接口所需的运行参数
 type FSHandler struct {
@@ -360,10 +360,10 @@ func (h *FSHandler) DownloadFSFile(c *gin.Context) {
 func parseDepth(v string) (int, error) {
 	parsed, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil {
-		return 0, errors.New("depth must be an integer")
+		return 0, fmt.Errorf("depth must be an integer")
 	}
 	if parsed < 1 || parsed > 20 {
-		return 0, errors.New("depth must be between 1 and 20")
+		return 0, fmt.Errorf("depth must be between 1 and 20")
 	}
 	return parsed, nil
 }
@@ -376,7 +376,7 @@ func parseIncludeHidden(v string) (bool, error) {
 	case "false", "0", "":
 		return false, nil
 	default:
-		return false, errors.New("includeHidden must be true or false")
+		return false, fmt.Errorf("includeHidden must be true or false")
 	}
 }
 
@@ -406,7 +406,7 @@ func parseEncoding(v string) (string, error) {
 	case "base64":
 		return "base64", nil
 	default:
-		return "", errors.New("encoding must be utf8, utf-8 or base64")
+		return "", fmt.Errorf("encoding must be utf8, utf-8 or base64")
 	}
 }
 
@@ -418,11 +418,11 @@ func decodeContent(content, encoding string) ([]byte, error) {
 	case "base64":
 		data, err := base64.StdEncoding.DecodeString(content)
 		if err != nil {
-			return nil, errors.New("content is not valid base64")
+			return nil, fmt.Errorf("content is not valid base64")
 		}
 		return data, nil
 	default:
-		return nil, errors.New("unsupported encoding")
+		return nil, fmt.Errorf("unsupported encoding")
 	}
 }
 

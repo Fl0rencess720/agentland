@@ -2,7 +2,7 @@ package agentcore
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
@@ -38,7 +38,7 @@ func (m *mockSessionStore) GetSession(ctx context.Context, sandboxID string) (*d
 			return &cloned, nil
 		}
 	}
-	return nil, errors.New("session not found")
+	return nil, fmt.Errorf("session not found")
 }
 
 func (m *mockSessionStore) DeleteSession(ctx context.Context, sandboxID string) error {

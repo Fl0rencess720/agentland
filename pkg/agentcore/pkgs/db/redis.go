@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -19,7 +18,7 @@ var (
 	MaxSessionDuration = 1 * time.Hour
 	MaxIdleDuration    = 15 * time.Minute
 
-	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionNotFound = fmt.Errorf("session not found")
 )
 
 type SessionStore struct {

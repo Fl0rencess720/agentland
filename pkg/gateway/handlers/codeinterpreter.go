@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/common/observability"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
@@ -28,22 +29,6 @@ type CodeInterpreterHandler struct {
 
 type CreateSandboxResp struct {
 	SandboxID string `json:"sandbox_id"`
-}
-
-type CreateContextReq struct {
-	Language string `json:"language"`
-	CWD      string `json:"cwd,omitempty"`
-}
-
-type ExecuteInContextReq struct {
-	Code      string `json:"code"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
-}
-
-type WriteFSFileReq struct {
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Encoding string `json:"encoding,omitempty"`
 }
 
 // InitCodeInterpreterApi 注册路由并在内部完成 Handler 字段的初始化
@@ -108,7 +93,7 @@ func (h *CodeInterpreterHandler) CreateSandbox(ctx *gin.Context) {
 }
 
 func (h *CodeInterpreterHandler) CreateContext(ctx *gin.Context) {
-	var req CreateContextReq
+	var req models.CreateContextReq
 	bodyBytes, ok := bindJSONWithBody(ctx, &req)
 	if !ok || !isSupportedCodeLanguage(req.Language) {
 		response.ErrorResponse(ctx, response.FormError)
@@ -118,7 +103,7 @@ func (h *CodeInterpreterHandler) CreateContext(ctx *gin.Context) {
 }
 
 func (h *CodeInterpreterHandler) ExecuteInContext(ctx *gin.Context) {
-	var req ExecuteInContextReq
+	var req models.ExecuteContextReq
 	bodyBytes, ok := bindJSONWithBody(ctx, &req)
 	if !ok || strings.TrimSpace(req.Code) == "" {
 		response.ErrorResponse(ctx, response.FormError)
@@ -155,7 +140,7 @@ func (h *CodeInterpreterHandler) GetFSFile(ctx *gin.Context) {
 }
 
 func (h *CodeInterpreterHandler) WriteFSFile(ctx *gin.Context) {
-	var req WriteFSFileReq
+	var req models.WriteFSFileReq
 	bodyBytes, ok := bindJSONWithBody(ctx, &req)
 	if !ok || strings.TrimSpace(req.Path) == "" {
 		response.ErrorResponse(ctx, response.FormError)

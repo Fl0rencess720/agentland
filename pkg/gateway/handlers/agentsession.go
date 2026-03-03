@@ -157,7 +157,7 @@ func (h *AgentSessionHandler) resolveOrCreateSession(ctx *gin.Context) (*db.Sand
 
 	runtimeName, runtimeNamespace := resolveRuntimeRef(ctx, h.defaultRuntimeName, h.defaultRuntimeNS)
 	if strings.TrimSpace(runtimeName) == "" {
-		return nil, "", errors.New("runtime name is required")
+		return nil, "", fmt.Errorf("runtime name is required")
 	}
 
 	createResp, err := h.agentCoreClient.CreateAgentSession(reqCtx, &pb.CreateAgentSessionRequest{

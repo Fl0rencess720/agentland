@@ -40,10 +40,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN python3 -m pip install --no-cache-dir -U pip \
-    && python3 -m pip install --no-cache-dir ipykernel==6.29.5
-
-RUN python3 -m pip install --no-cache-dir -U pip \
- && python3 -m pip install --no-cache-dir ipykernel==6.29.5
+    && python3 -m pip install --no-cache-dir \
+      ipykernel==6.29.5 \
+      notebook==7.4.5 \
+    && python3 -m ipykernel install --name python --display-name "Python"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg \
@@ -63,8 +63,14 @@ RUN npm config set fund false \
 WORKDIR /app
 
 COPY --from=builder /workspace/korokd .
+COPY docker/entrypoint.korokd.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV JUPYTER_PORT=44771 \
+    JUPYTER_HOST=http://127.0.0.1:44771 \
+    JUPYTER_TOKEN=agentland-korokd-jupyter
 
 EXPOSE 1883
 
-ENTRYPOINT ["/usr/bin/tini","--","/app/korokd"]
+ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]
 CMD ["--port=1883"]

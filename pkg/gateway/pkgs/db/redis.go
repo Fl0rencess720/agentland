@@ -3,7 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -14,7 +14,7 @@ var (
 	keyPrefixSession     = "agentland:session:"      // 会话信息前缀
 	keyLastActivityIndex = "agentland:last-activity" // 按活跃时间排序的索引
 
-	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionNotFound = fmt.Errorf("session not found")
 )
 
 type SessionStore struct {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -10,37 +11,6 @@ import (
 
 type CodeInterpreterHandler struct {
 	contexts *contextManager
-}
-
-type CreateContextReq struct {
-	Language string `json:"language"`
-	CWD      string `json:"cwd"`
-}
-
-type CreateContextResp struct {
-	ContextID string `json:"context_id"`
-	Language  string `json:"language"`
-	CWD       string `json:"cwd"`
-	State     string `json:"state"`
-	CreatedAt string `json:"created_at"`
-}
-
-type ExecuteContextReq struct {
-	Code      string `json:"code"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
-}
-
-type ExecuteContextResp struct {
-	ContextID      string `json:"context_id"`
-	ExecutionCount int64  `json:"execution_count"`
-	ExitCode       int32  `json:"exit_code"`
-	Stdout         string `json:"stdout"`
-	Stderr         string `json:"stderr"`
-	DurationMs     int64  `json:"duration_ms"`
-}
-
-type DeleteContextResp struct {
-	ContextID string `json:"context_id"`
 }
 
 func InitCodeInterpreterApi(group *gin.RouterGroup) {
@@ -58,7 +28,7 @@ func InitCodeInterpreterApi(group *gin.RouterGroup) {
 }
 
 func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
-	var req CreateContextReq
+	var req models.CreateContextReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorResponse(c, response.FormError)
 		return
@@ -70,7 +40,7 @@ func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
 		return
 	}
 
-	response.SuccessResponse(c, CreateContextResp{
+	response.SuccessResponse(c, models.CreateContextResp{
 		ContextID: ctx.ID,
 		Language:  ctx.Language,
 		CWD:       ctx.CWD,
@@ -86,7 +56,7 @@ func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 		return
 	}
 
-	var req ExecuteContextReq
+	var req models.ExecuteContextReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorResponse(c, response.FormError)
 		return
@@ -113,5 +83,5 @@ func (h *CodeInterpreterHandler) DeleteContext(c *gin.Context) {
 		return
 	}
 
-	response.SuccessResponse(c, DeleteContextResp{ContextID: contextID})
+	response.SuccessResponse(c, models.DeleteContextResp{ContextID: contextID})
 }

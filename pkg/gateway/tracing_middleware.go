@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -53,7 +52,7 @@ func tracingMiddleware() gin.HandlerFunc {
 		statusCode := c.Writer.Status()
 		span.SetAttributes(attribute.Int("http.status_code", statusCode))
 		if len(c.Errors) > 0 {
-			err := errors.New(c.Errors.String())
+			err := fmt.Errorf("%s", c.Errors.String())
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return
