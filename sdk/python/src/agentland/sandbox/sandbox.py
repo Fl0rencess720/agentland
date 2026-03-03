@@ -8,6 +8,7 @@ from typing import Any
 
 from ._http import _HTTPClient
 from .errors import SDKError
+from .results import ExecutionResult
 
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -99,17 +100,18 @@ class Context:
         self._sandbox = sandbox
         self.context_id = _ensure_non_empty("context_id", context_id)
 
-    def exec(self, code: str, timeout_ms: int = 30000) -> dict[str, Any]:
+    def exec(self, code: str, timeout_ms: int = 30000) -> ExecutionResult:
         payload = {
             "code": _ensure_non_empty("code", code),
             "timeout_ms": _ensure_timeout(timeout_ms),
         }
-        return self._sandbox._client_impl.request_json(
+        raw = self._sandbox._client_impl.request_json(
             "POST",
             f"/api/code-runner/contexts/{self.context_id}/execute",
             session_id=self._sandbox.sandbox_id,
             json_body=payload,
         )
+        return ExecutionResult.from_payload(raw)
 
     def delete(self) -> dict[str, Any]:
         return self._sandbox._client_impl.request_json(

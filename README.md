@@ -52,11 +52,11 @@ context = sandbox.context.create(language="python", cwd="/workspace")
 
 # 3) 第一次执行：定义变量 x
 first = context.exec("x = 41")
-print(first.get("stdout", ""))
+print(first.stdout)
 
 # 4) 第二次执行：直接访问上一次 exec 定义的变量 x
 second = context.exec("print('x + 1 =', x + 1)")
-print(second.get("stdout", ""))
+print(second.stdout)
 
 # 5) 删除 context
 context.delete()
@@ -99,7 +99,7 @@ shell_context = sandbox.context.create(language="shell", cwd="/workspace")
 
 # 3) 在同一个 context 内执行 agent-browser 帮助命令
 help_resp = shell_context.exec("agent-browser --help")
-print(help_resp.get("stdout", ""))
+print(help_resp.stdout)
 
 # 4) 删除 shell context
 shell_context.delete()

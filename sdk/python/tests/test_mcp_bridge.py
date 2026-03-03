@@ -9,20 +9,22 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agentland.mcp.bridge import CodeInterpreterToolBridge
+from agentland.sandbox import ExecutionResult
 
 
 class _FakeContext:
     def __init__(self, *, context_id: str = "ctx-1") -> None:
         self.context_id = context_id
 
-    def exec(self, code: str, timeout_ms: int = 30000) -> dict:
-        return {
-            "execution_count": 1,
-            "exit_code": 0,
-            "stdout": "ok\n",
-            "stderr": "",
-            "duration_ms": 5,
-        }
+    def exec(self, code: str, timeout_ms: int = 30000) -> ExecutionResult:
+        return ExecutionResult(
+            context_id=self.context_id,
+            execution_count=1,
+            exit_code=0,
+            stdout="ok\n",
+            stderr="",
+            duration_ms=5,
+        )
 
     def delete(self) -> dict:
         return {"context_id": self.context_id}
