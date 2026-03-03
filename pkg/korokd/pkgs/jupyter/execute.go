@@ -56,7 +56,18 @@ type executeRequestContent struct {
 	StopOnError     bool              `json:"stop_on_error"`
 }
 
+type ExecuteHooks struct {
+	OnStdout         func(text string)
+	OnStderr         func(text string)
+	OnStatus         func(state string)
+	OnExecutionCount func(count int64)
+}
+
 func (c *Client) Execute(ctx context.Context, kernelID, code string) (*ExecuteResult, error) {
+	return c.ExecuteStream(ctx, kernelID, code, ExecuteHooks{})
+}
+
+func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks ExecuteHooks) (*ExecuteResult, error) {
 	wsURL, err := c.KernelChannelsURL(kernelID)
 	if err != nil {
 		return nil, err
@@ -179,8 +190,14 @@ func (c *Client) Execute(ctx context.Context, kernelID, code string) (*ExecuteRe
 				if err := json.Unmarshal(r.msg.Content, &sc); err == nil {
 					if sc.Name == "stderr" {
 						stderr.WriteString(sc.Text)
+						if hooks.OnStderr != nil && sc.Text != "" {
+							hooks.OnStderr(sc.Text)
+						}
 					} else {
 						stdout.WriteString(sc.Text)
+						if hooks.OnStdout != nil && sc.Text != "" {
+							hooks.OnStdout(sc.Text)
+						}
 					}
 				}
 			case "error":
@@ -188,14 +205,23 @@ func (c *Client) Execute(ctx context.Context, kernelID, code string) (*ExecuteRe
 				if err := json.Unmarshal(r.msg.Content, &ec); err == nil {
 					hadError = true
 					if len(ec.Traceback) > 0 {
-						stderr.WriteString(strings.Join(ec.Traceback, "\n"))
-						stderr.WriteString("\n")
+						tb := strings.Join(ec.Traceback, "\n") + "\n"
+						stderr.WriteString(tb)
+						if hooks.OnStderr != nil {
+							hooks.OnStderr(tb)
+						}
 					} else if ec.EValue != "" {
-						stderr.WriteString(ec.EValue)
-						stderr.WriteString("\n")
+						line := ec.EValue + "\n"
+						stderr.WriteString(line)
+						if hooks.OnStderr != nil {
+							hooks.OnStderr(line)
+						}
 					} else if ec.EName != "" {
-						stderr.WriteString(ec.EName)
-						stderr.WriteString("\n")
+						line := ec.EName + "\n"
+						stderr.WriteString(line)
+						if hooks.OnStderr != nil {
+							hooks.OnStderr(line)
+						}
 					}
 				}
 			case "execute_input":
@@ -203,6 +229,9 @@ func (c *Client) Execute(ctx context.Context, kernelID, code string) (*ExecuteRe
 				if err := json.Unmarshal(r.msg.Content, &ic); err == nil {
 					if ic.ExecutionCount > 0 {
 						execCount = ic.ExecutionCount
+						if hooks.OnExecutionCount != nil {
+							hooks.OnExecutionCount(execCount)
+						}
 					}
 				}
 			case "execute_reply":
@@ -212,21 +241,33 @@ func (c *Client) Execute(ctx context.Context, kernelID, code string) (*ExecuteRe
 					replyStatus = rc.Status
 					if rc.ExecutionCount > 0 {
 						execCount = rc.ExecutionCount
+						if hooks.OnExecutionCount != nil {
+							hooks.OnExecutionCount(execCount)
+						}
 					}
 					if rc.Status == "error" {
 						hadError = true
 						if len(rc.Traceback) > 0 {
-							stderr.WriteString(strings.Join(rc.Traceback, "\n"))
-							stderr.WriteString("\n")
+							tb := strings.Join(rc.Traceback, "\n") + "\n"
+							stderr.WriteString(tb)
+							if hooks.OnStderr != nil {
+								hooks.OnStderr(tb)
+							}
 						} else if rc.EValue != "" {
-							stderr.WriteString(rc.EValue)
-							stderr.WriteString("\n")
+							line := rc.EValue + "\n"
+							stderr.WriteString(line)
+							if hooks.OnStderr != nil {
+								hooks.OnStderr(line)
+							}
 						}
 					}
 				}
 			case "status":
 				var st statusContent
 				if err := json.Unmarshal(r.msg.Content, &st); err == nil {
+					if hooks.OnStatus != nil && st.ExecutionState != "" {
+						hooks.OnStatus(st.ExecutionState)
+					}
 					if st.ExecutionState == "idle" {
 						gotIdle = true
 					}

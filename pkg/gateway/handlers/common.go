@@ -80,6 +80,8 @@ func NewProxyEngine() *ProxyEngine {
 func (e *ProxyEngine) Forward(ctx *gin.Context, cfg ProxyConfig) {
 	proxy := httputil.NewSingleHostReverseProxy(cfg.Target)
 	proxy.Transport = e.Transport
+	// Ensure streaming responses (SSE/chunked) are flushed to the client promptly.
+	proxy.FlushInterval = 100 * time.Millisecond
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -121,6 +123,11 @@ func (e *ProxyEngine) Forward(ctx *gin.Context, cfg ProxyConfig) {
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if cfg.SessionID != "" {
 			resp.Header.Set(SessionHeader, cfg.SessionID)
+		}
+		// Avoid buffering SSE responses in common proxies.
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type"))), "text/event-stream") {
+			resp.Header.Set("Cache-Control", "no-cache")
+			resp.Header.Set("X-Accel-Buffering", "no")
 		}
 		return nil
 	}

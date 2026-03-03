@@ -21,6 +21,38 @@ class _FakeResponse:
         self.text = body.decode("utf-8", errors="replace")
 
 
+class _FakeStreamResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        lines: list[str],
+        headers: dict[str, str] | None = None,
+        body: bytes = b"",
+    ):
+        self.status_code = status_code
+        self.headers = {} if headers is None else dict(headers)
+        self._lines = list(lines)
+        self._body = body
+
+    def iter_lines(self):  # type: ignore[no-untyped-def]
+        return iter(self._lines)
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeStreamContext:
+    def __init__(self, resp: _FakeStreamResponse):
+        self._resp = resp
+
+    def __enter__(self) -> _FakeStreamResponse:
+        return self._resp
+
+    def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
+        return False
+
+
 class SandboxSDKTest(unittest.TestCase):
     def setUp(self) -> None:
         Sandbox.configure(base_url="http://127.0.0.1:8080", timeout=5)
@@ -44,31 +76,31 @@ class SandboxSDKTest(unittest.TestCase):
         mock_open.assert_not_called()
 
     @mock.patch("agentland.sandbox._http.httpx.request")
-    def test_context_exec_with_raw_payload(self, mock_open: mock.Mock) -> None:
-        responses = [
+    @mock.patch("agentland.sandbox._http.httpx.stream")
+    def test_context_exec_with_raw_payload(self, mock_stream: mock.Mock, mock_open: mock.Mock) -> None:
+        request_responses = [
             _FakeResponse(
                 status_code=200,
                 body=json.dumps({"context_id": "ctx-1"}).encode("utf-8"),
-            ),
-            _FakeResponse(
-                status_code=200,
-                body=json.dumps(
-                    {
-                        "context_id": "ctx-1",
-                        "execution_count": 1,
-                        "exit_code": 0,
-                        "stdout": "ok\n",
-                        "stderr": "",
-                        "duration_ms": 3,
-                    }
-                ).encode("utf-8"),
             ),
             _FakeResponse(
                 status_code=200,
                 body=json.dumps({"context_id": "ctx-1"}).encode("utf-8"),
             ),
         ]
-        mock_open.side_effect = responses
+        mock_open.side_effect = request_responses
+
+        mock_stream.return_value = _FakeStreamContext(
+            _FakeStreamResponse(
+                status_code=200,
+                headers={"Content-Type": "text/event-stream"},
+                lines=[
+                    "data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}",
+                    "data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"ok\\n\"}",
+                    "data: {\"type\":\"complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"result\":{\"context_id\":\"ctx-1\",\"execution_count\":1,\"exit_code\":0,\"stdout\":\"ok\\n\",\"stderr\":\"\",\"duration_ms\":3}}",
+                ],
+            )
+        )
 
         sandbox = Sandbox.connect("session-1")
         ctx = sandbox.context.create(language="python", cwd="/workspace")

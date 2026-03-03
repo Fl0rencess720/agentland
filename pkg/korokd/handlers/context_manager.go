@@ -26,8 +26,8 @@ const (
 	contextLanguagePython = "python"
 	contextLanguageShell  = "shell"
 	// context 的运行时元数据放在 /tmp/korokd/contexts/<contextID> 下
-	contextBaseDir        = "/tmp/korokd"
-	contextsDirName       = "contexts"
+	contextBaseDir  = "/tmp/korokd"
+	contextsDirName = "contexts"
 	// 以下为运行安全边界与默认值：
 	// - contextMaxCount: 单个 korokd 进程允许维护的最大 context 数
 	// - contextIdleTTL/contextGCInterval: 空闲回收策略
@@ -57,15 +57,15 @@ var (
 // kernelContext 表示一个可复用的执行上下文
 // python 对应 Jupyter session/kernel，shell 对应常驻 sh 进程，都会在多次执行间保留状态
 type kernelContext struct {
-	ID           string
-	Language     string
-	CWD          string
-	KernelID     string
-	PID          int
-	RootDir      string // shell 专用：用于存储临时脚本与输出文件
-	cmd          *exec.Cmd
-	waitCh       chan error
-	shellStdin   io.WriteCloser
+	ID         string
+	Language   string
+	CWD        string
+	KernelID   string
+	PID        int
+	RootDir    string // shell 专用：用于存储临时脚本与输出文件
+	cmd        *exec.Cmd
+	waitCh     chan error
+	shellStdin io.WriteCloser
 
 	createdAt      time.Time
 	lastActiveUnix atomic.Int64
@@ -74,10 +74,17 @@ type kernelContext struct {
 }
 
 type contextManager struct {
-	mu         sync.RWMutex
-	contexts   map[string]*kernelContext
-	rootDir    string
-	jupyter    *jupyter.Client
+	mu       sync.RWMutex
+	contexts map[string]*kernelContext
+	rootDir  string
+	jupyter  *jupyter.Client
+}
+
+type executeStreamHooks struct {
+	OnStdout         func(text string)
+	OnStderr         func(text string)
+	OnStatus         func(state string)
+	OnExecutionCount func(count int64)
 }
 
 func newContextManager() (*contextManager, error) {
@@ -100,9 +107,9 @@ func newContextManager() (*contextManager, error) {
 	}
 
 	m := &contextManager{
-		contexts:   make(map[string]*kernelContext),
-		rootDir:    rootDir,
-		jupyter:    jc,
+		contexts: make(map[string]*kernelContext),
+		rootDir:  rootDir,
+		jupyter:  jc,
 	}
 
 	// 后台协程定时回收空闲 context，限制资源持续增长
@@ -276,6 +283,24 @@ func (m *contextManager) create(language, cwd string) (*kernelContext, error) {
 }
 
 func (m *contextManager) execute(ctx context.Context, contextID, code string, timeoutMs int) (*models.ExecuteContextResp, error) {
+	return m.executeWithHooks(ctx, contextID, code, timeoutMs, nil)
+}
+
+func (m *contextManager) executeStreaming(
+	ctx context.Context,
+	contextID, code string,
+	timeoutMs int,
+	hooks executeStreamHooks,
+) (*models.ExecuteContextResp, error) {
+	return m.executeWithHooks(ctx, contextID, code, timeoutMs, &hooks)
+}
+
+func (m *contextManager) executeWithHooks(
+	ctx context.Context,
+	contextID, code string,
+	timeoutMs int,
+	hooks *executeStreamHooks,
+) (*models.ExecuteContextResp, error) {
 	// 执行流程：
 	// 1. 查找 context 并校验参数
 	// 2. busy 原子位做串行保护（同一 context 同时只允许一个执行）
@@ -305,9 +330,9 @@ func (m *contextManager) execute(ctx context.Context, contextID, code string, ti
 
 	switch kctx.Language {
 	case contextLanguagePython:
-		return m.executePython(ctx, contextID, kctx, code, timeoutMs)
+		return m.executePython(ctx, contextID, kctx, code, timeoutMs, hooks)
 	case contextLanguageShell:
-		return m.executeShell(ctx, contextID, kctx, code, timeoutMs)
+		return m.executeShell(ctx, contextID, kctx, code, timeoutMs, hooks)
 	default:
 		return nil, fmt.Errorf("%w: %s", errUnsupportedLanguage, kctx.Language)
 	}
@@ -319,6 +344,7 @@ func (m *contextManager) executePython(
 	kctx *kernelContext,
 	code string,
 	timeoutMs int,
+	hooks *executeStreamHooks,
 ) (*models.ExecuteContextResp, error) {
 	// python 执行：
 	// - 每次执行前注入 os.chdir(cwd)，严格对齐 cwd 语义
@@ -336,7 +362,20 @@ func (m *contextManager) executePython(
 		return nil, err
 	}
 
-	result, runErr := m.jupyter.Execute(execCtx, kctx.KernelID, fullCode)
+	var jhooks jupyter.ExecuteHooks
+	if hooks != nil {
+		jhooks = jupyter.ExecuteHooks{
+			OnStdout: hooks.OnStdout,
+			OnStderr: hooks.OnStderr,
+			OnStatus: hooks.OnStatus,
+			OnExecutionCount: func(count int64) {
+				if hooks.OnExecutionCount != nil {
+					hooks.OnExecutionCount(count)
+				}
+			},
+		}
+	}
+	result, runErr := m.jupyter.ExecuteStream(execCtx, kctx.KernelID, fullCode, jhooks)
 	if runErr != nil && errors.Is(runErr, context.DeadlineExceeded) {
 		// 超时后认为 kernel 可能进入不稳定状态，直接回收重建更安全
 		_ = m.jupyter.InterruptKernel(context.Background(), kctx.KernelID)
@@ -378,6 +417,7 @@ func (m *contextManager) executeShell(
 	kctx *kernelContext,
 	code string,
 	timeoutMs int,
+	hooks *executeStreamHooks,
 ) (*models.ExecuteContextResp, error) {
 	// shell 执行：
 	// - 将代码写入临时脚本
@@ -420,7 +460,34 @@ func (m *contextManager) executeShell(
 		return nil, fmt.Errorf("write shell command failed: %w", err)
 	}
 
+	if hooks != nil && hooks.OnExecutionCount != nil {
+		hooks.OnExecutionCount(execCount)
+	}
+	if hooks != nil && hooks.OnStatus != nil {
+		hooks.OnStatus("running")
+	}
+
+	stopTail := make(chan struct{})
+	var stopTailOnce sync.Once
+	stopTailFn := func() { stopTailOnce.Do(func() { close(stopTail) }) }
+
+	var tailWG sync.WaitGroup
+	if hooks != nil && (hooks.OnStdout != nil || hooks.OnStderr != nil) {
+		tailWG.Add(2)
+		go func() {
+			defer tailWG.Done()
+			tailFile(execCtx, stdoutPath, hooks.OnStdout, stopTail)
+		}()
+		go func() {
+			defer tailWG.Done()
+			tailFile(execCtx, stderrPath, hooks.OnStderr, stopTail)
+		}()
+	}
+
 	if err := waitForShellResult(execCtx, statusPath, kctx.waitCh); err != nil {
+		stopTailFn()
+		tailWG.Wait()
+
 		if errors.Is(err, context.DeadlineExceeded) {
 			_ = m.removeContext(contextID, true)
 			stdout := readFileOrEmpty(stdoutPath)
@@ -439,6 +506,9 @@ func (m *contextManager) executeShell(
 		return nil, fmt.Errorf("wait shell result failed: %w", err)
 	}
 
+	stopTailFn()
+	tailWG.Wait()
+
 	statusRaw, err := os.ReadFile(statusPath)
 	if err != nil {
 		return nil, fmt.Errorf("read shell status failed: %w", err)
@@ -452,6 +522,9 @@ func (m *contextManager) executeShell(
 	stdout := readFileOrEmpty(stdoutPath)
 	stderr := readFileOrEmpty(stderrPath)
 	kctx.lastActiveUnix.Store(time.Now().UnixNano())
+	if hooks != nil && hooks.OnStatus != nil {
+		hooks.OnStatus("complete")
+	}
 	return &models.ExecuteContextResp{
 		ContextID:      contextID,
 		ExecutionCount: execCount,
@@ -563,6 +636,60 @@ func readFileOrEmpty(path string) string {
 		return ""
 	}
 	return string(content)
+}
+
+func tailFile(ctx context.Context, path string, onChunk func(string), stop <-chan struct{}) {
+	if onChunk == nil {
+		return
+	}
+
+	var offset int64
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		size := fi.Size()
+		if size < offset {
+			offset = 0
+		}
+		if size <= offset {
+			continue
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		_, _ = f.Seek(offset, io.SeekStart)
+
+		maxRead := int64(64 * 1024)
+		toRead := size - offset
+		if toRead > maxRead {
+			toRead = maxRead
+		}
+
+		buf := make([]byte, toRead)
+		n, _ := f.Read(buf)
+		_ = f.Close()
+
+		if n <= 0 {
+			continue
+		}
+		offset += int64(n)
+		onChunk(string(buf[:n]))
+	}
 }
 
 func shellQuote(s string) string {

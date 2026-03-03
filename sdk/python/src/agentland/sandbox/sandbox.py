@@ -8,7 +8,7 @@ from typing import Any
 
 from ._http import _HTTPClient
 from .errors import SDKError
-from .results import ExecutionResult
+from .results import ExecutionResult, ExecutionStreamEvent
 
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -101,17 +101,29 @@ class Context:
         self.context_id = _ensure_non_empty("context_id", context_id)
 
     def exec(self, code: str, timeout_ms: int = 30000) -> ExecutionResult:
+        last_result: ExecutionResult | None = None
+        for evt in self.exec_stream(code, timeout_ms=timeout_ms):
+            if evt.type == "error":
+                raise SDKError(evt.error or "execution failed")
+            if evt.type == "complete" and evt.result is not None:
+                last_result = evt.result
+                break
+        if last_result is None:
+            raise SDKError("execution stream ended without a complete event")
+        return last_result
+
+    def exec_stream(self, code: str, timeout_ms: int = 30000):
         payload = {
             "code": _ensure_non_empty("code", code),
             "timeout_ms": _ensure_timeout(timeout_ms),
         }
-        raw = self._sandbox._client_impl.request_json(
+        for raw_evt in self._sandbox._client_impl.stream_sse_json(
             "POST",
             f"/api/code-runner/contexts/{self.context_id}/execute",
             session_id=self._sandbox.sandbox_id,
             json_body=payload,
-        )
-        return ExecutionResult.from_payload(raw)
+        ):
+            yield ExecutionStreamEvent.from_payload(raw_evt)
 
     def delete(self) -> dict[str, Any]:
         return self._sandbox._client_impl.request_json(

@@ -313,8 +313,9 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
 
 	s.handler.ExecuteInContext(s.ctx)
 
-	s.Equal(http.StatusBadRequest, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), `"msg":"Form Error"`)
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Contains(s.recorder.Header().Get("Content-Type"), "text/event-stream")
+	s.Contains(s.recorder.Body.String(), `"type":"error"`)
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
@@ -334,6 +335,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodPost, r.Method)
 		s.Equal("/api/contexts/ctx-1/execute", r.URL.Path)
+		s.Equal("text/event-stream", r.Header.Get("Accept"))
 		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
 		body, err := io.ReadAll(r.Body)
 		s.NoError(err)
@@ -342,10 +344,12 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"context_id":"ctx-1","execution_count":1,"exit_code":0,"stdout":"1\n","stderr":"","duration_ms":5}`,
+				"data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}\n\n" +
+					"data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"1\\\\n\"}\n\n" +
+					"data: {\"type\":\"complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"result\":{\"context_id\":\"ctx-1\",\"execution_count\":1,\"exit_code\":0,\"stdout\":\"1\\\\n\",\"stderr\":\"\",\"duration_ms\":5}}\n\n",
 			)),
 		}
-		resp.Header.Set("Content-Type", "application/json")
+		resp.Header.Set("Content-Type", "text/event-stream")
 		return resp, nil
 	})
 
@@ -359,7 +363,8 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 
 	s.Equal(http.StatusOK, s.recorder.Code)
 	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
-	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
+	s.Contains(s.recorder.Header().Get("Content-Type"), "text/event-stream")
+	s.Contains(s.recorder.Body.String(), `"type":"complete"`)
 }
 
 func (s *CodeInterpreterSuite) TestGetFSTree_ProxySuccess() {
