@@ -34,7 +34,7 @@ class SandboxSDKTest(unittest.TestCase):
             ).encode("utf-8"),
         )
 
-        sandbox = Sandbox.create(language="python")
+        sandbox = Sandbox.create()
         self.assertEqual("session-1", sandbox.sandbox_id)
 
     @mock.patch("agentland.sandbox._http.httpx.request")
@@ -157,7 +157,7 @@ class SandboxSDKTest(unittest.TestCase):
         )
 
         with self.assertRaises(SDKError) as ctx:
-            Sandbox.create("python")
+            Sandbox.create()
         self.assertEqual(400, ctx.exception.http_status)
         self.assertEqual(1, ctx.exception.code)
 

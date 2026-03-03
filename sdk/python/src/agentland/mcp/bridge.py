@@ -29,8 +29,8 @@ class CodeInterpreterToolBridge:
             return "python"
         return normalized
 
-    def sandbox_create(self, *, language: str | None = None) -> dict[str, Any]:
-        sandbox = Sandbox.create(language=self._normalize_language(language))
+    def sandbox_create(self) -> dict[str, Any]:
+        sandbox = Sandbox.create()
         return {"sandbox_id": sandbox.sandbox_id}
 
     def code_execute(

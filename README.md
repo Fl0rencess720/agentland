@@ -1,50 +1,109 @@
 # agentland
 
-`agentland` 是一个面向 AI Agent 的 Kubernetes 沙箱运行时平台，支持代码执行场景和
-通用 Agent 调用场景。通过统一的 Gateway API 暴露能力，提供两种主要自定义资源定义（CRD）：
-`CodeInterpreter`（直接代码执行）和 `AgentSession`（通用 Agent 调用）。
+`agentland` 是一个面向 AI Agent 的 Kubernetes 沙箱运行时平台，支持 Sandbox as Tool 和 Agent IN Sandbox 两类场景。通过统一的 Gateway API 暴露能力，提供 Python SDK 和 MCP。
 
-控制面由一组 Kubernetes 控制器组成，负责把自定义资源（CR）收敛为真实的
-Sandbox Pod。你可以通过预热池减少沙箱冷启动时延，通过 Gateway 签发的
-短时 JWT 进行鉴权。
-
-## 项目能力
-
-`agentland` 聚焦三类核心能力：会话化执行、Kubernetes 原生生命周期管理、
-以及安全请求转发。
-
-- 提供代码执行 API：`POST /api/code-runner/run`
-- 提供通用 Agent 调用 API：
-  `POST/GET /api/agent-sessions/invocations/*path`
-- 通过 `AgentRuntime` 抽象运行时模板，避免在请求链路中硬编码镜像
-- 通过 `SandboxPool + SandboxClaim` 提供预热池调度能力
-- 在 `agentcore` 内置基于空闲时长与最大会话时长的 GC 机制
-- 使用 JWT 在 Gateway 与 CodeInterpreter Sandbox Pod 之间做鉴权
+`agentland` 提供两种主要 Kubernetes 自定义资源定义（CRD），各自对应两类应用场景 `CodeInterpreter`（通用工具沙箱）和 `AgentSession`（Agent 运行时沙箱），可通预热池实现沙箱亚秒级启动。
 
 ## 架构概览
 
 系统由三个核心组件和一组控制器/CRD 组成。
 
 1. **Gateway**：接收外部 HTTP 请求
-2. **AgentCore（controller manager + gRPC）**：创建会话类 CR 并等待就绪，将 CR 收敛为 `Sandbox` 与 Pod 状态
-3. **Korokd**：运行在 CodeInterpreter Sandbox Pod 内，负责代码执行和鉴权功能。
+2. **AgentCore（controller manager + gRPC）**：创建 CR 并等待就绪，将 CR 收敛为 `Sandbox` 与 Pod 状态
+3. **Korokd**：运行在 CodeInterpreter Sandbox Pod 内，负责代码执行、文件操作、浏览器操作和鉴权功能。
 
-CodeInterpreter 代码执行链路如下：
+## MCP 与 Python SDK
 
-1. 客户端请求 `Gateway /api/code-runner/run`
-2. Gateway 调用 `AgentCore.CreateCodeInterpreter`
-3. AgentCore 创建 `CodeInterpreter` CR
-4. 控制器创建 `SandboxClaim/Sandbox/Pod`（或直连 `Sandbox/Pod`）
-5. Gateway 反向代理到 Sandbox 内的 `Korokd /api/execute`
+项目提供 Python SDK 和本地 MCP Server。
 
-Agent 调用链路如下：
+### 启动本地 MCP Server
 
-1. 客户端请求 `Gateway /api/agent-sessions/invocations/*path`
-2. Gateway 解析 `runtime_name/runtime_namespace`
-3. Gateway 调用 `AgentCore.CreateAgentSession`
-4. AgentCore 创建带 `runtimeRef` 的 `AgentSession`
-5. `AgentSession` 控制器解析 `AgentRuntime` 并完成 Sandbox 资源编排
-6. Gateway 保留路径和方法反向代理到 Sandbox
+安装 SDK 后，可以直接启动 MCP Server：
+
+`--base-url` 填入 agentland-gateway 的 URL
+
+```bash
+pip install agentland
+agentland mcp --transport stdio --base-url http://127.0.0.1:8080 --timeout 30
+```
+
+也可以通过环境变量设置默认网关地址与超时：
+
+```bash
+export AGENTLAND_BASE_URL=http://127.0.0.1:8080
+export AGENTLAND_TIMEOUT=30
+agentland mcp --transport stdio
+```
+
+### Python SDK 快速上手
+
+**代码执行示例：**
+
+```python
+from agentland.sandbox import Sandbox
+
+Sandbox.configure(base_url="http://127.0.0.1:8080", timeout=30)
+
+# 1) 创建代码执行沙箱
+sandbox = Sandbox.create()
+
+# 2) 创建执行上下文
+context = sandbox.context.create(language="python", cwd="/workspace")
+
+# 3) 第一次执行：定义变量 x
+first = context.exec("x = 41")
+print(first.get("stdout", ""))
+
+# 4) 第二次执行：直接访问上一次 exec 定义的变量 x
+second = context.exec("print('x + 1 =', x + 1)")
+print(second.get("stdout", ""))
+
+# 5) 删除 context
+context.delete()
+```
+
+**文件操作示例：**
+
+```python
+from agentland.sandbox import Sandbox
+
+Sandbox.configure(base_url="http://127.0.0.1:8080", timeout=30)
+
+# 1) 创建代码执行沙箱
+sandbox = Sandbox.create()
+
+# 2) 在 sandbox 内写入文件
+sandbox.fs.write("/workspace/data.txt", "line1\nline2")
+
+# 3) 读取该文件内容
+file_resp = sandbox.fs.read("/workspace/data.txt", encoding="utf8")
+
+# 4) 打印读取结果
+print(file_resp.get("content", ""))
+```
+
+**浏览器操作示例：**
+
+浏览器操作使用 [agent-browser](https://github.com/vercel-labs/agent-browser) 实现
+
+```python
+from agentland.sandbox import Sandbox
+
+Sandbox.configure(base_url="http://127.0.0.1:8080", timeout=30)
+
+# 1) 创建代码执行沙箱
+sandbox = Sandbox.create()
+
+# 2) 创建 shell context
+shell_context = sandbox.context.create(language="shell", cwd="/workspace")
+
+# 3) 在同一个 context 内执行 agent-browser 帮助命令
+help_resp = shell_context.exec("agent-browser --help")
+print(help_resp.get("stdout", ""))
+
+# 4) 删除 shell context
+shell_context.delete()
+```
 
 ## 核心 CRD
 

@@ -123,7 +123,7 @@ func (s *AgentCoreSuite) TestCreateSandbox() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := server.CreateCodeInterpreter(ctx, &pb.CreateSandboxRequest{Language: "go"})
+	resp, err := server.CreateCodeInterpreter(ctx, &pb.CreateSandboxRequest{})
 
 	s.NoError(err)
 	s.NotNil(resp)
@@ -186,7 +186,7 @@ func (s *AgentCoreSuite) TestCreateSandboxWithWarmPoolProvisioning() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := server.CreateCodeInterpreter(ctx, &pb.CreateSandboxRequest{Language: "python"})
+	resp, err := server.CreateCodeInterpreter(ctx, &pb.CreateSandboxRequest{})
 	s.NoError(err)
 	s.NotNil(resp)
 

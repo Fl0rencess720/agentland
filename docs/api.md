@@ -74,21 +74,9 @@
 `code-runner` 调用都使用这个会话 ID。
 
 - 方法与路径：`POST /api/code-runner/sandboxes`
-- 必填 Header：`Content-Type: application/json`
+- 必填 Header：无
 
-请求体：
-
-```json
-{
-  "language": "python"
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `language` | string | 是 | 仅支持 `python`、`shell`（大小写不敏感）。 |
+请求体：无（可为空）。
 
 成功响应（HTTP 200）：
 

@@ -66,7 +66,7 @@ class _FakeFSService:
 
 class _FakeSandbox:
     configured = None
-    create_calls = []
+    create_calls = 0
     connect_calls = []
     last = None
 
@@ -80,8 +80,8 @@ class _FakeSandbox:
         cls.configured = {"base_url": base_url, "timeout": timeout}
 
     @classmethod
-    def create(cls, language: str = "python") -> _FakeSandbox:
-        cls.create_calls.append(language)
+    def create(cls) -> _FakeSandbox:
+        cls.create_calls += 1
         cls.last = _FakeSandbox("session-created")
         return cls.last
 
@@ -102,12 +102,17 @@ class _ImmediateThread:
 
 
 class MCPBridgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _FakeSandbox.create_calls = 0
+        _FakeSandbox.connect_calls = []
+        _FakeSandbox.last = None
+
     @mock.patch("agentland.mcp.bridge.Sandbox", _FakeSandbox)
-    def test_sandbox_create_default_language(self) -> None:
+    def test_sandbox_create(self) -> None:
         bridge = CodeInterpreterToolBridge(base_url="http://127.0.0.1:8080", timeout=30)
-        out = bridge.sandbox_create(language="")
+        out = bridge.sandbox_create()
         self.assertEqual({"sandbox_id": "session-created"}, out)
-        self.assertEqual("python", _FakeSandbox.create_calls[-1])
+        self.assertEqual(1, _FakeSandbox.create_calls)
 
     @mock.patch("agentland.mcp.bridge.Sandbox", _FakeSandbox)
     def test_code_execute_and_async_cleanup(self) -> None:

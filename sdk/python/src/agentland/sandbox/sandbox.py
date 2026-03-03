@@ -54,9 +54,8 @@ class Sandbox:
         return _HTTPClient(base_url=cls._config.base_url, timeout=cls._config.timeout)
 
     @classmethod
-    def create(cls, language: str = "python") -> Sandbox:
-        payload = {"language": _normalize_language(language)}
-        out = cls._client().request_json("POST", "/api/code-runner/sandboxes", json_body=payload)
+    def create(cls) -> Sandbox:
+        out = cls._client().request_json("POST", "/api/code-runner/sandboxes")
         sandbox_id = _ensure_non_empty("sandbox_id", str(out.get("sandbox_id", "")))
         return cls(sandbox_id=sandbox_id, _client=cls._client())
 
@@ -206,4 +205,3 @@ class _FSService:
             "file_name": file_name,
             "size": len(resp.body),
         }
-

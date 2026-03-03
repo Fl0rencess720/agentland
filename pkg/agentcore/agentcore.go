@@ -46,7 +46,7 @@ var sandboxGVR = schema.GroupVersionResource{
 	Resource: "sandboxes",
 }
 
-func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
+func (s *Server) CreateCodeInterpreter(ctx context.Context, _ *pb.CreateSandboxRequest) (*pb.CreateSandboxResponse, error) {
 	ctx = withIncomingRequestID(ctx)
 	tracer := otel.Tracer("agentcore.service")
 	ctx, span := tracer.Start(ctx, "agentcore.create_codeinterpreter", trace.WithSpanKind(trace.SpanKindServer))
@@ -55,7 +55,6 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, req *pb.CreateSandbo
 	requestID := observability.RequestIDFromContext(ctx)
 	span.SetAttributes(
 		attribute.String("request.id", requestID),
-		attribute.String("sandbox.language", req.GetLanguage()),
 	)
 
 	korokdImage := s.korokdImage
