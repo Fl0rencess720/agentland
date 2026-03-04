@@ -2,9 +2,23 @@
 set -euo pipefail
 
 JUPYTER_PORT="${JUPYTER_PORT:-44771}"
-JUPYTER_TOKEN="${JUPYTER_TOKEN:-agentland-korokd-jupyter}"
+JUPYTER_TOKEN="${JUPYTER_TOKEN:-}"
+JUPYTER_TOKEN_FILE="${JUPYTER_TOKEN_FILE:-}"
 JUPYTER_NOTEBOOK_DIR="${JUPYTER_NOTEBOOK_DIR:-/workspace}"
 export JUPYTER_HOST="${JUPYTER_HOST:-http://127.0.0.1:${JUPYTER_PORT}}"
+
+if [[ -n "${JUPYTER_TOKEN_FILE}" ]]; then
+  if [[ ! -r "${JUPYTER_TOKEN_FILE}" ]]; then
+    echo "jupyter token file not readable: ${JUPYTER_TOKEN_FILE}" >&2
+    exit 1
+  fi
+  JUPYTER_TOKEN="$(tr -d '\r\n' <"${JUPYTER_TOKEN_FILE}")"
+fi
+
+if [[ -z "${JUPYTER_TOKEN}" ]]; then
+  JUPYTER_TOKEN="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+fi
+export JUPYTER_TOKEN
 
 JUPYTER_LOG="${JUPYTER_LOG:-/tmp/jupyter.log}"
 

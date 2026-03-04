@@ -19,6 +19,15 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type createSessionRequest struct {
+	Path   string `json:"path"`
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Kernel struct {
+		Name string `json:"name"`
+	} `json:"kernel"`
+}
+
 func NewClient(baseURL, token string) (*Client, error) {
 	trimmed := strings.TrimSpace(baseURL)
 	if trimmed == "" {
@@ -86,6 +95,7 @@ func (c *Client) doJSON(ctx context.Context, method, p string, body any, out any
 			return fmt.Errorf("decode response failed: %w", err)
 		}
 	}
+
 	return nil
 }
 
@@ -95,15 +105,6 @@ func (c *Client) GetKernelSpecs(ctx context.Context) (*KernelSpecs, error) {
 		return nil, err
 	}
 	return &specs, nil
-}
-
-type createSessionRequest struct {
-	Path   string `json:"path"`
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Kernel struct {
-		Name string `json:"name"`
-	} `json:"kernel"`
 }
 
 func (c *Client) CreateSession(ctx context.Context, name, notebookPath, kernelName string) (*Session, error) {
@@ -118,6 +119,7 @@ func (c *Client) CreateSession(ctx context.Context, name, notebookPath, kernelNa
 	if err := c.doJSON(ctx, http.MethodPost, "api/sessions", req, &sess); err != nil {
 		return nil, err
 	}
+
 	return &sess, nil
 }
 

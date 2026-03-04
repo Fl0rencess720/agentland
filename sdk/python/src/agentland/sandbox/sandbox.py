@@ -15,8 +15,8 @@ DEFAULT_TIMEOUT_SECONDS = 30
 
 def _normalize_language(language: str) -> str:
     value = language.strip().lower()
-    if value not in {"python", "shell"}:
-        raise SDKError("language must be 'python' or 'shell'")
+    if value not in {"python", "bash"}:
+        raise SDKError("language must be 'python' or 'bash'")
     return value
 
 
@@ -101,16 +101,36 @@ class Context:
         self.context_id = _ensure_non_empty("context_id", context_id)
 
     def exec(self, code: str, timeout_ms: int = 30000) -> ExecutionResult:
-        last_result: ExecutionResult | None = None
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        last_execution_count = 0
+        last_exit_code = 0
+        last_duration_ms = 0
+
         for evt in self.exec_stream(code, timeout_ms=timeout_ms):
             if evt.type == "error":
                 raise SDKError(evt.error or "execution failed")
-            if evt.type == "complete" and evt.result is not None:
-                last_result = evt.result
-                break
-        if last_result is None:
-            raise SDKError("execution stream ended without a complete event")
-        return last_result
+            if evt.type == "stdout" and evt.text:
+                stdout_chunks.append(evt.text)
+            if evt.type == "stderr" and evt.text:
+                stderr_chunks.append(evt.text)
+            if evt.type == "count" and evt.execution_count is not None and evt.execution_count > 0:
+                last_execution_count = evt.execution_count
+            if evt.type == "execution_complete":
+                if evt.execution_time is not None and evt.execution_time >= 0:
+                    last_duration_ms = evt.execution_time
+                if evt.exit_code is not None:
+                    last_exit_code = evt.exit_code
+                return ExecutionResult(
+                    context_id=self.context_id,
+                    execution_count=last_execution_count,
+                    exit_code=last_exit_code,
+                    stdout="".join(stdout_chunks),
+                    stderr="".join(stderr_chunks),
+                    duration_ms=last_duration_ms,
+                )
+
+        raise SDKError("execution stream ended without an execution_complete event")
 
     def exec_stream(self, code: str, timeout_ms: int = 30000):
         payload = {

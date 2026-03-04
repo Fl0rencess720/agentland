@@ -1,14 +1,13 @@
 package handlers
 
 import (
-	"encoding/json"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/pkgs/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -31,6 +30,7 @@ func InitCodeInterpreterApi(group *gin.RouterGroup) {
 	group.DELETE("/contexts/:contextId", h.DeleteContext)
 }
 
+// CreateContext 创建代码执行上下文
 func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
 	var req models.CreateContextReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -38,85 +38,26 @@ func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
 		return
 	}
 
-	ctx, err := h.contexts.create(req.Language, req.CWD)
+	kernelCtx, err := h.contexts.create(req.Language, req.CWD)
 	if err != nil {
 		response.ErrorResponse(c, response.ServerError)
 		return
 	}
 
 	response.SuccessResponse(c, models.CreateContextResp{
-		ContextID: ctx.ID,
-		Language:  ctx.Language,
-		CWD:       ctx.CWD,
+		ContextID: kernelCtx.ID,
+		Language:  kernelCtx.Language,
+		CWD:       kernelCtx.CWD,
 		State:     "ready",
-		CreatedAt: ctx.createdAt.Format(time.RFC3339),
+		CreatedAt: kernelCtx.createdAt.Format(time.RFC3339),
 	})
 }
 
+// ExecuteInContext 在上下文中执行代码
 func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 	contextID := c.Param("contextId")
-	h.executeInContextSSE(c, contextID)
-}
 
-func (h *CodeInterpreterHandler) DeleteContext(c *gin.Context) {
-	contextID := c.Param("contextId")
-	if contextID == "" {
-		response.ErrorResponse(c, response.FormError)
-		return
-	}
-
-	if err := h.contexts.removeContext(contextID, false); err != nil {
-		response.ErrorResponse(c, response.ServerError)
-		return
-	}
-
-	response.SuccessResponse(c, models.DeleteContextResp{ContextID: contextID})
-}
-
-func setupSSEResponse(c *gin.Context) {
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Status(http.StatusOK)
-	if flusher, ok := c.Writer.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func writeSSE(c *gin.Context, mu *sync.Mutex, evt models.ExecuteStreamEvent) bool {
-	if c == nil {
-		return false
-	}
-	b, err := json.Marshal(evt)
-	if err != nil {
-		return false
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	select {
-	case <-c.Request.Context().Done():
-		return false
-	default:
-	}
-
-	// Standard SSE frame: "data: <json>\n\n"
-	if _, err := c.Writer.Write(append(append([]byte("data: "), b...), '\n', '\n')); err != nil {
-		return false
-	}
-	if flusher, ok := c.Writer.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return true
-}
-
-func (h *CodeInterpreterHandler) executeInContextSSE(
-	c *gin.Context,
-	contextID string,
-) {
-	setupSSEResponse(c)
+	utils.SetupSSEResponse(c)
 
 	var mu sync.Mutex
 	emit := func(evt models.ExecuteStreamEvent) bool {
@@ -126,12 +67,7 @@ func (h *CodeInterpreterHandler) executeInContextSSE(
 		if evt.ContextID == "" {
 			evt.ContextID = contextID
 		}
-		return writeSSE(c, &mu, evt)
-	}
-
-	if strings.TrimSpace(contextID) == "" {
-		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "context_id is required"})
-		return
+		return utils.WriteSSE(c, &mu, evt)
 	}
 
 	var req models.ExecuteContextReq
@@ -139,6 +75,7 @@ func (h *CodeInterpreterHandler) executeInContextSSE(
 		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "invalid request body"})
 		return
 	}
+
 	if strings.TrimSpace(req.Code) == "" {
 		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "code is required"})
 		return
@@ -146,7 +83,6 @@ func (h *CodeInterpreterHandler) executeInContextSSE(
 
 	_ = emit(models.ExecuteStreamEvent{Type: "init"})
 
-	// Keep-alive for long-running/no-output executions.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -164,49 +100,54 @@ func (h *CodeInterpreterHandler) executeInContextSSE(
 		}
 	}()
 
-	resp, err := h.contexts.executeStreaming(
+	hookSet := executeStreamHooks{
+		OnStdout: func(text string) {
+			if text == "" {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "stdout", Text: text})
+		},
+		OnStderr: func(text string) {
+			if text == "" {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "stderr", Text: text})
+		},
+		OnStatus: func(state string) {
+			if strings.TrimSpace(state) == "" {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "status", Text: state})
+		},
+		OnExecutionCount: func(count int64) {
+			if count <= 0 {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "count", ExecutionCount: count})
+		},
+	}
+
+	resp, err := h.contexts.executeWithHooks(
 		c.Request.Context(),
 		contextID,
 		req.Code,
 		req.TimeoutMs,
-		executeStreamHooks{
-			OnStdout: func(text string) {
-				if text == "" {
-					return
-				}
-				_ = emit(models.ExecuteStreamEvent{Type: "stdout", Text: text})
-			},
-			OnStderr: func(text string) {
-				if text == "" {
-					return
-				}
-				_ = emit(models.ExecuteStreamEvent{Type: "stderr", Text: text})
-			},
-			OnStatus: func(state string) {
-				if strings.TrimSpace(state) == "" {
-					return
-				}
-				_ = emit(models.ExecuteStreamEvent{Type: "status", Text: state})
-			},
-			OnExecutionCount: func(count int64) {
-				if count <= 0 {
-					return
-				}
-				_ = emit(models.ExecuteStreamEvent{Type: "count", ExecutionCount: count})
-			},
-		},
+		&hookSet,
 	)
 	if err != nil {
 		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: err.Error()})
 		return
 	}
 
-	// Also keep compatibility for clients that only care about the final response.
-	_ = emit(models.ExecuteStreamEvent{Type: "complete", Result: resp})
+	// 执行结束发送 execution_time 与 exit_code，stdout/stderr 由流式帧增量传输
+	_ = emit(models.ExecuteStreamEvent{
+		Type:          "execution_complete",
+		ExecutionTime: resp.DurationMs,
+		ExitCode:      resp.ExitCode,
+	})
 
-	// Give the client a short window to read the last frame before the handler returns.
+	// 在 handler 返回前给客户端一个很短的窗口读取最后一帧，避免尾帧丢失
 	if req.TimeoutMs > 0 {
-		// Avoid sleeping too long; this is only for graceful close.
 		sleepMs := 50
 		if req.TimeoutMs < 50 {
 			sleepMs = req.TimeoutMs
@@ -215,4 +156,19 @@ func (h *CodeInterpreterHandler) executeInContextSSE(
 	} else {
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func (h *CodeInterpreterHandler) DeleteContext(c *gin.Context) {
+	contextID := c.Param("contextId")
+	if contextID == "" {
+		response.ErrorResponse(c, response.FormError)
+		return
+	}
+
+	if err := h.contexts.removeContext(contextID, false); err != nil {
+		response.ErrorResponse(c, response.ServerError)
+		return
+	}
+
+	response.SuccessResponse(c, models.DeleteContextResp{ContextID: contextID})
 }

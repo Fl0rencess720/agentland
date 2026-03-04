@@ -1,4 +1,4 @@
-package gateway
+package middleware
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func tracingMiddleware() gin.HandlerFunc {
+func Tracing() gin.HandlerFunc {
 	tracer := otel.Tracer("gateway.http")
 
 	return func(c *gin.Context) {

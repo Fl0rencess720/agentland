@@ -2,7 +2,7 @@ package models
 
 // CreateContextReq 对应 POST /contexts 的请求体
 type CreateContextReq struct {
-	Language string `json:"language" jsonschema:"Execution language, supported values: python, shell"`
+	Language string `json:"language" jsonschema:"Execution language, supported values: python, bash"`
 	CWD      string `json:"cwd,omitempty" jsonschema:"Working directory inside sandbox, defaults to /workspace"`
 }
 

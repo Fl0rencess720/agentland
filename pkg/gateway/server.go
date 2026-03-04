@@ -7,6 +7,7 @@ import (
 
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/handlers"
+	"github.com/Fl0rencess720/agentland/pkg/gateway/middleware"
 	ginZap "github.com/gin-contrib/zap"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -18,7 +19,7 @@ type Server struct {
 
 func NewServer(cfg *config.Config) (*Server, error) {
 	e := gin.New()
-	e.Use(tracingMiddleware())
+	e.Use(middleware.Tracing())
 	e.Use(gin.Recovery(), ginZap.Ginzap(zap.L(), time.RFC3339, false), ginZap.RecoveryWithZap(zap.L(), false))
 
 	app := e.Group("/api")

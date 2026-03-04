@@ -63,16 +63,16 @@ type ExecuteHooks struct {
 	OnExecutionCount func(count int64)
 }
 
-func (c *Client) Execute(ctx context.Context, kernelID, code string) (*ExecuteResult, error) {
-	return c.ExecuteStream(ctx, kernelID, code, ExecuteHooks{})
-}
-
-func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks ExecuteHooks) (*ExecuteResult, error) {
+// Execute 通过 Jupyter Kernel Channels WebSocket 在指定 kernel 中执行代码并返回聚合结果
+// hooks 用于将 stdout stderr 状态与计数以回调形式实时输出
+func (c *Client) Execute(ctx context.Context, kernelID, code string, hooks ExecuteHooks) (*ExecuteResult, error) {
+	// 通过 kernelID 计算 Jupyter 的 channels WebSocket 地址
 	wsURL, err := c.KernelChannelsURL(kernelID)
 	if err != nil {
 		return nil, err
 	}
 
+	// 建立 WebSocket 连接并在方法退出时关闭
 	cfg, err := websocket.NewConfig(wsURL, originForWSURL(wsURL))
 	if err != nil {
 		return nil, fmt.Errorf("build websocket config failed: %w", err)
@@ -83,10 +83,12 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 	}
 	defer conn.Close()
 
+	// 为本次执行请求生成 request id 与 session id
 	reqID := uuid.NewString()
 	session := uuid.NewString()
 	now := time.Now()
 
+	// 组装 execute_request 的 content
 	reqContent, _ := json.Marshal(&executeRequestContent{
 		Code:            code,
 		Silent:          false,
@@ -111,6 +113,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 		Channel:      "shell",
 	}
 
+	// 发送 execute_request 并开始计时
 	start := time.Now()
 	if err := websocket.JSON.Send(conn, msg); err != nil {
 		return nil, fmt.Errorf("send execute_request failed: %w", err)
@@ -123,6 +126,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 	recvCh := make(chan recv, 16)
 	go func() {
 		defer close(recvCh)
+		// 单独 goroutine 负责持续读取 WebSocket 并通过 channel 交给主循环处理
 		for {
 			var m wireMessage
 			if err := websocket.JSON.Receive(conn, &m); err != nil {
@@ -140,6 +144,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 		}
 	}()
 
+	// 主循环聚合 stdout stderr 并透传实时回调
 	var stdout strings.Builder
 	var stderr strings.Builder
 	var execCount int64
@@ -148,9 +153,11 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 	gotReply := false
 	gotIdle := false
 
+	// Jupyter 的执行完成通常需要同时等到 execute_reply 与 status=idle
 	for {
 		select {
 		case <-ctx.Done():
+			// 上层取消或超时则主动关闭连接并返回当前已聚合的输出
 			_ = conn.Close()
 			return &ExecuteResult{
 				Status:         "timeout",
@@ -179,22 +186,25 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 				}, fmt.Errorf("read kernel message failed: %w", r.err)
 			}
 
-			// Filter unrelated messages.
+			// 过滤与本次请求无关的消息
 			if r.msg.ParentHeader.MessageID != reqID {
 				continue
 			}
 
+			// 根据 message_type 处理 stdout stderr 状态与计数
 			switch r.msg.Header.MessageType {
 			case "stream":
 				var sc streamContent
 				if err := json.Unmarshal(r.msg.Content, &sc); err == nil {
 					if sc.Name == "stderr" {
 						stderr.WriteString(sc.Text)
+						// stderr 按原样聚合并回调输出
 						if hooks.OnStderr != nil && sc.Text != "" {
 							hooks.OnStderr(sc.Text)
 						}
 					} else {
 						stdout.WriteString(sc.Text)
+						// stdout 按原样聚合并回调输出
 						if hooks.OnStdout != nil && sc.Text != "" {
 							hooks.OnStdout(sc.Text)
 						}
@@ -203,6 +213,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 			case "error":
 				var ec errorContent
 				if err := json.Unmarshal(r.msg.Content, &ec); err == nil {
+					// error 事件通常携带 traceback 需要合并进 stderr
 					hadError = true
 					if len(ec.Traceback) > 0 {
 						tb := strings.Join(ec.Traceback, "\n") + "\n"
@@ -227,6 +238,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 			case "execute_input":
 				var ic executeInputContent
 				if err := json.Unmarshal(r.msg.Content, &ic); err == nil {
+					// 从 execute_input 获取 execution_count
 					if ic.ExecutionCount > 0 {
 						execCount = ic.ExecutionCount
 						if hooks.OnExecutionCount != nil {
@@ -237,6 +249,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 			case "execute_reply":
 				var rc executeReplyContent
 				if err := json.Unmarshal(r.msg.Content, &rc); err == nil {
+					// execute_reply 给出最终状态与可能的 traceback
 					gotReply = true
 					replyStatus = rc.Status
 					if rc.ExecutionCount > 0 {
@@ -265,6 +278,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 			case "status":
 				var st statusContent
 				if err := json.Unmarshal(r.msg.Content, &st); err == nil {
+					// status 事件会多次出现 以 idle 作为一次执行的收尾信号
 					if hooks.OnStatus != nil && st.ExecutionState != "" {
 						hooks.OnStatus(st.ExecutionState)
 					}
@@ -275,6 +289,7 @@ func (c *Client) ExecuteStream(ctx context.Context, kernelID, code string, hooks
 			default:
 			}
 
+			// 同时看到 reply 与 idle 才认为本次执行已结束
 			if gotIdle && gotReply {
 				return &ExecuteResult{
 					Status:         statusFrom(hadError, replyStatus),

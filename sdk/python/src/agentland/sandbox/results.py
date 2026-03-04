@@ -70,6 +70,8 @@ class ExecutionStreamEvent:
     context_id: str | None = None
     text: str | None = None
     execution_count: int | None = None
+    execution_time: int | None = None
+    exit_code: int | None = None
     result: ExecutionResult | None = None
     error: str | None = None
 
@@ -94,6 +96,12 @@ class ExecutionStreamEvent:
         ec_raw = payload.get("execution_count")
         execution_count = None if ec_raw is None else _as_int(ec_raw, "execution_count")
 
+        et_raw = payload.get("execution_time")
+        execution_time = None if et_raw is None else _as_int(et_raw, "execution_time")
+
+        exit_code_raw = payload.get("exit_code")
+        exit_code = None if exit_code_raw is None else _as_int(exit_code_raw, "exit_code")
+
         result_payload = payload.get("result")
         result = None
         if isinstance(result_payload, Mapping):
@@ -108,6 +116,8 @@ class ExecutionStreamEvent:
             context_id=context_id,
             text=text,
             execution_count=execution_count,
+            execution_time=execution_time,
+            exit_code=exit_code,
             result=result,
             error=error,
         )

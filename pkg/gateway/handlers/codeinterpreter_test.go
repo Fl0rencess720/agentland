@@ -211,8 +211,8 @@ func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
 	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
 }
 
-func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
-	reqBody := models.CreateContextReq{Language: "shell", CWD: "/workspace"}
+func (s *CodeInterpreterSuite) TestCreateContext_BashProxySuccess() {
+	reqBody := models.CreateContextReq{Language: "bash", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -235,7 +235,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
 			StatusCode: http.StatusCreated,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"context_id":"ctx-shell-1","language":"shell","cwd":"/workspace","state":"ready","created_at":"2026-02-17T08:30:00Z"}`,
+				`{"context_id":"ctx-bash-1","language":"bash","cwd":"/workspace","state":"ready","created_at":"2026-02-17T08:30:00Z"}`,
 			)),
 		}
 		resp.Header.Set("Content-Type", "application/json")
@@ -250,7 +250,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
 	s.handler.CreateContext(s.ctx)
 
 	s.Equal(http.StatusCreated, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), `"language":"shell"`)
+	s.Contains(s.recorder.Body.String(), `"language":"bash"`)
 }
 
 func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
@@ -346,7 +346,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 			Body: io.NopCloser(strings.NewReader(
 				"data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}\n\n" +
 					"data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"1\\\\n\"}\n\n" +
-					"data: {\"type\":\"complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"result\":{\"context_id\":\"ctx-1\",\"execution_count\":1,\"exit_code\":0,\"stdout\":\"1\\\\n\",\"stderr\":\"\",\"duration_ms\":5}}\n\n",
+					"data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_time\":5,\"exit_code\":0}\n\n",
 			)),
 		}
 		resp.Header.Set("Content-Type", "text/event-stream")
@@ -364,7 +364,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 	s.Equal(http.StatusOK, s.recorder.Code)
 	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
 	s.Contains(s.recorder.Header().Get("Content-Type"), "text/event-stream")
-	s.Contains(s.recorder.Body.String(), `"type":"complete"`)
+	s.Contains(s.recorder.Body.String(), `"type":"execution_complete"`)
 }
 
 func (s *CodeInterpreterSuite) TestGetFSTree_ProxySuccess() {

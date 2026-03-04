@@ -31,12 +31,12 @@ import (
 const (
 	SessionHeader  = "x-agentland-session"
 	LanguagePython = "python"
-	LanguageShell  = "shell"
+	LanguageBash   = "bash"
 )
 
 func isSupportedCodeLanguage(language string) bool {
 	switch strings.ToLower(strings.TrimSpace(language)) {
-	case LanguagePython, LanguageShell:
+	case LanguagePython, LanguageBash:
 		return true
 	default:
 		return false
