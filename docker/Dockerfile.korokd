@@ -41,9 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tini \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
-    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ENV PIP_BREAK_SYSTEM_PACKAGES=1 
 
 RUN python3 -m pip install --no-cache-dir -U pip \
     && python3 -m pip install --no-cache-dir \
@@ -53,20 +51,12 @@ RUN python3 -m pip install --no-cache-dir -U pip \
     && python3 -m ipykernel install --name python --display-name "Python" \
     && python3 -m bash_kernel.install
 
-ARG NODE_VERSION=24.11.1
-RUN arch="$(dpkg --print-architecture)" \
-    && case "${arch}" in \
-      amd64) node_arch="x64" ;; \
-      arm64) node_arch="arm64" ;; \
-      *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz \
-    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-    && rm -f /tmp/node.tar.xz
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN npm config set fund false \
     && npm config set audit false \
-    && npm config set registry https://registry.npmmirror.com \
     && npm i -g agent-browser \
     && agent-browser install \
     && npx playwright install-deps \

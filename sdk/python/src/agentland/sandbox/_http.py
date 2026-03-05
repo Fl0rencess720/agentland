@@ -187,9 +187,7 @@ class _HTTPClient:
             "Accept": "text/event-stream",
             "Cache-Control": "no-cache",
         }
-        body = None
         if json_body is not None:
-            body = json.dumps(json_body).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
         headers[SESSION_HEADER] = session_id
@@ -206,7 +204,7 @@ class _HTTPClient:
                 method,
                 self._build_url(path, query),
                 headers=headers,
-                content=body,
+                json=json_body,
                 timeout=timeout,
             ) as resp:
                 if resp.status_code >= 400:

@@ -9,7 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -99,7 +98,10 @@ func (r *SandboxPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 func (r *SandboxPoolReconciler) listPoolPods(ctx context.Context, pool *agentlandv1alpha1.SandboxPool) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
-	selector := labels.SelectorFromSet(labels.Set{commonutils.PoolLabel: commonutils.NameHash(pool.Name)})
+	selector, err := commonutils.SelectorWithHashValue(commonutils.PoolLabel, pool.Name)
+	if err != nil {
+		return nil, err
+	}
 	if err := r.List(ctx, podList, &client.ListOptions{Namespace: pool.Namespace, LabelSelector: selector}); err != nil {
 		return nil, err
 	}
