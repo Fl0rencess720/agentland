@@ -62,6 +62,8 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, _ *pb.CreateSandboxR
 		korokdImage = KorokdImage
 	}
 
+	runtimeClassName := strings.TrimSpace(s.korokdRuntimeClassName)
+
 	cr := &v1alpha1.CodeInterpreter{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: codeInterpreterGVR.GroupVersion().String(),
@@ -74,9 +76,10 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, _ *pb.CreateSandboxR
 		},
 		Spec: v1alpha1.CodeInterpreterSpec{
 			Template: &v1alpha1.SandboxTemplate{
-				Image:   korokdImage,
-				Command: []string{},
-				Args:    []string{},
+				Image:            korokdImage,
+				RuntimeClassName: runtimeClassName,
+				Command:          []string{},
+				Args:             []string{},
 			},
 		},
 	}

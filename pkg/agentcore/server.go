@@ -32,7 +32,8 @@ type Server struct {
 
 	sessionStore sessionStore
 
-	korokdImage string
+	korokdImage            string
+	korokdRuntimeClassName string
 
 	warmPoolEnabled     bool
 	warmPoolDefaultMode string
@@ -63,11 +64,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	)
 
 	s := &Server{
-		grpcServer:   server,
-		listener:     lis,
-		k8sClient:    cfg.K8sClient,
-		sessionStore: db.NewSessionStore(),
-		korokdImage:  cfg.KorokdImage,
+		grpcServer:             server,
+		listener:               lis,
+		k8sClient:              cfg.K8sClient,
+		sessionStore:           db.NewSessionStore(),
+		korokdImage:            cfg.KorokdImage,
+		korokdRuntimeClassName: cfg.KorokdRuntimeClassName,
 
 		warmPoolEnabled:     cfg.WarmPoolEnabled,
 		warmPoolDefaultMode: cfg.WarmPoolDefaultMode,

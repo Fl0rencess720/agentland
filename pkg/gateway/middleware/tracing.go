@@ -1,7 +1,6 @@
-package gateway
+package middleware
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func tracingMiddleware() gin.HandlerFunc {
+func Tracing() gin.HandlerFunc {
 	tracer := otel.Tracer("gateway.http")
 
 	return func(c *gin.Context) {
@@ -53,7 +52,7 @@ func tracingMiddleware() gin.HandlerFunc {
 		statusCode := c.Writer.Status()
 		span.SetAttributes(attribute.Int("http.status_code", statusCode))
 		if len(c.Errors) > 0 {
-			err := errors.New(c.Errors.String())
+			err := fmt.Errorf("%s", c.Errors.String())
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return

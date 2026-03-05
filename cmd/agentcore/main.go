@@ -127,6 +127,7 @@ func main() {
 	_ = viper.BindEnv("warm_pool.profile", "AL_WARMPOOL_PROFILE")
 	_ = viper.BindEnv("korokd.image", "AL_KOROKD_IMAGE")
 	_ = viper.BindEnv("korokd.image_pull_policy", "AL_KOROKD_IMAGE_PULL_POLICY")
+	_ = viper.BindEnv("korokd.runtime_class_name", "AL_KOROKD_RUNTIME_CLASS_NAME")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
 	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
 	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
@@ -137,6 +138,7 @@ func main() {
 	viper.SetDefault("warm_pool.profile", "default")
 	viper.SetDefault("korokd.image", "korokd:latest")
 	viper.SetDefault("korokd.image_pull_policy", string(corev1.PullAlways))
+	viper.SetDefault("korokd.runtime_class_name", "")
 	viper.SetDefault("otel.enabled", false)
 	viper.SetDefault("otel.endpoint", "otel-collector:4317")
 	viper.SetDefault("otel.insecure", true)
@@ -321,13 +323,14 @@ func main() {
 	}
 
 	agentCoreCfg := &config.Config{
-		Port:                agentCorePort,
-		K8sClient:           k8sClient,
-		KorokdImage:         viper.GetString("korokd.image"),
-		WarmPoolEnabled:     viper.GetBool("warm_pool.enabled"),
-		WarmPoolDefaultMode: viper.GetString("warm_pool.default_mode"),
-		WarmPoolPoolRef:     viper.GetString("warm_pool.pool_ref"),
-		WarmPoolProfile:     viper.GetString("warm_pool.profile"),
+		Port:                   agentCorePort,
+		K8sClient:              k8sClient,
+		KorokdImage:            viper.GetString("korokd.image"),
+		KorokdRuntimeClassName: viper.GetString("korokd.runtime_class_name"),
+		WarmPoolEnabled:        viper.GetBool("warm_pool.enabled"),
+		WarmPoolDefaultMode:    viper.GetString("warm_pool.default_mode"),
+		WarmPoolPoolRef:        viper.GetString("warm_pool.pool_ref"),
+		WarmPoolProfile:        viper.GetString("warm_pool.profile"),
 	}
 
 	// 创建 gRPC Server 实例

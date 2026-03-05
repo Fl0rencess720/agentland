@@ -25,6 +25,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM ubuntu:22.04
 
+RUN sed -i 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list \
+    && sed -i 's@http://security.ubuntu.com/ubuntu/@http://mirrors.tuna.tsinghua.edu.cn/ubuntu/@g' /etc/apt/sources.list
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       bash \
@@ -33,28 +36,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       jq \
       procps \
       iproute2 \
+      xz-utils \
       python3 python3-pip \
       tini \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
 RUN python3 -m pip install --no-cache-dir -U pip \
-    && python3 -m pip install --no-cache-dir ipykernel==6.29.5
+    && python3 -m pip install --no-cache-dir \
+      ipykernel==6.29.5 \
+      bash_kernel \
+      notebook==7.4.5 \
+    && python3 -m ipykernel install --name python --display-name "Python" \
+    && python3 -m bash_kernel.install
 
-RUN python3 -m pip install --no-cache-dir -U pip \
- && python3 -m pip install --no-cache-dir ipykernel==6.29.5
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-    && apt-get update && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+ARG NODE_VERSION=24.11.1
+RUN arch="$(dpkg --print-architecture)" \
+    && case "${arch}" in \
+      amd64) node_arch="x64" ;; \
+      arm64) node_arch="arm64" ;; \
+      *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm -f /tmp/node.tar.xz
 
 RUN npm config set fund false \
     && npm config set audit false \
+    && npm config set registry https://registry.npmmirror.com \
     && npm i -g agent-browser \
     && agent-browser install \
     && npx playwright install-deps \
@@ -63,8 +75,13 @@ RUN npm config set fund false \
 WORKDIR /app
 
 COPY --from=builder /workspace/korokd .
+COPY docker/entrypoint.korokd.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV JUPYTER_PORT=44771 \
+    JUPYTER_HOST=http://127.0.0.1:44771
 
 EXPOSE 1883
 
-ENTRYPOINT ["/usr/bin/tini","--","/app/korokd"]
+ENTRYPOINT ["/usr/bin/tini","--","/app/entrypoint.sh"]
 CMD ["--port=1883"]

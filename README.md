@@ -94,15 +94,15 @@ Sandbox.configure(base_url="http://127.0.0.1:8080", timeout=30)
 # 1) 创建代码执行沙箱
 sandbox = Sandbox.create()
 
-# 2) 创建 shell context
-shell_context = sandbox.context.create(language="shell", cwd="/workspace")
+# 2) 创建 bash context
+bash_context = sandbox.context.create(language="bash", cwd="/workspace")
 
 # 3) 在同一个 context 内执行 agent-browser 帮助命令
-help_resp = shell_context.exec("agent-browser --help")
+help_resp = bash_context.exec("agent-browser --help")
 print(help_resp.stdout)
 
-# 4) 删除 shell context
-shell_context.delete()
+# 4) 删除 bash context
+bash_context.delete()
 ```
 
 ## 核心 CRD

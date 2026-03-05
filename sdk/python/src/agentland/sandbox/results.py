@@ -59,3 +59,65 @@ class ExecutionResult:
             "stderr": self.stderr,
             "duration_ms": self.duration_ms,
         }
+
+
+@dataclass(slots=True)
+class ExecutionStreamEvent:
+    """One SSE event during execution."""
+
+    type: str
+    timestamp: int | None = None
+    context_id: str | None = None
+    text: str | None = None
+    execution_count: int | None = None
+    execution_time: int | None = None
+    exit_code: int | None = None
+    result: ExecutionResult | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ExecutionStreamEvent":
+        if not isinstance(payload, Mapping):
+            raise SDKError("stream event payload must be an object")
+
+        evt_type = _as_str(payload.get("type", ""), "type").strip()
+        if not evt_type:
+            raise SDKError("type is required")
+
+        timestamp = payload.get("timestamp")
+        ts = None if timestamp is None else _as_int(timestamp, "timestamp")
+
+        context_id_raw = payload.get("context_id")
+        context_id = None if context_id_raw is None else str(context_id_raw)
+
+        text_raw = payload.get("text")
+        text = None if text_raw is None else str(text_raw)
+
+        ec_raw = payload.get("execution_count")
+        execution_count = None if ec_raw is None else _as_int(ec_raw, "execution_count")
+
+        et_raw = payload.get("execution_time")
+        execution_time = None if et_raw is None else _as_int(et_raw, "execution_time")
+
+        exit_code_raw = payload.get("exit_code")
+        exit_code = None if exit_code_raw is None else _as_int(exit_code_raw, "exit_code")
+
+        result_payload = payload.get("result")
+        result = None
+        if isinstance(result_payload, Mapping):
+            result = ExecutionResult.from_payload(result_payload)
+
+        err_raw = payload.get("error")
+        error = None if err_raw is None else str(err_raw)
+
+        return cls(
+            type=evt_type,
+            timestamp=ts,
+            context_id=context_id,
+            text=text,
+            execution_count=execution_count,
+            execution_time=execution_time,
+            exit_code=exit_code,
+            result=result,
+            error=error,
+        )

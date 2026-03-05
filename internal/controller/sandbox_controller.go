@@ -202,6 +202,10 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 			}},
 		},
 	}
+	if sandbox.Spec.Template.RuntimeClassName != "" {
+		runtimeClassName := sandbox.Spec.Template.RuntimeClassName
+		pod.Spec.RuntimeClassName = &runtimeClassName
+	}
 
 	if err := controllerutil.SetControllerReference(sandbox, pod, r.Scheme); err != nil {
 		span.RecordError(err)

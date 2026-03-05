@@ -170,6 +170,10 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 			}},
 		},
 	}
+	if pool.Spec.Template.RuntimeClassName != "" {
+		runtimeClassName := pool.Spec.Template.RuntimeClassName
+		pod.Spec.RuntimeClassName = &runtimeClassName
+	}
 	if err := controllerutil.SetControllerReference(pool, pod, r.Scheme); err != nil {
 		return err
 	}

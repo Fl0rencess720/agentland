@@ -1,46 +1,19 @@
 package handlers
 
 import (
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/pkgs/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
 type CodeInterpreterHandler struct {
 	contexts *contextManager
-}
-
-type CreateContextReq struct {
-	Language string `json:"language"`
-	CWD      string `json:"cwd"`
-}
-
-type CreateContextResp struct {
-	ContextID string `json:"context_id"`
-	Language  string `json:"language"`
-	CWD       string `json:"cwd"`
-	State     string `json:"state"`
-	CreatedAt string `json:"created_at"`
-}
-
-type ExecuteContextReq struct {
-	Code      string `json:"code"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
-}
-
-type ExecuteContextResp struct {
-	ContextID      string `json:"context_id"`
-	ExecutionCount int64  `json:"execution_count"`
-	ExitCode       int32  `json:"exit_code"`
-	Stdout         string `json:"stdout"`
-	Stderr         string `json:"stderr"`
-	DurationMs     int64  `json:"duration_ms"`
-}
-
-type DeleteContextResp struct {
-	ContextID string `json:"context_id"`
 }
 
 func InitCodeInterpreterApi(group *gin.RouterGroup) {
@@ -57,48 +30,132 @@ func InitCodeInterpreterApi(group *gin.RouterGroup) {
 	group.DELETE("/contexts/:contextId", h.DeleteContext)
 }
 
+// CreateContext 创建代码执行上下文
 func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
-	var req CreateContextReq
+	var req models.CreateContextReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorResponse(c, response.FormError)
 		return
 	}
 
-	ctx, err := h.contexts.create(req.Language, req.CWD)
+	kernelCtx, err := h.contexts.create(req.Language, req.CWD)
 	if err != nil {
 		response.ErrorResponse(c, response.ServerError)
 		return
 	}
 
-	response.SuccessResponse(c, CreateContextResp{
-		ContextID: ctx.ID,
-		Language:  ctx.Language,
-		CWD:       ctx.CWD,
+	response.SuccessResponse(c, models.CreateContextResp{
+		ContextID: kernelCtx.ID,
+		Language:  kernelCtx.Language,
+		CWD:       kernelCtx.CWD,
 		State:     "ready",
-		CreatedAt: ctx.createdAt.Format(time.RFC3339),
+		CreatedAt: kernelCtx.createdAt.Format(time.RFC3339),
 	})
 }
 
+// ExecuteInContext 在上下文中执行代码
 func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 	contextID := c.Param("contextId")
-	if contextID == "" {
-		response.ErrorResponse(c, response.FormError)
-		return
+
+	utils.SetupSSEResponse(c)
+
+	var mu sync.Mutex
+	emit := func(evt models.ExecuteStreamEvent) bool {
+		if evt.Timestamp == 0 {
+			evt.Timestamp = time.Now().UnixMilli()
+		}
+		if evt.ContextID == "" {
+			evt.ContextID = contextID
+		}
+		return utils.WriteSSE(c, &mu, evt)
 	}
 
-	var req ExecuteContextReq
+	var req models.ExecuteContextReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.ErrorResponse(c, response.FormError)
+		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "invalid request body"})
 		return
 	}
 
-	resp, err := h.contexts.execute(c.Request.Context(), contextID, req.Code, req.TimeoutMs)
+	if strings.TrimSpace(req.Code) == "" {
+		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "code is required"})
+		return
+	}
+
+	_ = emit(models.ExecuteStreamEvent{Type: "init"})
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-c.Request.Context().Done():
+				return
+			case <-ticker.C:
+				_ = emit(models.ExecuteStreamEvent{Type: "ping", Text: "pong"})
+			}
+		}
+	}()
+
+	hookSet := executeStreamHooks{
+		OnStdout: func(text string) {
+			if text == "" {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "stdout", Text: text})
+		},
+		OnStderr: func(text string) {
+			if text == "" {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "stderr", Text: text})
+		},
+		OnStatus: func(state string) {
+			if strings.TrimSpace(state) == "" {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "status", Text: state})
+		},
+		OnExecutionCount: func(count int64) {
+			if count <= 0 {
+				return
+			}
+			_ = emit(models.ExecuteStreamEvent{Type: "count", ExecutionCount: count})
+		},
+	}
+
+	resp, err := h.contexts.executeWithHooks(
+		c.Request.Context(),
+		contextID,
+		req.Code,
+		req.TimeoutMs,
+		&hookSet,
+	)
 	if err != nil {
-		response.ErrorResponse(c, response.ServerError)
+		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: err.Error()})
 		return
 	}
 
-	response.SuccessResponse(c, resp)
+	// 执行结束发送 execution_time 与 exit_code，stdout/stderr 由流式帧增量传输
+	_ = emit(models.ExecuteStreamEvent{
+		Type:          "execution_complete",
+		ExecutionTime: resp.DurationMs,
+		ExitCode:      resp.ExitCode,
+	})
+
+	// 在 handler 返回前给客户端一个很短的窗口读取最后一帧，避免尾帧丢失
+	if req.TimeoutMs > 0 {
+		sleepMs := 50
+		if req.TimeoutMs < 50 {
+			sleepMs = req.TimeoutMs
+		}
+		time.Sleep(time.Duration(sleepMs) * time.Millisecond)
+	} else {
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (h *CodeInterpreterHandler) DeleteContext(c *gin.Context) {
@@ -113,5 +170,5 @@ func (h *CodeInterpreterHandler) DeleteContext(c *gin.Context) {
 		return
 	}
 
-	response.SuccessResponse(c, DeleteContextResp{ContextID: contextID})
+	response.SuccessResponse(c, models.DeleteContextResp{ContextID: contextID})
 }

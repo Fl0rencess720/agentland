@@ -1,25 +1,20 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"embed"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math/big"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
+	"github.com/Fl0rencess720/agentland/pkg/korokd/pkgs/jupyter"
+	utils "github.com/Fl0rencess720/agentland/pkg/korokd/pkgs/utils"
 	"github.com/google/uuid"
 )
 
@@ -27,11 +22,10 @@ const (
 	// 所有 context 的工作目录必须位于该根目录下，避免访问容器内任意路径
 	contextWorkspaceRoot  = "/workspace"
 	contextLanguagePython = "python"
-	contextLanguageShell  = "shell"
+	contextLanguageBash   = "bash"
 	// context 的运行时元数据放在 /tmp/korokd/contexts/<contextID> 下
-	contextBaseDir        = "/tmp/korokd"
-	contextsDirName       = "contexts"
-	contextHelperFileName = "ipykernel-helper.py"
+	contextBaseDir  = "/tmp/korokd"
+	contextsDirName = "contexts"
 	// 以下为运行安全边界与默认值：
 	// - contextMaxCount: 单个 korokd 进程允许维护的最大 context 数
 	// - contextIdleTTL/contextGCInterval: 空闲回收策略
@@ -41,67 +35,28 @@ const (
 	contextIdleTTL            = 15 * time.Minute
 	contextGCInterval         = 30 * time.Second
 	contextCreateTimeout      = 10 * time.Second
-	contextShutdownTimeoutMs  = 3000
 	contextDefaultTimeoutMs   = 30000
 	contextMinTimeoutMs       = 100
 	contextMaxTimeoutMs       = 300000
 	contextTimeoutGraceMillis = 2000
-	shellExecPollInterval     = 20 * time.Millisecond
 )
 
 var (
-	errContextNotFound      = errors.New("context not found")
-	errContextBusy          = errors.New("context is busy")
-	errContextLimitExceeded = errors.New("context limit exceeded")
-	errInvalidTimeoutMS     = errors.New("invalid timeout_ms")
-	errCodeRequired         = errors.New("code is required")
-	errCWDOutsideWorkspace  = errors.New("cwd outside workspace")
-	errUnsupportedLanguage  = errors.New("unsupported language")
+	errContextNotFound      = fmt.Errorf("context not found")
+	errContextBusy          = fmt.Errorf("context is busy")
+	errContextLimitExceeded = fmt.Errorf("context limit exceeded")
+	errInvalidTimeoutMS     = fmt.Errorf("invalid timeout_ms")
+	errCWDOutsideWorkspace  = fmt.Errorf("cwd outside workspace")
+	errUnsupportedLanguage  = fmt.Errorf("unsupported language")
 )
 
-// kernelConnectionFile 对应 Jupyter connection-file 规范，ipykernel 启动时会读取该文件
-// 这里使用 Unix Domain Socket 传输，而不是 tcp 端口监听
-type kernelConnectionFile struct {
-	ShellPort       int    `json:"shell_port"`
-	IOPubPort       int    `json:"iopub_port"`
-	StdinPort       int    `json:"stdin_port"`
-	ControlPort     int    `json:"control_port"`
-	HBPort          int    `json:"hb_port"`
-	IP              string `json:"ip"`
-	Key             string `json:"key"`
-	Transport       string `json:"transport"`
-	SignatureScheme string `json:"signature_scheme"`
-	KernelName      string `json:"kernel_name"`
-}
-
-type helperExecuteResult struct {
-	Status         string `json:"status"`
-	ExecutionCount int64  `json:"execution_count"`
-	Stdout         string `json:"stdout"`
-	Stderr         string `json:"stderr"`
-}
-
-type runHelperOptions struct {
-	command        string
-	connectionFile string
-	codeFile       string
-	timeoutMs      int
-	cwd            string
-	result         any
-}
-
 // kernelContext 表示一个可复用的执行上下文
-// python 对应常驻 ipykernel，shell 对应常驻 sh 进程，都会在多次执行间保留状态
+// python/bash 对应 Jupyter session/kernel，都会在多次执行间保留状态
 type kernelContext struct {
-	ID           string
-	Language     string
-	CWD          string
-	PID          int
-	ConnFilePath string
-	RootDir      string
-	cmd          *exec.Cmd
-	waitCh       chan error
-	shellStdin   io.WriteCloser
+	ID       string
+	Language string
+	CWD      string
+	KernelID string
 
 	createdAt      time.Time
 	lastActiveUnix atomic.Int64
@@ -110,38 +65,42 @@ type kernelContext struct {
 }
 
 type contextManager struct {
-	mu         sync.RWMutex
-	contexts   map[string]*kernelContext
-	helperPath string
-	rootDir    string
+	mu       sync.RWMutex
+	contexts map[string]*kernelContext
+	rootDir  string
+	jupyter  *jupyter.Client
 }
 
-//go:embed ipykernel_helper.py
-var helperScriptFS embed.FS
+type executeStreamHooks struct {
+	OnStdout         func(text string)
+	OnStderr         func(text string)
+	OnStatus         func(state string)
+	OnExecutionCount func(count int64)
+}
 
 func newContextManager() (*contextManager, error) {
 	// 1. 准备运行目录
-	// 2. 将 embed 的 helper 脚本落盘为可执行文件
+	// 2. 初始化 Jupyter 客户端（指向本容器内的 Jupyter Server）
 	// 3. 启动后台 GC，负责回收空闲 context
 	rootDir := filepath.Join(contextBaseDir, contextsDirName)
 	if err := os.MkdirAll(rootDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create contexts dir failed: %w", err)
 	}
 
-	helperContent, err := helperScriptFS.ReadFile("ipykernel_helper.py")
-	if err != nil {
-		return nil, fmt.Errorf("read helper script failed: %w", err)
+	jupyterHost := strings.TrimSpace(os.Getenv("JUPYTER_HOST"))
+	if jupyterHost == "" {
+		jupyterHost = "http://127.0.0.1:44771"
 	}
-
-	helperPath := filepath.Join(contextBaseDir, contextHelperFileName)
-	if err := os.WriteFile(helperPath, helperContent, 0o700); err != nil {
-		return nil, fmt.Errorf("write helper script failed: %w", err)
+	jupyterToken := strings.TrimSpace(os.Getenv("JUPYTER_TOKEN"))
+	jc, err := jupyter.NewClient(jupyterHost, jupyterToken)
+	if err != nil {
+		return nil, fmt.Errorf("init jupyter client failed: %w", err)
 	}
 
 	m := &contextManager{
-		contexts:   make(map[string]*kernelContext),
-		helperPath: helperPath,
-		rootDir:    rootDir,
+		contexts: make(map[string]*kernelContext),
+		rootDir:  rootDir,
+		jupyter:  jc,
 	}
 
 	// 后台协程定时回收空闲 context，限制资源持续增长
@@ -180,7 +139,7 @@ func (m *contextManager) runGC() {
 func (m *contextManager) create(language, cwd string) (*kernelContext, error) {
 	// 创建流程：
 	// 1. 校验 cwd 必须位于 /workspace 内
-	// 2. 根据 language 选择运行时（python/shell）
+	// 2. 根据 language 选择运行时（python/bash）
 	// 3. 注册到内存 map
 	// 4. python 分支会在创建后做 probe 探活
 	resolvedCWD, err := resolveContextCWD(cwd)
@@ -195,144 +154,70 @@ func (m *contextManager) create(language, cwd string) (*kernelContext, error) {
 		return nil, errContextLimitExceeded
 	}
 
-	// 为该 context 创建独立运行目录与连接文件
-	contextID := uuid.NewString()
-	contextRoot := filepath.Join(m.rootDir, contextID)
-	if err := os.MkdirAll(contextRoot, 0o700); err != nil {
+	if normalizedLanguage != contextLanguagePython && normalizedLanguage != contextLanguageBash {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("create context dir failed: %w", err)
-	}
-
-	if normalizedLanguage == contextLanguageShell {
-		shellCmd := exec.Command("sh")
-		shellCmd.Dir = resolvedCWD
-		shellStdin, err := shellCmd.StdinPipe()
-		if err != nil {
-			m.mu.Unlock()
-			_ = os.RemoveAll(contextRoot)
-			return nil, fmt.Errorf("create shell stdin pipe failed: %w", err)
-		}
-		shellStdout, err := shellCmd.StdoutPipe()
-		if err != nil {
-			m.mu.Unlock()
-			_ = os.RemoveAll(contextRoot)
-			return nil, fmt.Errorf("create shell stdout pipe failed: %w", err)
-		}
-		shellStderr, err := shellCmd.StderrPipe()
-		if err != nil {
-			m.mu.Unlock()
-			_ = os.RemoveAll(contextRoot)
-			return nil, fmt.Errorf("create shell stderr pipe failed: %w", err)
-		}
-		if err := shellCmd.Start(); err != nil {
-			m.mu.Unlock()
-			_ = os.RemoveAll(contextRoot)
-			return nil, fmt.Errorf("start shell failed: %w", err)
-		}
-
-		waitCh := make(chan error, 1)
-		go func() {
-			waitCh <- shellCmd.Wait()
-			close(waitCh)
-		}()
-		go func() { _, _ = io.Copy(io.Discard, shellStdout) }()
-		go func() { _, _ = io.Copy(io.Discard, shellStderr) }()
-
-		kctx := &kernelContext{
-			ID:         contextID,
-			Language:   contextLanguageShell,
-			CWD:        resolvedCWD,
-			PID:        shellCmd.Process.Pid,
-			RootDir:    contextRoot,
-			cmd:        shellCmd,
-			waitCh:     waitCh,
-			shellStdin: shellStdin,
-			createdAt:  time.Now().UTC(),
-		}
-		now := time.Now().UnixNano()
-		kctx.lastActiveUnix.Store(now)
-		m.contexts[contextID] = kctx
-		m.mu.Unlock()
-		return kctx, nil
-	}
-
-	if normalizedLanguage != contextLanguagePython {
-		m.mu.Unlock()
-		_ = os.RemoveAll(contextRoot)
 		return nil, fmt.Errorf("%w: %s", errUnsupportedLanguage, language)
 	}
 
-	connPath := filepath.Join(contextRoot, "connection.json")
-	connFile, err := buildConnectionFile(filepath.Join(contextRoot, "kernel"))
+	// python/bash context：创建 Jupyter session/kernel。
+	contextID := uuid.NewString()
+	notebookPath, err := notebookPathForCWD(contextID, resolvedCWD)
 	if err != nil {
 		m.mu.Unlock()
-		_ = os.RemoveAll(contextRoot)
-		return nil, fmt.Errorf("build connection file failed: %w", err)
+		return nil, err
 	}
 
-	connBytes, err := json.Marshal(connFile)
+	createCtx, cancel := context.WithTimeout(context.Background(), contextCreateTimeout)
+	defer cancel()
+
+	kernelName, err := m.searchKernel(createCtx, normalizedLanguage)
 	if err != nil {
 		m.mu.Unlock()
-		_ = os.RemoveAll(contextRoot)
-		return nil, fmt.Errorf("marshal connection file failed: %w", err)
+		return nil, err
 	}
 
-	if err := os.WriteFile(connPath, connBytes, 0o600); err != nil {
+	var sess *jupyter.Session
+	for {
+		sess, err = m.jupyter.CreateSession(createCtx, contextID, notebookPath, kernelName)
+		if err == nil {
+			break
+		}
+		if createCtx.Err() != nil {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("create jupyter session failed: %w", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	actualID := strings.TrimSpace(sess.ID)
+	if actualID == "" {
+		actualID = contextID
+	}
+	kernelID := strings.TrimSpace(sess.Kernel.ID)
+	if kernelID == "" {
 		m.mu.Unlock()
-		_ = os.RemoveAll(contextRoot)
-		return nil, fmt.Errorf("write connection file failed: %w", err)
+		return nil, fmt.Errorf("jupyter session created but kernel id is empty")
 	}
-
-	cmd := exec.Command("python3", "-m", "ipykernel_launcher", "-f", connPath)
-	cmd.Dir = resolvedCWD
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	if err := cmd.Start(); err != nil {
-		m.mu.Unlock()
-		_ = os.RemoveAll(contextRoot)
-		return nil, fmt.Errorf("start ipykernel failed: %w", err)
-	}
-
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-		close(waitCh)
-	}()
 
 	kctx := &kernelContext{
-		ID:           contextID,
-		Language:     contextLanguagePython,
-		CWD:          resolvedCWD,
-		PID:          cmd.Process.Pid,
-		ConnFilePath: connPath,
-		RootDir:      contextRoot,
-		cmd:          cmd,
-		waitCh:       waitCh,
-		createdAt:    time.Now().UTC(),
+		ID:        actualID,
+		Language:  normalizedLanguage,
+		CWD:       resolvedCWD,
+		KernelID:  kernelID,
+		createdAt: time.Now().UTC(),
 	}
-
 	now := time.Now().UnixNano()
 	kctx.lastActiveUnix.Store(now)
-	m.contexts[contextID] = kctx
+	m.contexts[actualID] = kctx
 	m.mu.Unlock()
-
-	// 在对外可用前先探活
-	probeCtx, cancel := context.WithTimeout(context.Background(), contextCreateTimeout)
-	defer cancel()
-	if err := m.runHelper(probeCtx, runHelperOptions{
-		command:        "probe",
-		connectionFile: kctx.ConnFilePath,
-		timeoutMs:      5000,
-		cwd:            kctx.CWD,
-	}); err != nil {
-		_ = m.removeContext(contextID, true)
-		return nil, fmt.Errorf("ipykernel probe failed: %w", err)
-	}
-
 	return kctx, nil
 }
 
-func (m *contextManager) execute(ctx context.Context, contextID, code string, timeoutMs int) (*ExecuteContextResp, error) {
+func (m *contextManager) executeWithHooks(
+	ctx context.Context,
+	contextID, code string,
+	timeoutMs int,
+	hooks *executeStreamHooks,
+) (*models.ExecuteContextResp, error) {
 	// 执行流程：
 	// 1. 查找 context 并校验参数
 	// 2. busy 原子位做串行保护（同一 context 同时只允许一个执行）
@@ -340,10 +225,6 @@ func (m *contextManager) execute(ctx context.Context, contextID, code string, ti
 	kctx := m.get(contextID)
 	if kctx == nil {
 		return nil, errContextNotFound
-	}
-
-	if strings.TrimSpace(code) == "" {
-		return nil, errCodeRequired
 	}
 
 	if timeoutMs == 0 {
@@ -362,11 +243,27 @@ func (m *contextManager) execute(ctx context.Context, contextID, code string, ti
 
 	switch kctx.Language {
 	case contextLanguagePython:
-		return m.executePython(ctx, contextID, kctx, code, timeoutMs)
-	case contextLanguageShell:
-		return m.executeShell(ctx, contextID, kctx, code, timeoutMs)
+		return m.executePython(ctx, contextID, kctx, code, timeoutMs, hooks)
+	case contextLanguageBash:
+		return m.executeBash(ctx, contextID, kctx, code, timeoutMs, hooks)
 	default:
 		return nil, fmt.Errorf("%w: %s", errUnsupportedLanguage, kctx.Language)
+	}
+}
+
+func toJupyterHooks(hooks *executeStreamHooks) jupyter.ExecuteHooks {
+	if hooks == nil {
+		return jupyter.ExecuteHooks{}
+	}
+	return jupyter.ExecuteHooks{
+		OnStdout: hooks.OnStdout,
+		OnStderr: hooks.OnStderr,
+		OnStatus: hooks.OnStatus,
+		OnExecutionCount: func(count int64) {
+			if hooks.OnExecutionCount != nil {
+				hooks.OnExecutionCount(count)
+			}
+		},
 	}
 }
 
@@ -376,147 +273,136 @@ func (m *contextManager) executePython(
 	kctx *kernelContext,
 	code string,
 	timeoutMs int,
-) (*ExecuteContextResp, error) {
+	hooks *executeStreamHooks,
+) (*models.ExecuteContextResp, error) {
 	// python 执行：
-	// - 写入 code.py
-	// - 调用 helper 与 ipykernel 通信
-	// - 解析 helper 状态并映射 exit_code
-	codePath := filepath.Join(kctx.RootDir, "code.py")
-	if err := os.WriteFile(codePath, []byte(code), 0o600); err != nil {
-		return nil, fmt.Errorf("write code file failed: %w", err)
+	// - 仅在第一次执行前注入 os.chdir(cwd)，之后允许用户自行 os.chdir 并在后续执行中保持
+	// - 通过 Jupyter kernel channels websocket 执行并聚合 stdout/stderr
+	if m.jupyter == nil {
+		return nil, fmt.Errorf("jupyter client is nil")
 	}
-
 	start := time.Now()
-	helperResult := &helperExecuteResult{}
-	helperCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs+contextTimeoutGraceMillis)*time.Millisecond)
+
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs+contextTimeoutGraceMillis)*time.Millisecond)
 	defer cancel()
 
-	runErr := m.runHelper(helperCtx, runHelperOptions{
-		command:        "execute",
-		connectionFile: kctx.ConnFilePath,
-		codeFile:       codePath,
-		timeoutMs:      timeoutMs,
-		cwd:            kctx.CWD,
-		result:         helperResult,
-	})
-	_ = os.Remove(codePath)
+	fullCode, err := withPythonInit(kctx.CWD, code)
+	if err != nil {
+		return nil, err
+	}
+
+	jhooks := toJupyterHooks(hooks)
+	result, runErr := m.jupyter.Execute(execCtx, kctx.KernelID, fullCode, jhooks)
+	if runErr != nil && errors.Is(runErr, context.DeadlineExceeded) {
+		// 超时后认为 kernel 可能进入不稳定状态，直接回收重建更安全
+		_ = m.jupyter.InterruptKernel(context.Background(), kctx.KernelID)
+		_ = m.removeContext(contextID, true)
+		return &models.ExecuteContextResp{
+			ContextID:      contextID,
+			ExecutionCount: result.ExecutionCount,
+			ExitCode:       124,
+			Stdout:         result.Stdout,
+			Stderr:         result.Stderr,
+			DurationMs:     time.Since(start).Milliseconds(),
+		}, nil
+	}
 	if runErr != nil {
 		return nil, fmt.Errorf("kernel execute failed: %w", runErr)
 	}
 
 	kctx.lastActiveUnix.Store(time.Now().UnixNano())
-	kctx.executionCount.Store(helperResult.ExecutionCount)
+	kctx.executionCount.Store(result.ExecutionCount)
 
 	exitCode := int32(0)
-	switch helperResult.Status {
-	case "ok":
-		exitCode = 0
-	case "error":
+	if result.Status == "error" {
 		exitCode = 1
-	case "timeout":
-		exitCode = 124
-		// 超时后认为 kernel 可能进入不稳定状态，直接回收重建更安全
-		_ = m.removeContext(contextID, true)
-	default:
-		return nil, fmt.Errorf("invalid helper status: %s", helperResult.Status)
 	}
 
-	return &ExecuteContextResp{
+	return &models.ExecuteContextResp{
 		ContextID:      contextID,
-		ExecutionCount: helperResult.ExecutionCount,
+		ExecutionCount: result.ExecutionCount,
 		ExitCode:       exitCode,
-		Stdout:         helperResult.Stdout,
-		Stderr:         helperResult.Stderr,
+		Stdout:         result.Stdout,
+		Stderr:         result.Stderr,
 		DurationMs:     time.Since(start).Milliseconds(),
 	}, nil
 }
 
-func (m *contextManager) executeShell(
+func (m *contextManager) executeBash(
 	ctx context.Context,
 	contextID string,
 	kctx *kernelContext,
 	code string,
 	timeoutMs int,
-) (*ExecuteContextResp, error) {
-	// shell 执行：
-	// - 将代码写入临时脚本
-	// - 在同一个常驻 shell 进程中 source，确保变量/函数/目录状态可复用
-	// - stdout/stderr/exit_code 通过临时文件回传
-	if kctx.shellStdin == nil {
-		return nil, errors.New("shell context stdin is nil")
+	hooks *executeStreamHooks,
+) (*models.ExecuteContextResp, error) {
+	// bash 执行（Jupyter bash_kernel）：
+	// - 使用同一个 kernel session，变量/函数/cwd 等状态跨多次执行保留
+	// - 为保持与历史 shell→bash 迁移语义对齐：仅在第一次执行时 cd 到创建 context 的 cwd（后续允许用户 cd 持久化）
+	// - 追加一个服务端 marker 行携带 exit_code，并在 SSE 与最终 stdout 中剥离
+	if m.jupyter == nil {
+		return nil, fmt.Errorf("jupyter client is nil")
 	}
-
-	execID := uuid.NewString()
-	basePath := filepath.Join(kctx.RootDir, "shell-"+execID)
-	scriptPath := basePath + ".sh"
-	stdoutPath := basePath + ".stdout"
-	stderrPath := basePath + ".stderr"
-	statusPath := basePath + ".status"
-
-	if err := os.WriteFile(scriptPath, []byte(code), 0o700); err != nil {
-		return nil, fmt.Errorf("write shell script failed: %w", err)
-	}
-	defer func() {
-		_ = os.Remove(scriptPath)
-		_ = os.Remove(stdoutPath)
-		_ = os.Remove(stderrPath)
-		_ = os.Remove(statusPath)
-	}()
-
 	start := time.Now()
-	execCount := kctx.executionCount.Add(1)
-	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs+contextTimeoutGraceMillis)*time.Millisecond)
 	defer cancel()
 
-	wrapper := fmt.Sprintf(
-		". %s >%s 2>%s; __agentland_ec=$?; printf '%%s' \"$__agentland_ec\" >%s\n",
-		shellQuote(scriptPath),
-		shellQuote(stdoutPath),
-		shellQuote(stderrPath),
-		shellQuote(statusPath),
-	)
-	if _, err := io.WriteString(kctx.shellStdin, wrapper); err != nil {
-		return nil, fmt.Errorf("write shell command failed: %w", err)
-	}
+	markerKey := utils.BashExitMarkerPrefix + uuid.NewString()
+	wrapped := withBashInit(kctx.CWD, code, markerKey)
 
-	if err := waitForShellResult(execCtx, statusPath, kctx.waitCh); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			_ = m.removeContext(contextID, true)
-			stdout := readFileOrEmpty(stdoutPath)
-			stderr := readFileOrEmpty(stderrPath)
-			kctx.lastActiveUnix.Store(time.Now().UnixNano())
-			return &ExecuteContextResp{
-				ContextID:      contextID,
-				ExecutionCount: execCount,
-				ExitCode:       124,
-				Stdout:         stdout,
-				Stderr:         stderr,
-				DurationMs:     time.Since(start).Milliseconds(),
-			}, nil
+	filter := utils.NewBashExitCodeFilter(markerKey)
+	jhooks := toJupyterHooks(hooks)
+	var stdoutDownstream func(string)
+	if jhooks.OnStdout != nil {
+		stdoutDownstream = jhooks.OnStdout
+		jhooks.OnStdout = func(text string) {
+			if out := filter.HandleChunk(text); out != "" {
+				stdoutDownstream(out)
+			}
 		}
+	}
+
+	result, runErr := m.jupyter.Execute(execCtx, kctx.KernelID, wrapped, jhooks)
+	if stdoutDownstream != nil {
+		if out := filter.Flush(); out != "" {
+			stdoutDownstream(out)
+		}
+	}
+
+	if runErr != nil && errors.Is(runErr, context.DeadlineExceeded) {
+		_ = m.jupyter.InterruptKernel(context.Background(), kctx.KernelID)
 		_ = m.removeContext(contextID, true)
-		return nil, fmt.Errorf("wait shell result failed: %w", err)
+		return &models.ExecuteContextResp{
+			ContextID:      contextID,
+			ExecutionCount: result.ExecutionCount,
+			ExitCode:       124,
+			Stdout:         utils.StripExitMarker(result.Stdout, markerKey),
+			Stderr:         result.Stderr,
+			DurationMs:     time.Since(start).Milliseconds(),
+		}, nil
+	}
+	if runErr != nil {
+		return nil, fmt.Errorf("kernel execute failed: %w", runErr)
 	}
 
-	statusRaw, err := os.ReadFile(statusPath)
-	if err != nil {
-		return nil, fmt.Errorf("read shell status failed: %w", err)
-	}
-	statusText := strings.TrimSpace(string(statusRaw))
-	parsedExit, err := strconv.Atoi(statusText)
-	if err != nil {
-		return nil, fmt.Errorf("parse shell exit code failed: %w", err)
-	}
-
-	stdout := readFileOrEmpty(stdoutPath)
-	stderr := readFileOrEmpty(stderrPath)
 	kctx.lastActiveUnix.Store(time.Now().UnixNano())
-	return &ExecuteContextResp{
+	kctx.executionCount.Store(result.ExecutionCount)
+
+	exitCode := int32(0)
+	if parsed, ok := utils.ParseExitMarker(result.Stdout, markerKey); ok {
+		exitCode = parsed
+	} else if parsed, ok := filter.ExitCode(); ok {
+		exitCode = parsed
+	} else if result.Status == "error" {
+		exitCode = 1
+	}
+
+	return &models.ExecuteContextResp{
 		ContextID:      contextID,
-		ExecutionCount: execCount,
-		ExitCode:       int32(parsedExit),
-		Stdout:         stdout,
-		Stderr:         stderr,
+		ExecutionCount: result.ExecutionCount,
+		ExitCode:       exitCode,
+		Stdout:         utils.StripExitMarker(result.Stdout, markerKey),
+		Stderr:         result.Stderr,
 		DurationMs:     time.Since(start).Milliseconds(),
 	}, nil
 }
@@ -545,36 +431,20 @@ func (m *contextManager) removeContext(contextID string, force bool) error {
 		return errContextNotFound
 	}
 
-	if kctx.Language == contextLanguagePython {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		// 优先走协议层 shutdown，再走进程信号兜底
-		_ = m.runHelper(shutdownCtx, runHelperOptions{
-			command:        "shutdown",
-			connectionFile: kctx.ConnFilePath,
-			timeoutMs:      contextShutdownTimeoutMs,
-			cwd:            kctx.CWD,
-		})
-	}
-
-	if kctx.cmd != nil && kctx.cmd.Process != nil {
-		_ = kctx.cmd.Process.Signal(os.Interrupt)
-		if kctx.waitCh != nil {
-			select {
-			case <-kctx.waitCh:
-			case <-time.After(2 * time.Second):
-				_ = kctx.cmd.Process.Kill()
-				select {
-				case <-kctx.waitCh:
-				case <-time.After(2 * time.Second):
-				}
+	// Jupyter server 侧回收 session 即可释放 kernel 资源（python/bash 同构）。
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if m.jupyter != nil {
+		err := m.jupyter.DeleteSession(shutdownCtx, contextID)
+		if err != nil {
+			var httpErr *jupyter.HTTPError
+			if errors.As(err, &httpErr) && httpErr.Status == 404 {
+				// already deleted
+			} else {
+				// best-effort: still proceed to cleanup local state
 			}
-		} else {
-			_ = kctx.cmd.Process.Kill()
 		}
 	}
-
-	_ = os.RemoveAll(kctx.RootDir)
 	return nil
 }
 
@@ -584,74 +454,45 @@ func (m *contextManager) get(contextID string) *kernelContext {
 	return m.contexts[contextID]
 }
 
-func (m *contextManager) runHelper(
-	ctx context.Context,
-	opts runHelperOptions,
-) error {
-	// helper 脚本是 Go 与 Jupyter 协议之间的桥接层：
-	// - probe: 探测 kernel 是否就绪
-	// - execute: 执行代码并返回 stdout/stderr/status
-	// - shutdown: 请求 kernel 优雅关闭
-	args := []string{
-		m.helperPath,
-		opts.command,
-		"--connection-file", opts.connectionFile,
-		"--timeout-ms", strconv.Itoa(opts.timeoutMs),
-	}
-	if opts.codeFile != "" {
-		args = append(args, "--code-file", opts.codeFile)
-	}
-	cmd := exec.CommandContext(ctx, "python3", args...)
-	cmd.Dir = opts.cwd
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run helper failed: %w: stderr=%s", err, strings.TrimSpace(stderr.String()))
-	}
-	if opts.result != nil {
-		// execute/probe 的输出是 JSON，反序列化给调用方结构体
-		if err := json.Unmarshal(stdout.Bytes(), opts.result); err != nil {
-			return fmt.Errorf("decode helper output failed: %w", err)
-		}
-	}
-	return nil
-}
-
-func waitForShellResult(ctx context.Context, path string, waitCh <-chan error) error {
-	ticker := time.NewTicker(shellExecPollInterval)
-	defer ticker.Stop()
-
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case waitErr, ok := <-waitCh:
-			if !ok {
-				return errors.New("shell process exited")
-			}
-			if waitErr != nil {
-				return fmt.Errorf("shell process exited: %w", waitErr)
-			}
-			return errors.New("shell process exited")
-		case <-ticker.C:
-		}
-	}
-}
-
-func readFileOrEmpty(path string) string {
-	content, err := os.ReadFile(path)
+func (m *contextManager) searchKernel(ctx context.Context, normalizedLanguage string) (string, error) {
+	specs, err := m.getKernelSpecsWithRetry(ctx)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return string(content)
+
+	switch normalizedLanguage {
+	case contextLanguagePython:
+		// 优先使用显式注册的 kernelspec（"python"），找不到则回退到 "python3"。
+		return pickKernelBySpecLanguage(specs, contextLanguagePython, []string{"python"}, map[string]struct{}{"python3": {}}, "python3")
+	case contextLanguageBash:
+		// 优先使用常见的 bash kernelspec 名称；否则选择任意 bash kernelspec。
+		return pickKernelBySpecLanguage(specs, contextLanguageBash, []string{"bash", "bash_kernel"}, nil, "")
+	default:
+		return "", fmt.Errorf("%w: %s", errUnsupportedLanguage, normalizedLanguage)
+	}
+}
+
+func (m *contextManager) getKernelSpecsWithRetry(ctx context.Context) (*jupyter.KernelSpecs, error) {
+	if m.jupyter == nil {
+		return nil, fmt.Errorf("jupyter client is nil")
+	}
+
+	var specs *jupyter.KernelSpecs
+	var err error
+	for {
+		specs, err = m.jupyter.GetKernelSpecs(ctx)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("get kernelspecs failed: %w", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if specs == nil || len(specs.Kernelspecs) == 0 {
+		return nil, fmt.Errorf("no kernelspecs found")
+	}
+	return specs, nil
 }
 
 func shellQuote(s string) string {
@@ -676,68 +517,101 @@ func resolveContextCWD(input string) (string, error) {
 	}
 	root := filepath.Clean(contextWorkspaceRoot)
 	if candidate != root && !strings.HasPrefix(candidate, root+string(filepath.Separator)) {
-		return "", errors.New("cwd must be inside /workspace")
+		return "", fmt.Errorf("cwd must be inside /workspace")
 	}
 	return candidate, nil
 }
 
-func buildConnectionFile(ipBase string) (*kernelConnectionFile, error) {
-	// 构造 ipykernel 连接信息：
-	// - 生成会话签名 key
-	// - 分配 5 个 channel 的端点标识
-	// - transport 固定 ipc（对应 UDS）
-	key, err := randomKey()
-	if err != nil {
-		return nil, err
-	}
-	nextPort := func() (int, error) {
-		// 生成 [10000, 59999] 区间的随机编号
-		// 在 ipc 模式下，这些值会被拼接成 socket 文件名标识
-		n, err := rand.Int(rand.Reader, big.NewInt(50000))
-		if err != nil {
-			return 0, err
+func pickKernelBySpecLanguage(
+	specs *jupyter.KernelSpecs,
+	specLanguage string,
+	preferNames []string,
+	avoidNames map[string]struct{},
+	fallbackName string,
+) (string, error) {
+	// 先尝试按名称精确匹配（名称稳定，不受 map 遍历顺序影响）。
+	for _, name := range preferNames {
+		info := specs.Kernelspecs[name]
+		if info == nil {
+			continue
 		}
-		return int(n.Int64()) + 10000, nil
+		if strings.ToLower(strings.TrimSpace(info.Spec.Language)) == specLanguage {
+			return name, nil
+		}
 	}
-	shellPort, err := nextPort()
-	if err != nil {
-		return nil, err
+
+	hasFallback := false
+	for name, info := range specs.Kernelspecs {
+		if info == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(info.Spec.Language)) != specLanguage {
+			continue
+		}
+		if fallbackName != "" && name == fallbackName {
+			hasFallback = true
+			continue
+		}
+		if avoidNames != nil {
+			if _, bad := avoidNames[name]; bad {
+				continue
+			}
+		}
+		return name, nil
 	}
-	iopubPort, err := nextPort()
-	if err != nil {
-		return nil, err
+
+	if fallbackName != "" && hasFallback {
+		return fallbackName, nil
 	}
-	stdinPort, err := nextPort()
-	if err != nil {
-		return nil, err
-	}
-	controlPort, err := nextPort()
-	if err != nil {
-		return nil, err
-	}
-	hbPort, err := nextPort()
-	if err != nil {
-		return nil, err
-	}
-	return &kernelConnectionFile{
-		ShellPort:       shellPort,
-		IOPubPort:       iopubPort,
-		StdinPort:       stdinPort,
-		ControlPort:     controlPort,
-		HBPort:          hbPort,
-		IP:              filepath.ToSlash(ipBase),
-		Key:             key,
-		Transport:       "ipc",
-		SignatureScheme: "hmac-sha256",
-		KernelName:      "python3",
-	}, nil
+	return "", fmt.Errorf("no kernelspec found for language=%s", specLanguage)
 }
 
-func randomKey() (string, error) {
-	// 生成 Jupyter 消息签名密钥
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
+func notebookPathForCWD(contextID, cwd string) (string, error) {
+	// Jupyter session 的 "path" 相对 Jupyter server root（我们使用 notebook-dir=/workspace）。
+	// 将 notebook 存到 <cwd>/.agentland_contexts/<contextID>.ipynb。
+	dir := filepath.Join(cwd, ".agentland_contexts")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create notebook dir failed: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
+	abs := filepath.Join(dir, contextID+".ipynb")
+
+	rel, err := filepath.Rel(contextWorkspaceRoot, abs)
+	if err != nil {
+		return "", fmt.Errorf("rel notebook path failed: %w", err)
+	}
+	rel = filepath.Clean(rel)
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return "", errCWDOutsideWorkspace
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func withPythonInit(cwd, code string) (string, error) {
+	// 使用 JSON 字符串编码，保证可作为 Python 字符串字面量安全拼接。
+	b, err := json.Marshal(cwd)
+	if err != nil {
+		return "", fmt.Errorf("encode cwd failed: %w", err)
+	}
+	// Initialize cwd only once for this kernel session; allow later `os.chdir` to persist across executions.
+	// This keeps "interactive Python" semantics closer to bash.
+	return strings.Join([]string{
+		"import os",
+		"if '__agentland_cwd_inited' not in globals():",
+		"\tos.chdir(" + string(b) + ")",
+		"\t__agentland_cwd_inited = True",
+		code,
+	}, "\n") + "\n", nil
+}
+
+func withBashInit(cwd, code, markerKey string) string {
+	// 仅在本 kernel session 第一次执行时初始化 cwd；之后允许用户 `cd` 并在后续执行中保持。
+	// 在输出中追加一行包含 exit_code 的 marker（服务端会在 SSE 与最终 stdout 中剥离）。
+	quotedCWD := shellQuote(cwd)
+	quotedMarkerKey := shellQuote(markerKey)
+	return strings.Join([]string{
+		`if [ -z "${__agentland_cwd_inited+x}" ]; then cd ` + quotedCWD + `; __agentland_cwd_inited=1; fi`,
+		code,
+		`__agentland_ec=$?`,
+		`printf '%s=%s\n' ` + quotedMarkerKey + ` "$__agentland_ec"`,
+	}, "\n") + "\n"
 }

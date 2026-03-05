@@ -174,6 +174,77 @@ class _HTTPClient:
         payload = _decode_json_bytes(resp.body)
         return self._unwrap_json_result(payload)
 
+    def stream_sse_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        session_id: str,
+        json_body: dict[str, Any] | None = None,
+        query: dict[str, Any] | None = None,
+    ):
+        headers: dict[str, str] = {
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+        }
+        body = None
+        if json_body is not None:
+            body = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        headers[SESSION_HEADER] = session_id
+
+        timeout = httpx.Timeout(
+            connect=self.timeout,
+            read=None,  # streaming
+            write=self.timeout,
+            pool=None,
+        )
+
+        try:
+            with httpx.stream(
+                method,
+                self._build_url(path, query),
+                headers=headers,
+                content=body,
+                timeout=timeout,
+            ) as resp:
+                if resp.status_code >= 400:
+                    raw = resp.read()
+                    text = raw.decode("utf-8", errors="replace")
+                    parsed = None
+                    if text.strip():
+                        try:
+                            parsed = json.loads(text)
+                        except json.JSONDecodeError:
+                            parsed = None
+                    msg, code = _extract_error_message(parsed, f"http request failed: {resp.status_code}")
+                    raise SDKError(
+                        msg,
+                        http_status=resp.status_code,
+                        code=code,
+                        response_text=text or None,
+                    )
+
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    data = line.strip()
+                    if not data:
+                        continue
+                    if data.startswith(":"):
+                        continue
+                    if data.startswith("data:"):
+                        data = data[5:].strip()
+                    try:
+                        evt = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(evt, dict):
+                        yield evt
+        except httpx.RequestError as exc:
+            raise SDKError(f"http request failed: {exc}") from exc
+
     def upload_file(
         self,
         *,

@@ -12,3 +12,6 @@
 
 # Re-include embedded helper scripts required by go:embed
 !pkg/korokd/handlers/ipykernel_helper.py
+
+# Re-include runtime entrypoint scripts used by Dockerfiles
+!docker/entrypoint.korokd.sh

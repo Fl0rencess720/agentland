@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -72,16 +71,16 @@ type Header struct {
 
 func NewSignerFromConfig(cfg SignerConfig) (*Signer, error) {
 	if cfg.PrivateKeyPath == "" {
-		return nil, errors.New("private key path is required")
+		return nil, fmt.Errorf("private key path is required")
 	}
 	if cfg.Issuer == "" {
-		return nil, errors.New("issuer is required")
+		return nil, fmt.Errorf("issuer is required")
 	}
 	if cfg.Audience == "" {
-		return nil, errors.New("audience is required")
+		return nil, fmt.Errorf("audience is required")
 	}
 	if cfg.TTL <= 0 {
-		return nil, errors.New("ttl must be greater than 0")
+		return nil, fmt.Errorf("ttl must be greater than 0")
 	}
 
 	privateKey, err := loadRSAPrivateKey(cfg.PrivateKeyPath)
@@ -101,16 +100,16 @@ func NewSignerFromConfig(cfg SignerConfig) (*Signer, error) {
 
 func NewVerifierFromConfig(cfg VerifierConfig) (*Verifier, error) {
 	if cfg.PublicKeyPath == "" {
-		return nil, errors.New("public key path is required")
+		return nil, fmt.Errorf("public key path is required")
 	}
 	if cfg.Issuer == "" {
-		return nil, errors.New("issuer is required")
+		return nil, fmt.Errorf("issuer is required")
 	}
 	if cfg.Audience == "" {
-		return nil, errors.New("audience is required")
+		return nil, fmt.Errorf("audience is required")
 	}
 	if cfg.ClockSkew < 0 {
-		return nil, errors.New("clock skew cannot be negative")
+		return nil, fmt.Errorf("clock skew cannot be negative")
 	}
 
 	publicKey, err := loadRSAPublicKey(cfg.PublicKeyPath)
@@ -129,7 +128,7 @@ func NewVerifierFromConfig(cfg VerifierConfig) (*Verifier, error) {
 
 func (s *Signer) Sign(sessionID, subject string, version int64) (string, error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return "", errors.New("session id is required")
+		return "", fmt.Errorf("session id is required")
 	}
 
 	now := s.now().UTC()
@@ -179,17 +178,17 @@ func (v *Verifier) Verify(token string) (*Claims, error) {
 func ParseBearerToken(headerValue string) (string, error) {
 	parts := strings.Fields(strings.TrimSpace(headerValue))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return "", errors.New("invalid authorization header format")
+		return "", fmt.Errorf("invalid authorization header format")
 	}
 	if parts[1] == "" {
-		return "", errors.New("bearer token is empty")
+		return "", fmt.Errorf("bearer token is empty")
 	}
 	return parts[1], nil
 }
 
 func (v *Verifier) validateClaims(claims *Claims) error {
 	if claims == nil {
-		return errors.New("claims is nil")
+		return fmt.Errorf("claims is nil")
 	}
 	if claims.Issuer != v.issuer {
 		return fmt.Errorf("issuer mismatch: got %q", claims.Issuer)
@@ -198,28 +197,28 @@ func (v *Verifier) validateClaims(claims *Claims) error {
 		return fmt.Errorf("audience mismatch: got %q", claims.Audience)
 	}
 	if strings.TrimSpace(claims.SessionID) == "" {
-		return errors.New("sid claim is required")
+		return fmt.Errorf("sid claim is required")
 	}
 
 	now := v.now().UTC()
 	if claims.NotBefore > 0 {
 		nbf := time.Unix(claims.NotBefore, 0).UTC()
 		if now.Add(v.clockSkew).Before(nbf) {
-			return errors.New("token is not valid yet")
+			return fmt.Errorf("token is not valid yet")
 		}
 	}
 	if claims.IssuedAt > 0 {
 		iat := time.Unix(claims.IssuedAt, 0).UTC()
 		if now.Add(v.clockSkew).Before(iat) {
-			return errors.New("token issued in the future")
+			return fmt.Errorf("token issued in the future")
 		}
 	}
 	if claims.ExpiresAt <= 0 {
-		return errors.New("exp claim is required")
+		return fmt.Errorf("exp claim is required")
 	}
 	exp := time.Unix(claims.ExpiresAt, 0).UTC()
 	if !now.Add(-v.clockSkew).Before(exp) {
-		return errors.New("token has expired")
+		return fmt.Errorf("token has expired")
 	}
 
 	return nil
@@ -248,7 +247,7 @@ func signToken(privateKey *rsa.PrivateKey, header Header, claims Claims) (string
 func parseToken(token string) (*Header, *Claims, []byte, string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil, nil, nil, "", errors.New("token format is invalid")
+		return nil, nil, nil, "", fmt.Errorf("token format is invalid")
 	}
 	signingInput := parts[0] + "." + parts[1]
 
@@ -284,10 +283,10 @@ func loadRSAPrivateKey(path string) (*rsa.PrivateKey, error) {
 	}
 	block, rest := pem.Decode(data)
 	if block == nil {
-		return nil, errors.New("invalid private key pem")
+		return nil, fmt.Errorf("invalid private key pem")
 	}
 	if len(bytes.TrimSpace(rest)) > 0 {
-		return nil, errors.New("extra data found in private key pem")
+		return nil, fmt.Errorf("extra data found in private key pem")
 	}
 
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
@@ -300,7 +299,7 @@ func loadRSAPrivateKey(path string) (*rsa.PrivateKey, error) {
 	}
 	key, ok := keyAny.(*rsa.PrivateKey)
 	if !ok {
-		return nil, errors.New("private key is not RSA")
+		return nil, fmt.Errorf("private key is not RSA")
 	}
 	return key, nil
 }
@@ -312,17 +311,17 @@ func loadRSAPublicKey(path string) (*rsa.PublicKey, error) {
 	}
 	block, rest := pem.Decode(data)
 	if block == nil {
-		return nil, errors.New("invalid public key pem")
+		return nil, fmt.Errorf("invalid public key pem")
 	}
 	if len(bytes.TrimSpace(rest)) > 0 {
-		return nil, errors.New("extra data found in public key pem")
+		return nil, fmt.Errorf("extra data found in public key pem")
 	}
 
 	if pubAny, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
 		if pub, ok := pubAny.(*rsa.PublicKey); ok {
 			return pub, nil
 		}
-		return nil, errors.New("public key is not RSA")
+		return nil, fmt.Errorf("public key is not RSA")
 	}
 
 	cert, err := x509.ParseCertificate(block.Bytes)
@@ -331,7 +330,7 @@ func loadRSAPublicKey(path string) (*rsa.PublicKey, error) {
 	}
 	pub, ok := cert.PublicKey.(*rsa.PublicKey)
 	if !ok {
-		return nil, errors.New("certificate public key is not RSA")
+		return nil, fmt.Errorf("certificate public key is not RSA")
 	}
 	return pub, nil
 }

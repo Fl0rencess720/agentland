@@ -82,6 +82,8 @@ spec:
                     type: array
                   image:
                     type: string
+                  runtimeClassName:
+                    type: string
                 required:
                 - image
                 type: object

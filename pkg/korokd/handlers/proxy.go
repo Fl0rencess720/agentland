@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -91,7 +91,7 @@ func (h *ProxyHandler) ProxyByPort(c *gin.Context) {
 
 func (h *ProxyHandler) validatePort(port int) error {
 	if port < 1 || port > 65535 {
-		return errors.New("port must be between 1 and 65535")
+		return fmt.Errorf("port must be between 1 and 65535")
 	}
 	return nil
 }

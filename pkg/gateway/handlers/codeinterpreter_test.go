@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
+	"github.com/Fl0rencess720/agentland/pkg/common/models"
 	"github.com/Fl0rencess720/agentland/pkg/common/testutil"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
@@ -58,7 +59,7 @@ func (m *mockTokenSigner) Sign(sessionID, subject string, version int64) (string
 	if m.signFn != nil {
 		return m.signFn(sessionID, subject, version)
 	}
-	return "", errors.New("sign not implemented")
+	return "", fmt.Errorf("sign not implemented")
 }
 
 func (m *MockAgentCoreServiceClient) CreateCodeInterpreter(ctx context.Context, in *pb.CreateSandboxRequest, opts ...grpc.CallOption) (*pb.CreateSandboxResponse, error) {
@@ -167,7 +168,7 @@ func (s *CodeInterpreterSuite) SetupTest() {
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
-	reqBody := CreateContextReq{Language: "python", CWD: "/workspace"}
+	reqBody := models.CreateContextReq{Language: "python", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -210,8 +211,8 @@ func (s *CodeInterpreterSuite) TestCreateContext_ProxySuccess() {
 	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
 }
 
-func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
-	reqBody := CreateContextReq{Language: "shell", CWD: "/workspace"}
+func (s *CodeInterpreterSuite) TestCreateContext_BashProxySuccess() {
+	reqBody := models.CreateContextReq{Language: "bash", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -234,7 +235,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
 			StatusCode: http.StatusCreated,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"context_id":"ctx-shell-1","language":"shell","cwd":"/workspace","state":"ready","created_at":"2026-02-17T08:30:00Z"}`,
+				`{"context_id":"ctx-bash-1","language":"bash","cwd":"/workspace","state":"ready","created_at":"2026-02-17T08:30:00Z"}`,
 			)),
 		}
 		resp.Header.Set("Content-Type", "application/json")
@@ -249,7 +250,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_ShellProxySuccess() {
 	s.handler.CreateContext(s.ctx)
 
 	s.Equal(http.StatusCreated, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), `"language":"shell"`)
+	s.Contains(s.recorder.Body.String(), `"language":"bash"`)
 }
 
 func (s *CodeInterpreterSuite) TestCreateSandbox_Success() {
@@ -290,7 +291,7 @@ func (s *CodeInterpreterSuite) TestCreateSandbox_IgnoresBody() {
 }
 
 func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
-	reqBody := CreateContextReq{Language: "python", CWD: "/workspace"}
+	reqBody := models.CreateContextReq{Language: "python", CWD: "/workspace"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/contexts", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -303,7 +304,7 @@ func (s *CodeInterpreterSuite) TestCreateContext_MissingSession() {
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
-	reqBody := ExecuteInContextReq{Code: "print(1)"}
+	reqBody := models.ExecuteContextReq{Code: "print(1)"}
 	jsonBytes, _ := json.Marshal(reqBody)
 	req := httptest.NewRequest("POST", "/contexts/ctx-1/execute", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -312,12 +313,13 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_MissingSession() {
 
 	s.handler.ExecuteInContext(s.ctx)
 
-	s.Equal(http.StatusBadRequest, s.recorder.Code)
-	s.Contains(s.recorder.Body.String(), `"msg":"Form Error"`)
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Contains(s.recorder.Header().Get("Content-Type"), "text/event-stream")
+	s.Contains(s.recorder.Body.String(), `"type":"error"`)
 }
 
 func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
-	reqBody := ExecuteInContextReq{Code: "print(1)", TimeoutMs: 30000}
+	reqBody := models.ExecuteContextReq{Code: "print(1)", TimeoutMs: 30000}
 	jsonBytes, _ := json.Marshal(reqBody)
 
 	s.handler.sessionStore = &mockSessionStore{
@@ -333,6 +335,7 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodPost, r.Method)
 		s.Equal("/api/contexts/ctx-1/execute", r.URL.Path)
+		s.Equal("text/event-stream", r.Header.Get("Accept"))
 		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
 		body, err := io.ReadAll(r.Body)
 		s.NoError(err)
@@ -341,10 +344,12 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"context_id":"ctx-1","execution_count":1,"exit_code":0,"stdout":"1\n","stderr":"","duration_ms":5}`,
+				"data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}\n\n" +
+					"data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"1\\\\n\"}\n\n" +
+					"data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_time\":5,\"exit_code\":0}\n\n",
 			)),
 		}
-		resp.Header.Set("Content-Type", "application/json")
+		resp.Header.Set("Content-Type", "text/event-stream")
 		return resp, nil
 	})
 
@@ -358,7 +363,8 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 
 	s.Equal(http.StatusOK, s.recorder.Code)
 	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
-	s.Contains(s.recorder.Body.String(), `"context_id":"ctx-1"`)
+	s.Contains(s.recorder.Header().Get("Content-Type"), "text/event-stream")
+	s.Contains(s.recorder.Body.String(), `"type":"execution_complete"`)
 }
 
 func (s *CodeInterpreterSuite) TestGetFSTree_ProxySuccess() {
@@ -415,7 +421,7 @@ func (s *CodeInterpreterSuite) TestGetFSTree_SessionNotFound() {
 }
 
 func (s *CodeInterpreterSuite) TestWriteFSFile_ProxySuccess() {
-	reqBody := WriteFSFileReq{
+	reqBody := models.WriteFSFileReq{
 		Path:     "/home/user/data.txt",
 		Content:  "这是测试数据\n第二行数据",
 		Encoding: "utf-8",
