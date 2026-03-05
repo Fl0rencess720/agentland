@@ -1,8 +1,8 @@
 package utils
 
 import (
-	"fmt"
-	"hash/fnv"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,10 +23,13 @@ const (
 	FallbackRequeueInterval = 2 * time.Second
 )
 
+const nameHashBytes = 16
+
 func NameHash(name string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(name))
-	return fmt.Sprintf("%x", h.Sum32())
+	// Use SHA-256 and truncate to 128 bits (32 hex chars) to stay well within
+	// the Kubernetes label value limit while providing strong collision resistance.
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:nameHashBytes])
 }
 
 func IsPodReady(pod *corev1.Pod) bool {

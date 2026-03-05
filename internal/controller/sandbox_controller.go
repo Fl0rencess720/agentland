@@ -8,7 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -101,7 +100,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func sandboxStatusFromPod(pod *corev1.Pod) (phase string, podIP string) {
 	if pod == nil {
-		return "Pending", ""
+		return string(corev1.PodPending), ""
 	}
 	if pod.Status.Phase == corev1.PodRunning && commonutils.IsPodReady(pod) && pod.Status.PodIP != "" {
 		return string(corev1.PodRunning), pod.Status.PodIP
@@ -109,7 +108,7 @@ func sandboxStatusFromPod(pod *corev1.Pod) (phase string, podIP string) {
 	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
 		return string(pod.Status.Phase), ""
 	}
-	return "Pending", ""
+	return string(corev1.PodPending), ""
 }
 
 func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentlandv1alpha1.Sandbox) (*corev1.Pod, error) {
@@ -145,7 +144,12 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 	}
 
 	podList := &corev1.PodList{}
-	selector := labels.SelectorFromSet(labels.Set{commonutils.SandboxLabel: commonutils.NameHash(sandbox.Name)})
+	selector, err := commonutils.SelectorWithHashValue(commonutils.SandboxLabel, sandbox.Name)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "build sandbox selector failed")
+		return nil, err
+	}
 	if err := r.List(ctx, podList, &client.ListOptions{Namespace: sandbox.Namespace, LabelSelector: selector}); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "list sandbox pods failed")

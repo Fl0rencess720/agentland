@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -187,11 +186,20 @@ func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agent
 	defer span.End()
 
 	podList := &corev1.PodList{}
-	selectorSet := labels.Set{commonutils.ProfileHashLabel: commonutils.NameHash(claim.Spec.Profile)}
-	if claim.Spec.PoolRef != "" {
-		selectorSet[commonutils.PoolLabel] = commonutils.NameHash(claim.Spec.PoolRef)
+	selector, err := commonutils.SelectorWithHashValue(commonutils.ProfileHashLabel, claim.Spec.Profile)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "build profile selector failed")
+		return nil, err
 	}
-	selector := labels.SelectorFromSet(selectorSet)
+	if claim.Spec.PoolRef != "" {
+		selector, err = commonutils.AddHashValueRequirement(selector, commonutils.PoolLabel, claim.Spec.PoolRef)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "build pool selector failed")
+			return nil, err
+		}
+	}
 	span.SetAttributes(
 		attribute.String("provisioning.pool_ref", claim.Spec.PoolRef),
 		attribute.String("provisioning.profile", claim.Spec.Profile),
