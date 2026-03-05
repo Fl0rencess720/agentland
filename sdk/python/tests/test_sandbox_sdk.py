@@ -97,7 +97,8 @@ class SandboxSDKTest(unittest.TestCase):
                 lines=[
                     "data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}",
                     "data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"ok\\n\"}",
-                    "data: {\"type\":\"complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"result\":{\"context_id\":\"ctx-1\",\"execution_count\":1,\"exit_code\":0,\"stdout\":\"ok\\n\",\"stderr\":\"\",\"duration_ms\":3}}",
+                    "data: {\"type\":\"count\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"execution_count\":1}",
+                    "data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_time\":3,\"exit_code\":0}",
                 ],
             )
         )
