@@ -24,6 +24,10 @@ import (
 type SandboxTemplate struct {
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
+	// RuntimeClassName controls which container runtime to use for the sandbox Pod
+	// Typical values include "kata-qemu" or "gvisor" depending on cluster RuntimeClass setup
+	// +optional
+	RuntimeClassName string `json:"runtimeClassName,omitempty"`
 	// +optional
 	Command []string `json:"command,omitempty"`
 	// +optional

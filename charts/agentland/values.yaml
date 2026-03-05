@@ -50,6 +50,7 @@ agentcore:
       AL_WARMPOOL_PROFILE: "default"
       AL_KOROKD_IMAGE: "fl0rences720/agentland-korokd:latest"
       AL_KOROKD_IMAGE_PULL_POLICY: "Always"
+      AL_KOROKD_RUNTIME_CLASS_NAME: ""
       AL_OTEL_ENABLED: "true"
       AL_OTEL_EXPORTER_OTLP_ENDPOINT: "tempo.grafana.svc.cluster.local:4317"
       AL_OTEL_EXPORTER_OTLP_INSECURE: "true"

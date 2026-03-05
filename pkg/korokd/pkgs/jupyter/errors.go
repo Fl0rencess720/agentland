@@ -17,4 +17,3 @@ func (e *HTTPError) Error() string {
 	}
 	return fmt.Sprintf("jupyter http error: status=%d body=%s", e.Status, e.Body)
 }
-

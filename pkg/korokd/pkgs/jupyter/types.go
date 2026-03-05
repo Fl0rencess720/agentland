@@ -44,4 +44,3 @@ type wireMessage struct {
 	Channel      string            `json:"channel"`
 	Buffers      []json.RawMessage `json:"buffers,omitempty"`
 }
-
