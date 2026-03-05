@@ -76,13 +76,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	if pod == nil {
-		sandbox.Status.Phase = "Pending"
-		sandbox.Status.PodIP = ""
-	} else {
-		sandbox.Status.Phase = string(pod.Status.Phase)
-		sandbox.Status.PodIP = pod.Status.PodIP
-	}
+	sandbox.Status.Phase, sandbox.Status.PodIP = sandboxStatusFromPod(pod)
 
 	if !equality.Semantic.DeepEqual(oldStatus, &sandbox.Status) {
 		if err := r.Status().Update(ctx, sandbox); err != nil {
@@ -103,6 +97,19 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	span.AddEvent("sandbox.running", trace.WithAttributes(attribute.String("sandbox.pod_ip", sandbox.Status.PodIP)))
 	logger.V(1).Info("sandbox ready", "sandbox", sandbox.Name, "podIP", sandbox.Status.PodIP)
 	return ctrl.Result{}, nil
+}
+
+func sandboxStatusFromPod(pod *corev1.Pod) (phase string, podIP string) {
+	if pod == nil {
+		return "Pending", ""
+	}
+	if pod.Status.Phase == corev1.PodRunning && commonutils.IsPodReady(pod) && pod.Status.PodIP != "" {
+		return string(corev1.PodRunning), pod.Status.PodIP
+	}
+	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+		return string(pod.Status.Phase), ""
+	}
+	return "Pending", ""
 }
 
 func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentlandv1alpha1.Sandbox) (*corev1.Pod, error) {

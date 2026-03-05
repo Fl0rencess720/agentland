@@ -122,7 +122,7 @@ bash_context.delete()
 `charts/agentland`，资源名使用统一前缀策略，执行
 `helm install agentland ...` 时会生成 `agentland-*` 资源名。
 
-安装或升级 Helm release。
+安装或升级 Helm release
 
 ```bash
 helm upgrade --install agentland charts/agentland \
@@ -130,15 +130,18 @@ helm upgrade --install agentland charts/agentland \
   --create-namespace
 ```
 
+部署预热池
+
+```bash
+kubectl apply -f config/samples/agentland_v1alpha1_sandboxpool.yaml
+```
 ### 部署验证
 
 安装完成后，你可以用以下命令检查核心资源是否就绪。
 
 ```bash
-kubectl -n agentland-system get deploy,svc,sa
 kubectl -n agentland-system get pods
 kubectl -n agentland-sandboxes get pods
-kubectl get crd | grep 'agentland.fl0rencess720.app'
 ```
 
 ### 卸载

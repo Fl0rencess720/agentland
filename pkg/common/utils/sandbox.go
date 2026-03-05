@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	PoolLabel         = "agentland.fl0rencess720.app/pool"
-	ProfileHashLabel  = "agentland.fl0rencess720.app/profile-hash"
-	SandboxLabel      = "agentland.fl0rencess720.app/sandbox-name-hash"
-	ClaimUIDLabel     = "agentland.fl0rencess720.app/claim-uid"
-	PodNameAnnotation = "agentland.fl0rencess720.app/pod-name"
+	PoolLabel                   = "agentland.fl0rencess720.app/pool"
+	ProfileHashLabel            = "agentland.fl0rencess720.app/profile-hash"
+	SandboxLabel                = "agentland.fl0rencess720.app/sandbox-name-hash"
+	ClaimUIDLabel               = "agentland.fl0rencess720.app/claim-uid"
+	PodNameAnnotation           = "agentland.fl0rencess720.app/pod-name"
+	PoolBackfillTouchAnnotation = "agentland.fl0rencess720.app/pool-backfill-touch-at"
 )
 
 const (

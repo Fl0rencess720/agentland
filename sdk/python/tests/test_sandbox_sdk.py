@@ -78,6 +78,23 @@ class SandboxSDKTest(unittest.TestCase):
     @mock.patch("agentland.sandbox._http.httpx.request")
     @mock.patch("agentland.sandbox._http.httpx.stream")
     def test_context_exec_with_raw_payload(self, mock_stream: mock.Mock, mock_open: mock.Mock) -> None:
+        captured_stream_kwargs: dict[str, object] = {}
+
+        def _stream_side_effect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            captured_stream_kwargs.update(kwargs)
+            return _FakeStreamContext(
+                _FakeStreamResponse(
+                    status_code=200,
+                    headers={"Content-Type": "text/event-stream"},
+                    lines=[
+                        "data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}",
+                        "data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"ok\\n\"}",
+                        "data: {\"type\":\"count\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"execution_count\":1}",
+                        "data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_time\":3,\"exit_code\":0}",
+                    ],
+                )
+            )
+
         request_responses = [
             _FakeResponse(
                 status_code=200,
@@ -89,19 +106,7 @@ class SandboxSDKTest(unittest.TestCase):
             ),
         ]
         mock_open.side_effect = request_responses
-
-        mock_stream.return_value = _FakeStreamContext(
-            _FakeStreamResponse(
-                status_code=200,
-                headers={"Content-Type": "text/event-stream"},
-                lines=[
-                    "data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}",
-                    "data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"ok\\n\"}",
-                    "data: {\"type\":\"count\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"execution_count\":1}",
-                    "data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_time\":3,\"exit_code\":0}",
-                ],
-            )
-        )
+        mock_stream.side_effect = _stream_side_effect
 
         sandbox = Sandbox.connect("session-1")
         ctx = sandbox.context.create(language="python", cwd="/workspace")
@@ -118,6 +123,9 @@ class SandboxSDKTest(unittest.TestCase):
             _ = out["stdout"]  # type: ignore[index]
         with self.assertRaises(AttributeError):
             _ = out.get("stdout", "")  # type: ignore[attr-defined]
+        stream_json = captured_stream_kwargs.get("json")
+        self.assertEqual({"code": "print('ok')", "timeout_ms": 30000}, stream_json)
+        self.assertNotIn("content", captured_stream_kwargs)
         deleted = ctx.delete()
         self.assertEqual("ctx-1", deleted["context_id"])
 

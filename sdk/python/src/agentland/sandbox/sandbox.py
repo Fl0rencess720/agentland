@@ -45,13 +45,17 @@ class Sandbox:
     _config = _SDKConfig()
 
     @classmethod
-    def configure(cls, *, base_url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
+    def configure(
+        cls, *, base_url: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+    ) -> None:
         cls._config = _SDKConfig(base_url=base_url.strip().rstrip("/"), timeout=timeout)
 
     @classmethod
     def _client(cls) -> _HTTPClient:
         if not cls._config.base_url:
-            raise SDKError("SDK is not configured. Call Sandbox.configure(base_url=...) first")
+            raise SDKError(
+                "SDK is not configured. Call Sandbox.configure(base_url=...) first"
+            )
         return _HTTPClient(base_url=cls._config.base_url, timeout=cls._config.timeout)
 
     @classmethod
@@ -114,7 +118,11 @@ class Context:
                 stdout_chunks.append(evt.text)
             if evt.type == "stderr" and evt.text:
                 stderr_chunks.append(evt.text)
-            if evt.type == "count" and evt.execution_count is not None and evt.execution_count > 0:
+            if (
+                evt.type == "count"
+                and evt.execution_count is not None
+                and evt.execution_count > 0
+            ):
                 last_execution_count = evt.execution_count
             if evt.type == "execution_complete":
                 if evt.execution_time is not None and evt.execution_time >= 0:

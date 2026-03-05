@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -44,6 +45,7 @@ func (r *SandboxClaimReconciler) startSpan(ctx context.Context, name string) (co
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxclaims/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxes/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=agentland.fl0rencess720.app,resources=sandboxpools,verbs=get;patch
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 
 func (r *SandboxClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -233,6 +235,11 @@ func (r *SandboxClaimReconciler) selectWarmPod(ctx context.Context, claim *agent
 }
 
 func (r *SandboxClaimReconciler) adoptWarmPod(ctx context.Context, claim *agentlandv1alpha1.SandboxClaim, pod *corev1.Pod) error {
+	poolName := claim.Spec.PoolRef
+	if controllerRef := metav1.GetControllerOf(pod); controllerRef != nil && controllerRef.Kind == "SandboxPool" {
+		poolName = controllerRef.Name
+	}
+
 	if pod.Labels == nil {
 		pod.Labels = map[string]string{}
 	}
@@ -241,7 +248,27 @@ func (r *SandboxClaimReconciler) adoptWarmPod(ctx context.Context, claim *agentl
 	pod.Labels[commonutils.SandboxLabel] = commonutils.NameHash(claim.Name)
 	pod.Labels[commonutils.ClaimUIDLabel] = string(claim.UID)
 	pod.OwnerReferences = nil
-	return r.Update(ctx, pod)
+	if err := r.Update(ctx, pod); err != nil {
+		return err
+	}
+	return r.touchSandboxPool(ctx, claim.Namespace, poolName)
+}
+
+func (r *SandboxClaimReconciler) touchSandboxPool(ctx context.Context, namespace, poolName string) error {
+	if poolName == "" {
+		return nil
+	}
+	pool := &agentlandv1alpha1.SandboxPool{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: poolName}, pool); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+
+	base := pool.DeepCopy()
+	if pool.Annotations == nil {
+		pool.Annotations = map[string]string{}
+	}
+	pool.Annotations[commonutils.PoolBackfillTouchAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	return r.Patch(ctx, pool, client.MergeFrom(base))
 }
 
 func (r *SandboxClaimReconciler) updateClaimStatus(ctx context.Context, oldStatus *agentlandv1alpha1.SandboxClaimStatus, claim *agentlandv1alpha1.SandboxClaim) error {
