@@ -12,6 +12,34 @@
 2. **AgentCore（controller manager + gRPC）**：创建 CR 并等待就绪，将 CR 收敛为 `Sandbox` 与 Pod 状态
 3. **Korokd**：运行在 CodeInterpreter Sandbox Pod 内，负责代码执行、文件操作、浏览器操作和鉴权功能。
 
+## Helm 部署
+
+你可以使用 Helm 直接安装 `agentland`。当前 chart 路径为
+`charts/agentland`，资源名使用统一前缀策略，执行
+`helm install agentland ...` 时会生成 `agentland-*` 资源名。
+
+安装或升级 Helm release
+
+```bash
+helm upgrade --install agentland charts/agentland \
+  -n agentland-system \
+  --create-namespace
+```
+
+部署预热池
+
+```bash
+kubectl apply -f config/samples/agentland_v1alpha1_sandboxpool.yaml
+```
+### 部署验证
+
+安装完成后，你可以用以下命令检查核心资源是否就绪。
+
+```bash
+kubectl -n agentland-system get pods
+kubectl -n agentland-sandboxes get pods
+```
+
 ## MCP 与 Python SDK
 
 项目提供 Python SDK 和本地 MCP Server。
@@ -116,35 +144,7 @@ bash_context.delete()
 - `SandboxPool`：预热 Pod 池
 - `SandboxClaim`：从预热池中分配沙箱的请求
 
-## Helm 部署
-
-你可以使用 Helm 直接安装 `agentland`。当前 chart 路径为
-`charts/agentland`，资源名使用统一前缀策略，执行
-`helm install agentland ...` 时会生成 `agentland-*` 资源名。
-
-安装或升级 Helm release
-
-```bash
-helm upgrade --install agentland charts/agentland \
-  -n agentland-system \
-  --create-namespace
-```
-
-部署预热池
-
-```bash
-kubectl apply -f config/samples/agentland_v1alpha1_sandboxpool.yaml
-```
-### 部署验证
-
-安装完成后，你可以用以下命令检查核心资源是否就绪。
-
-```bash
-kubectl -n agentland-system get pods
-kubectl -n agentland-sandboxes get pods
-```
-
-### 卸载
+## 卸载
 
 如果你需要回收 Helm 部署资源，先卸载 release，再按需删除命名空间。
 

@@ -57,6 +57,21 @@ func (h *CodeInterpreterHandler) CreateContext(c *gin.Context) {
 func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 	contextID := c.Param("contextId")
 
+	var req models.ExecuteContextReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ErrorResponse(c, response.FormError)
+		return
+	}
+
+	if strings.TrimSpace(req.Code) == "" {
+		response.ErrorResponse(c, response.FormError)
+		return
+	}
+	if req.TimeoutMs != 0 && (req.TimeoutMs < contextMinTimeoutMs || req.TimeoutMs > contextMaxTimeoutMs) {
+		response.ErrorResponse(c, response.FormError)
+		return
+	}
+
 	utils.SetupSSEResponse(c)
 
 	var mu sync.Mutex
@@ -68,17 +83,6 @@ func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 			evt.ContextID = contextID
 		}
 		return utils.WriteSSE(c, &mu, evt)
-	}
-
-	var req models.ExecuteContextReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "invalid request body"})
-		return
-	}
-
-	if strings.TrimSpace(req.Code) == "" {
-		_ = emit(models.ExecuteStreamEvent{Type: "error", Error: "code is required"})
-		return
 	}
 
 	_ = emit(models.ExecuteStreamEvent{Type: "init"})
