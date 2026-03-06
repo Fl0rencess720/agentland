@@ -8,7 +8,7 @@ from typing import Any
 
 from ._http import _HTTPClient
 from .errors import SDKError
-from .results import ExecutionResult, ExecutionStreamEvent
+from .results import ExecutionOutput, ExecutionResult, ExecutionStreamEvent
 
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -107,11 +107,14 @@ class Context:
     def exec(self, code: str, timeout_ms: int = 30000) -> ExecutionResult:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
+        execution_id: str | None = None
         last_execution_count = 0
         last_exit_code = 0
         last_duration_ms = 0
 
         for evt in self.exec_stream(code, timeout_ms=timeout_ms):
+            if evt.execution_id:
+                execution_id = evt.execution_id
             if evt.type == "error":
                 raise SDKError(evt.error or "execution failed")
             if evt.type == "stdout" and evt.text:
@@ -130,6 +133,7 @@ class Context:
                 if evt.exit_code is not None:
                     last_exit_code = evt.exit_code
                 return ExecutionResult(
+                    execution_id=execution_id,
                     context_id=self.context_id,
                     execution_count=last_execution_count,
                     exit_code=last_exit_code,
@@ -152,6 +156,15 @@ class Context:
             json_body=payload,
         ):
             yield ExecutionStreamEvent.from_payload(raw_evt)
+
+    def get_output(self, execution_id: str) -> ExecutionOutput:
+        clean_execution_id = _ensure_non_empty("execution_id", execution_id)
+        out = self._sandbox._client_impl.request_json(
+            "GET",
+            f"/api/code-runner/contexts/{self.context_id}/executions/{clean_execution_id}/output",
+            session_id=self._sandbox.sandbox_id,
+        )
+        return ExecutionOutput.from_payload(out)
 
     def delete(self) -> dict[str, Any]:
         return self._sandbox._client_impl.request_json(

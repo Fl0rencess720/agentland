@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agentland.sandbox import ExecutionResult, SDKError, Sandbox
+from agentland.sandbox import ExecutionOutput, ExecutionResult, SDKError, Sandbox
 
 
 class _FakeResponse:
@@ -87,10 +87,10 @@ class SandboxSDKTest(unittest.TestCase):
                     status_code=200,
                     headers={"Content-Type": "text/event-stream"},
                     lines=[
-                        "data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\"}",
-                        "data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"text\":\"ok\\n\"}",
-                        "data: {\"type\":\"count\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"execution_count\":1}",
-                        "data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_time\":3,\"exit_code\":0}",
+                        "data: {\"type\":\"init\",\"timestamp\":1,\"context_id\":\"ctx-1\",\"execution_id\":\"exec-1\"}",
+                        "data: {\"type\":\"stdout\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"execution_id\":\"exec-1\",\"text\":\"ok\\n\"}",
+                        "data: {\"type\":\"count\",\"timestamp\":2,\"context_id\":\"ctx-1\",\"execution_id\":\"exec-1\",\"execution_count\":1}",
+                        "data: {\"type\":\"execution_complete\",\"timestamp\":3,\"context_id\":\"ctx-1\",\"execution_id\":\"exec-1\",\"execution_time\":3,\"exit_code\":0}",
                     ],
                 )
             )
@@ -113,6 +113,7 @@ class SandboxSDKTest(unittest.TestCase):
         self.assertEqual("ctx-1", ctx.context_id)
         out = ctx.exec("print('ok')", timeout_ms=30000)
         self.assertIsInstance(out, ExecutionResult)
+        self.assertEqual("exec-1", out.execution_id)
         self.assertEqual("ctx-1", out.context_id)
         self.assertEqual(1, out.execution_count)
         self.assertEqual(0, out.exit_code)
@@ -128,6 +129,51 @@ class SandboxSDKTest(unittest.TestCase):
         self.assertNotIn("content", captured_stream_kwargs)
         deleted = ctx.delete()
         self.assertEqual("ctx-1", deleted["context_id"])
+
+    @mock.patch("agentland.sandbox._http.httpx.request")
+    def test_get_execution_output(self, mock_open: mock.Mock) -> None:
+        request_responses = [
+            _FakeResponse(
+                status_code=200,
+                body=json.dumps({"context_id": "ctx-1"}).encode("utf-8"),
+            ),
+            _FakeResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "code": 200,
+                        "msg": "success",
+                        "data": {
+                            "execution_id": "exec-1",
+                            "context_id": "ctx-1",
+                            "state": "running",
+                            "execution_count": 2,
+                            "stdout": "line1\n",
+                            "stderr": "",
+                            "duration_ms": 12,
+                        },
+                    }
+                ).encode("utf-8"),
+            ),
+        ]
+        mock_open.side_effect = request_responses
+
+        sandbox = Sandbox.connect("session-1")
+        ctx = sandbox.context.create(language="python", cwd="/workspace")
+        out = ctx.get_output("exec-1")
+
+        self.assertIsInstance(out, ExecutionOutput)
+        self.assertEqual("exec-1", out.execution_id)
+        self.assertEqual("ctx-1", out.context_id)
+        self.assertEqual("running", out.state)
+        self.assertEqual(2, out.execution_count)
+        self.assertEqual("line1\n", out.stdout)
+        self.assertEqual("", out.stderr)
+        self.assertIsNone(out.exit_code)
+
+        last_call = mock_open.call_args_list[-1]
+        self.assertEqual("GET", last_call.args[0])
+        self.assertTrue(last_call.args[1].endswith("/api/code-runner/contexts/ctx-1/executions/exec-1/output"))
 
     @mock.patch("agentland.sandbox._http.httpx.request")
     def test_upload_uses_local_path_and_multipart(self, mock_open: mock.Mock) -> None:

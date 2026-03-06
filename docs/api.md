@@ -7,6 +7,7 @@
 | code-runner | `POST` | `/api/code-runner/sandboxes` |
 | code-runner | `POST` | `/api/code-runner/contexts` |
 | code-runner | `POST` | `/api/code-runner/contexts/{contextId}/execute` |
+| code-runner | `GET` | `/api/code-runner/contexts/{contextId}/executions/{executionId}/output` |
 | code-runner | `DELETE` | `/api/code-runner/contexts/{contextId}` |
 | code-runner | `GET` | `/api/code-runner/fs/tree` |
 | code-runner | `GET` | `/api/code-runner/fs/file` |
@@ -110,7 +111,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `language` | string | 是 | 仅支持 `python`、`shell`。 |
+| `language` | string | 是 | 仅支持 `python`、`bash`。 |
 | `cwd` | string | 否 | 工作目录。空值默认 `/workspace`。 |
 
 成功响应（HTTP 200）：
@@ -132,6 +133,10 @@
 ### 3. 在上下文中执行代码
 
 该接口在已存在的 `context_id` 内执行代码。
+
+该接口返回 `text/event-stream`。你会先收到一条带
+`execution_id` 的 `init` 事件，后续可以用这个 ID 查询当前已输出
+内容。
 
 - 方法与路径：`POST /api/code-runner/contexts/{contextId}/execute`
 - 必填 Header：`Content-Type: application/json`、`x-agentland-session`
@@ -158,6 +163,43 @@
 | `code` | string | 是 | 要执行的代码。 |
 | `timeout_ms` | int | 否 | 执行超时，范围 `100` 到 `300000`。默认 `30000`。 |
 
+成功响应（HTTP 200，SSE）：
+
+```text
+data: {"type":"init","timestamp":1741226400000,"context_id":"ctx-1","execution_id":"exec-1"}
+
+data: {"type":"stdout","timestamp":1741226400001,"context_id":"ctx-1","execution_id":"exec-1","text":"1\n"}
+
+data: {"type":"count","timestamp":1741226400002,"context_id":"ctx-1","execution_id":"exec-1","execution_count":1}
+
+data: {"type":"execution_complete","timestamp":1741226400003,"context_id":"ctx-1","execution_id":"exec-1","execution_time":5,"exit_code":0}
+```
+
+事件说明：
+
+- `init` 表示本次执行已经创建，事件中会返回 `execution_id`。
+- `stdout` 和 `stderr` 表示增量输出。
+- `count` 表示当前上下文内的执行计数。
+- `status` 和 `ping` 可能在长时间运行任务中出现。
+- `execution_complete` 表示本次执行结束。
+- `error` 表示执行前校验失败或执行过程中的错误。
+
+### 4. 查询执行当前输出
+
+该接口返回某次执行在当前请求时刻已经缓冲的输出内容。接口不使用
+SSE，不会等待后续输出。
+
+- 方法与路径：
+  `GET /api/code-runner/contexts/{contextId}/executions/{executionId}/output`
+- 必填 Header：`x-agentland-session`
+
+路径参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `contextId` | string | 是 | 上下文 ID。 |
+| `executionId` | string | 是 | 执行 ID。 |
+
 成功响应（HTTP 200）：
 
 ```json
@@ -165,9 +207,10 @@
   "msg": "success",
   "code": 200,
   "data": {
+    "execution_id": "exec-1",
     "context_id": "ctx-1",
+    "state": "running",
     "execution_count": 1,
-    "exit_code": 0,
     "stdout": "1\n",
     "stderr": "",
     "duration_ms": 5
@@ -175,7 +218,21 @@
 }
 ```
 
-### 4. 删除执行上下文
+字段说明：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `execution_id` | string | 执行 ID。 |
+| `context_id` | string | 上下文 ID。 |
+| `state` | string | 当前执行状态。运行中为 `running`，结束后为 `finished`，异常失败为 `failed`。 |
+| `execution_count` | int | 当前上下文内的执行计数。 |
+| `exit_code` | int | 仅在执行结束后返回。 |
+| `stdout` | string | 当前已经捕获的标准输出。 |
+| `stderr` | string | 当前已经捕获的标准错误。 |
+| `duration_ms` | int | 当前累计执行时长。 |
+| `error` | string | 仅在执行失败时返回。 |
+
+### 5. 删除执行上下文
 
 该接口销毁指定上下文。
 
@@ -200,7 +257,7 @@
 }
 ```
 
-### 5. 获取目录树
+### 6. 获取目录树
 
 该接口返回目录树结构，支持深度和隐藏文件控制。
 
@@ -236,7 +293,7 @@
 }
 ```
 
-### 6. 读取文件
+### 7. 读取文件
 
 该接口读取文件内容，支持 `utf8` 和 `base64` 两种返回编码。
 
@@ -265,7 +322,7 @@
 }
 ```
 
-### 7. 写文件
+### 8. 写文件
 
 该接口写入文件内容。不存在的父目录会自动创建。
 
@@ -304,7 +361,7 @@
 }
 ```
 
-### 8. 上传文件
+### 9. 上传文件
 
 该接口通过 `multipart/form-data` 上传文件到沙箱路径。当前实现不支持
 JSON 上传格式。
@@ -342,7 +399,7 @@ curl -X POST "$BASE/api/code-runner/fs/upload" \
 }
 ```
 
-### 9. 下载文件
+### 10. 下载文件
 
 该接口返回二进制文件流，不是 JSON 包裹格式。
 
