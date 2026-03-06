@@ -14,6 +14,8 @@
 | code-runner | `POST` | `/api/code-runner/fs/file` |
 | code-runner | `POST` | `/api/code-runner/fs/upload` |
 | code-runner | `GET` | `/api/code-runner/fs/download` |
+| preview | `POST` | `/api/previews` |
+| preview | `ANY` | `/p/{previewToken}[/*path]` |
 | agent-sessions | `POST` | `/api/agent-sessions/invocations/*path` |
 | agent-sessions | `GET` | `/api/agent-sessions/invocations/*path` |
 | agent-sessions | `ANY` | `/api/agent-sessions/{sessionId}/endpoints/by-port/{port}[/*path]` |
@@ -419,6 +421,74 @@ curl -X POST "$BASE/api/code-runner/fs/upload" \
 - 关键响应 Header：  
   - `Content-Disposition: attachment; filename="xxx"`  
   - `X-Agentland-File-Path: /workspace/xxx`
+
+## preview 接口
+
+本组接口用于把 sandbox 内部某个 HTTP 端口生成为可访问的 preview
+链接。gateway 保存 preview token，并在访问时把请求转发到对应 session
+的目标端口。
+
+### 1. 创建 preview 链接
+
+该接口为当前 session 的指定端口创建一个带过期时间的 preview 链接。
+
+- 方法与路径：`POST /api/previews`
+- 必填 Header：`Content-Type: application/json`、`x-agentland-session`
+
+请求体：
+
+```json
+{
+  "port": 3000,
+  "expires_in_seconds": 3600
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `port` | int | 是 | 要预览的 sandbox 内部端口，范围 `1` 到 `65535`。 |
+| `expires_in_seconds` | int | 否 | 链接有效期，范围 `1` 到 `86400`。默认 `3600`。 |
+
+成功响应（HTTP 200）：
+
+```json
+{
+  "msg": "success",
+  "code": 200,
+  "data": {
+    "session_id": "session-sbx-1",
+    "port": 3000,
+    "preview_token": "6a89f6e2-44df-4d18-a755-12b938a0e85a",
+    "preview_url": "http://127.0.0.1:12800/p/6a89f6e2-44df-4d18-a755-12b938a0e85a/",
+    "expires_at": "2026-03-06T13:00:00Z"
+  }
+}
+```
+
+### 2. 访问 preview 链接
+
+该接口是 preview 链接本身的访问入口。gateway 会根据 `previewToken`
+找到对应的 `session_id` 和端口，再把请求转发到 sandbox 内部的
+`/api/proxy/by-port/{port}`。
+
+- 方法与路径：`ANY /p/{previewToken}[/*path]`
+- 必填 Header：无
+
+路径参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `previewToken` | string | 是 | preview token。 |
+| `path` | string | 否 | 要转发到上游服务的子路径。默认 `/`。 |
+
+说明：
+
+- query string 会原样透传给上游服务。
+- 请求 body 会原样透传给上游服务。
+- token 过期或不存在时，返回 `404` 与 `{"error":"preview not found"}`。
+- 对大量使用绝对路径的前端应用，建议应用本身支持 base path，或后续升级为子域名版 preview。
 
 ## agent-sessions 接口
 

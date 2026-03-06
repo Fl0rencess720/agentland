@@ -8,7 +8,12 @@ from typing import Any
 
 from ._http import _HTTPClient
 from .errors import SDKError
-from .results import ExecutionOutput, ExecutionResult, ExecutionStreamEvent
+from .results import (
+    ExecutionOutput,
+    ExecutionResult,
+    ExecutionStreamEvent,
+    PreviewLink,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -31,6 +36,12 @@ def _ensure_non_empty(name: str, value: str) -> str:
     if not cleaned:
         raise SDKError(f"{name} is required")
     return cleaned
+
+
+def _ensure_preview_expiry(expires_in_seconds: int) -> int:
+    if expires_in_seconds < 1 or expires_in_seconds > 86400:
+        raise SDKError("expires_in_seconds must be between 1 and 86400")
+    return expires_in_seconds
 
 
 @dataclass(slots=True)
@@ -77,6 +88,25 @@ class Sandbox:
         self._client_impl = _client
         self.context = _ContextService(self)
         self.fs = _FSService(self)
+
+    def create_preview(
+        self,
+        port: int,
+        expires_in_seconds: int = 3600,
+    ) -> PreviewLink:
+        if port < 1 or port > 65535:
+            raise SDKError("port must be between 1 and 65535")
+        payload = {
+            "port": port,
+            "expires_in_seconds": _ensure_preview_expiry(expires_in_seconds),
+        }
+        out = self._client_impl.request_json(
+            "POST",
+            "/api/previews",
+            session_id=self.sandbox_id,
+            json_body=payload,
+        )
+        return PreviewLink.from_payload(out)
 
 
 class _ContextService:

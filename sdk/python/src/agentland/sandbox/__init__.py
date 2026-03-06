@@ -1,7 +1,7 @@
 """Sandbox SDK exports."""
 
 from .errors import SDKError
-from .results import ExecutionOutput, ExecutionResult, ExecutionStreamEvent
+from .results import ExecutionOutput, ExecutionResult, ExecutionStreamEvent, PreviewLink
 from .sandbox import Context, Sandbox
 
 __all__ = [
@@ -10,5 +10,6 @@ __all__ = [
     "ExecutionOutput",
     "ExecutionResult",
     "ExecutionStreamEvent",
+    "PreviewLink",
     "SDKError",
 ]

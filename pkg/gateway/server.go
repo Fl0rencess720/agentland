@@ -26,6 +26,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	{
 		handlers.InitCodeInterpreterApi(app.Group("/code-runner"), cfg)
 		handlers.InitAgentSessionApi(app.Group("/agent-sessions"), cfg)
+		handlers.InitPreviewApi(app, e, cfg)
 	}
 
 	httpServer := &http.Server{

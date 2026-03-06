@@ -118,6 +118,42 @@ class ExecutionOutput:
 
 
 @dataclass(slots=True)
+class PreviewLink:
+    """Signed preview link for one sandbox port."""
+
+    session_id: str
+    port: int
+    preview_token: str
+    preview_url: str
+    expires_at: str
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "PreviewLink":
+        if not isinstance(payload, Mapping):
+            raise SDKError("preview payload must be an object")
+
+        return cls(
+            session_id=_as_str(payload.get("session_id", ""), "session_id"),
+            port=_as_int(payload.get("port", 0), "port"),
+            preview_token=_as_str(
+                payload.get("preview_token", ""),
+                "preview_token",
+            ),
+            preview_url=_as_str(payload.get("preview_url", ""), "preview_url"),
+            expires_at=_as_str(payload.get("expires_at", ""), "expires_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "port": self.port,
+            "preview_token": self.preview_token,
+            "preview_url": self.preview_url,
+            "expires_at": self.expires_at,
+        }
+
+
+@dataclass(slots=True)
 class ExecutionStreamEvent:
     """One SSE event during execution."""
 
