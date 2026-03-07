@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/response"
 	"github.com/Fl0rencess720/agentland/pkg/korokd/pkgs/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -27,6 +29,7 @@ func InitCodeInterpreterApi(group *gin.RouterGroup) {
 
 	group.POST("/contexts", h.CreateContext)
 	group.POST("/contexts/:contextId/execute", h.ExecuteInContext)
+	group.GET("/contexts/:contextId/executions/:executionId/output", h.GetExecutionOutput)
 	group.DELETE("/contexts/:contextId", h.DeleteContext)
 }
 
@@ -72,6 +75,19 @@ func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 		return
 	}
 
+	kctx, execution, timeoutMs, err := h.contexts.prepareExecution(contextID, uuid.NewString(), req.TimeoutMs)
+	if err != nil {
+		utils.SetupSSEResponse(c)
+		var mu sync.Mutex
+		_ = utils.WriteSSE(c, &mu, models.ExecuteStreamEvent{
+			Type:      "error",
+			Timestamp: time.Now().UnixMilli(),
+			ContextID: contextID,
+			Error:     err.Error(),
+		})
+		return
+	}
+
 	utils.SetupSSEResponse(c)
 
 	var mu sync.Mutex
@@ -81,6 +97,9 @@ func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 		}
 		if evt.ContextID == "" {
 			evt.ContextID = contextID
+		}
+		if evt.ExecutionID == "" {
+			evt.ExecutionID = execution.ID
 		}
 		return utils.WriteSSE(c, &mu, evt)
 	}
@@ -134,8 +153,10 @@ func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 	resp, err := h.contexts.executeWithHooks(
 		c.Request.Context(),
 		contextID,
+		kctx,
+		execution,
 		req.Code,
-		req.TimeoutMs,
+		timeoutMs,
 		&hookSet,
 	)
 	if err != nil {
@@ -160,6 +181,27 @@ func (h *CodeInterpreterHandler) ExecuteInContext(c *gin.Context) {
 	} else {
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func (h *CodeInterpreterHandler) GetExecutionOutput(c *gin.Context) {
+	contextID := strings.TrimSpace(c.Param("contextId"))
+	executionID := strings.TrimSpace(c.Param("executionId"))
+	if contextID == "" || executionID == "" {
+		response.ErrorResponse(c, response.FormError)
+		return
+	}
+
+	out, err := h.contexts.getExecutionOutput(contextID, executionID)
+	if err != nil {
+		if errors.Is(err, errContextNotFound) || errors.Is(err, errExecutionNotFound) {
+			c.JSON(404, gin.H{"error": err.Error()})
+			return
+		}
+		response.ErrorResponse(c, response.ServerError)
+		return
+	}
+
+	response.SuccessResponse(c, out)
 }
 
 func (h *CodeInterpreterHandler) DeleteContext(c *gin.Context) {
