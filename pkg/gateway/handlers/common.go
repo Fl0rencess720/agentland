@@ -116,7 +116,6 @@ func (e *ProxyEngine) Forward(ctx *gin.Context, cfg ProxyConfig) {
 			req.GetBody = func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(cfg.Body)), nil
 			}
-			req.Header.Set("Content-Type", "application/json")
 		}
 	}
 

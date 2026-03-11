@@ -60,6 +60,7 @@ func InitCodeInterpreterApi(group *gin.RouterGroup, cfg *config.Config) {
 	group.POST("/sandboxes", h.CreateSandbox)
 	group.POST("/contexts", h.CreateContext)
 	group.POST("/contexts/:contextId/execute", h.ExecuteInContext)
+	group.GET("/contexts/:contextId/executions/:executionId/output", h.GetExecutionOutput)
 	group.DELETE("/contexts/:contextId", h.DeleteContext)
 
 	group.GET("/fs/tree", h.GetFSTree)
@@ -147,6 +148,16 @@ func (h *CodeInterpreterHandler) DeleteContext(ctx *gin.Context) {
 		return
 	}
 	h.forwardToSandbox(ctx, http.MethodDelete, "/api/contexts/"+contextID, nil)
+}
+
+func (h *CodeInterpreterHandler) GetExecutionOutput(ctx *gin.Context) {
+	contextID := strings.TrimSpace(ctx.Param("contextId"))
+	executionID := strings.TrimSpace(ctx.Param("executionId"))
+	if contextID == "" || executionID == "" {
+		response.ErrorResponse(ctx, response.FormError)
+		return
+	}
+	h.forwardToSandbox(ctx, http.MethodGet, "/api/contexts/"+contextID+"/executions/"+executionID+"/output", nil)
 }
 
 func (h *CodeInterpreterHandler) GetFSTree(ctx *gin.Context) {

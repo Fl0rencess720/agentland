@@ -367,6 +367,44 @@ func (s *CodeInterpreterSuite) TestExecuteInContext_ProxySuccess() {
 	s.Contains(s.recorder.Body.String(), `"type":"execution_complete"`)
 }
 
+func (s *CodeInterpreterSuite) TestGetExecutionOutput_ProxySuccess() {
+	s.handler.sessionStore = &mockSessionStore{
+		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {
+			s.Equal("session-1", sandboxID)
+			return &db.SandboxInfo{
+				SandboxID:    "session-1",
+				GrpcEndpoint: "sandbox.test:1883",
+			}, nil
+		},
+	}
+
+	s.handler.proxyEngine.Transport = RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, r.Method)
+		s.Equal("/api/contexts/ctx-1/executions/exec-1/output", r.URL.Path)
+		s.Equal("Bearer default.jwt.token", r.Header.Get("Authorization"))
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"msg":"success","code":200,"data":{"execution_id":"exec-1","context_id":"ctx-1","state":"running","stdout":"1\n","stderr":""}}`,
+			)),
+		}
+		resp.Header.Set("Content-Type", "application/json")
+		return resp, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/contexts/ctx-1/executions/exec-1/output", nil)
+	req.Header.Set("x-agentland-session", "session-1")
+	s.ctx.Request = req
+	s.ctx.Params = gin.Params{{Key: "contextId", Value: "ctx-1"}, {Key: "executionId", Value: "exec-1"}}
+
+	s.handler.GetExecutionOutput(s.ctx)
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("session-1", s.recorder.Header().Get("x-agentland-session"))
+	s.Contains(s.recorder.Body.String(), `"execution_id":"exec-1"`)
+}
+
 func (s *CodeInterpreterSuite) TestGetFSTree_ProxySuccess() {
 	s.handler.sessionStore = &mockSessionStore{
 		getSessionFn: func(ctx context.Context, sandboxID string) (*db.SandboxInfo, error) {

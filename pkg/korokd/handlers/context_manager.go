@@ -45,10 +45,13 @@ var (
 	errContextNotFound      = fmt.Errorf("context not found")
 	errContextBusy          = fmt.Errorf("context is busy")
 	errContextLimitExceeded = fmt.Errorf("context limit exceeded")
+	errExecutionNotFound    = fmt.Errorf("execution not found")
 	errInvalidTimeoutMS     = fmt.Errorf("invalid timeout_ms")
 	errCWDOutsideWorkspace  = fmt.Errorf("cwd outside workspace")
 	errUnsupportedLanguage  = fmt.Errorf("unsupported language")
 )
+
+const contextExecutionHistoryLimit = 16
 
 // kernelContext 表示一个可复用的执行上下文
 // python/bash 对应 Jupyter session/kernel，都会在多次执行间保留状态
@@ -62,6 +65,25 @@ type kernelContext struct {
 	lastActiveUnix atomic.Int64
 	executionCount atomic.Int64
 	busy           atomic.Bool
+
+	executionMu    sync.RWMutex
+	executions     map[string]*executionRecord
+	executionOrder []string
+}
+
+type executionRecord struct {
+	ID        string
+	ContextID string
+
+	mu             sync.RWMutex
+	state          string
+	executionCount int64
+	stdout         strings.Builder
+	stderr         strings.Builder
+	exitCode       *int32
+	errorMessage   string
+	startedAt      time.Time
+	finishedAt     time.Time
 }
 
 type contextManager struct {
@@ -199,11 +221,12 @@ func (m *contextManager) create(language, cwd string) (*kernelContext, error) {
 	}
 
 	kctx := &kernelContext{
-		ID:        actualID,
-		Language:  normalizedLanguage,
-		CWD:       resolvedCWD,
-		KernelID:  kernelID,
-		createdAt: time.Now().UTC(),
+		ID:         actualID,
+		Language:   normalizedLanguage,
+		CWD:        resolvedCWD,
+		KernelID:   kernelID,
+		createdAt:  time.Now().UTC(),
+		executions: make(map[string]*executionRecord),
 	}
 	now := time.Now().UnixNano()
 	kctx.lastActiveUnix.Store(now)
@@ -214,17 +237,48 @@ func (m *contextManager) create(language, cwd string) (*kernelContext, error) {
 
 func (m *contextManager) executeWithHooks(
 	ctx context.Context,
-	contextID, code string,
+	contextID string,
+	kctx *kernelContext,
+	execution *executionRecord,
+	code string,
 	timeoutMs int,
 	hooks *executeStreamHooks,
 ) (*models.ExecuteContextResp, error) {
+	defer kctx.busy.Store(false)
+
+	wrappedHooks := execution.wrapHooks(hooks)
+
+	var resp *models.ExecuteContextResp
+	var err error
 	// 执行流程：
 	// 1. 查找 context 并校验参数
 	// 2. busy 原子位做串行保护（同一 context 同时只允许一个执行）
 	// 3. 根据 language 走对应执行器
+	switch kctx.Language {
+	case contextLanguagePython:
+		resp, err = m.executePython(ctx, contextID, kctx, code, timeoutMs, wrappedHooks)
+	case contextLanguageBash:
+		resp, err = m.executeBash(ctx, contextID, kctx, code, timeoutMs, wrappedHooks)
+	default:
+		err = fmt.Errorf("%w: %s", errUnsupportedLanguage, kctx.Language)
+	}
+	if err != nil {
+		execution.markFailed(err.Error())
+		return nil, err
+	}
+
+	resp.ExecutionID = execution.ID
+	execution.markFinished(resp.ExecutionCount, resp.ExitCode)
+	return resp, nil
+}
+
+func (m *contextManager) prepareExecution(
+	contextID, executionID string,
+	timeoutMs int,
+) (*kernelContext, *executionRecord, int, error) {
 	kctx := m.get(contextID)
 	if kctx == nil {
-		return nil, errContextNotFound
+		return nil, nil, 0, errContextNotFound
 	}
 
 	if timeoutMs == 0 {
@@ -232,23 +286,160 @@ func (m *contextManager) executeWithHooks(
 	}
 
 	if timeoutMs < contextMinTimeoutMs || timeoutMs > contextMaxTimeoutMs {
-		return nil, fmt.Errorf("%w: timeout_ms must be between 100 and 300000", errInvalidTimeoutMS)
+		return nil, nil, 0, fmt.Errorf("%w: timeout_ms must be between 100 and 300000", errInvalidTimeoutMS)
 	}
 
 	if !kctx.busy.CompareAndSwap(false, true) {
-		return nil, errContextBusy
+		return nil, nil, 0, errContextBusy
 	}
-	// 同一个 context 只能串行执行，避免状态竞争
-	defer kctx.busy.Store(false)
 
-	switch kctx.Language {
-	case contextLanguagePython:
-		return m.executePython(ctx, contextID, kctx, code, timeoutMs, hooks)
-	case contextLanguageBash:
-		return m.executeBash(ctx, contextID, kctx, code, timeoutMs, hooks)
-	default:
-		return nil, fmt.Errorf("%w: %s", errUnsupportedLanguage, kctx.Language)
+	execution := kctx.addExecution(executionID)
+	if execution == nil {
+		kctx.busy.Store(false)
+		return nil, nil, 0, fmt.Errorf("create execution failed")
 	}
+
+	return kctx, execution, timeoutMs, nil
+}
+
+func (k *kernelContext) addExecution(executionID string) *executionRecord {
+	if strings.TrimSpace(executionID) == "" {
+		return nil
+	}
+	record := &executionRecord{
+		ID:        executionID,
+		ContextID: k.ID,
+		state:     "running",
+		startedAt: time.Now().UTC(),
+	}
+
+	k.executionMu.Lock()
+	defer k.executionMu.Unlock()
+	if k.executions == nil {
+		k.executions = make(map[string]*executionRecord)
+	}
+	if len(k.executionOrder) >= contextExecutionHistoryLimit {
+		oldestID := k.executionOrder[0]
+		delete(k.executions, oldestID)
+		k.executionOrder = k.executionOrder[1:]
+	}
+	k.executions[executionID] = record
+	k.executionOrder = append(k.executionOrder, executionID)
+	return record
+}
+
+func (k *kernelContext) getExecution(executionID string) *executionRecord {
+	k.executionMu.RLock()
+	defer k.executionMu.RUnlock()
+	return k.executions[executionID]
+}
+
+func (e *executionRecord) wrapHooks(hooks *executeStreamHooks) *executeStreamHooks {
+	return &executeStreamHooks{
+		OnStdout: func(text string) {
+			e.appendStdout(text)
+			if hooks != nil && hooks.OnStdout != nil {
+				hooks.OnStdout(text)
+			}
+		},
+		OnStderr: func(text string) {
+			e.appendStderr(text)
+			if hooks != nil && hooks.OnStderr != nil {
+				hooks.OnStderr(text)
+			}
+		},
+		OnStatus: func(state string) {
+			if hooks != nil && hooks.OnStatus != nil {
+				hooks.OnStatus(state)
+			}
+		},
+		OnExecutionCount: func(count int64) {
+			e.setExecutionCount(count)
+			if hooks != nil && hooks.OnExecutionCount != nil {
+				hooks.OnExecutionCount(count)
+			}
+		},
+	}
+}
+
+func (e *executionRecord) appendStdout(text string) {
+	if text == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stdout.WriteString(text)
+}
+
+func (e *executionRecord) appendStderr(text string) {
+	if text == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stderr.WriteString(text)
+}
+
+func (e *executionRecord) setExecutionCount(count int64) {
+	if count <= 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.executionCount = count
+}
+
+func (e *executionRecord) markFinished(executionCount int64, exitCode int32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if executionCount > 0 {
+		e.executionCount = executionCount
+	}
+	e.state = "finished"
+	e.exitCode = &exitCode
+	e.finishedAt = time.Now().UTC()
+}
+
+func (e *executionRecord) markFailed(message string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.state = "failed"
+	e.errorMessage = strings.TrimSpace(message)
+	e.finishedAt = time.Now().UTC()
+}
+
+func (e *executionRecord) snapshot() models.GetExecutionOutputResp {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	endAt := e.finishedAt
+	if endAt.IsZero() {
+		endAt = time.Now().UTC()
+	}
+	return models.GetExecutionOutputResp{
+		ExecutionID:    e.ID,
+		ContextID:      e.ContextID,
+		State:          e.state,
+		ExecutionCount: e.executionCount,
+		ExitCode:       e.exitCode,
+		Stdout:         e.stdout.String(),
+		Stderr:         e.stderr.String(),
+		DurationMs:     endAt.Sub(e.startedAt).Milliseconds(),
+		Error:          e.errorMessage,
+	}
+}
+
+func (m *contextManager) getExecutionOutput(contextID, executionID string) (*models.GetExecutionOutputResp, error) {
+	kctx := m.get(contextID)
+	if kctx == nil {
+		return nil, errContextNotFound
+	}
+	execution := kctx.getExecution(executionID)
+	if execution == nil {
+		return nil, errExecutionNotFound
+	}
+	resp := execution.snapshot()
+	return &resp, nil
 }
 
 func toJupyterHooks(hooks *executeStreamHooks) jupyter.ExecuteHooks {

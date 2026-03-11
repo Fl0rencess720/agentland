@@ -9,7 +9,8 @@ type ExecuteStreamEvent struct {
 	// Timestamp is milliseconds since epoch.
 	Timestamp int64 `json:"timestamp,omitempty"`
 
-	ContextID string `json:"context_id,omitempty"`
+	ContextID   string `json:"context_id,omitempty"`
+	ExecutionID string `json:"execution_id,omitempty"`
 
 	// Text carries stdout/stderr/status payload.
 	Text string `json:"text,omitempty"`
