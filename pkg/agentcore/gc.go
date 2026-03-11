@@ -18,6 +18,11 @@ const (
 	sessionGCInterval    = 30 * time.Second
 	sessionGCBatchLimit  = int64(100)
 	sessionGCOnceTimeout = 20 * time.Second
+
+	sessionGCLockKey           = "agentland:lock:session-gc"
+	sessionGCLockTTL           = 10 * time.Second
+	sessionGCLockRenewInterval = 3 * time.Second
+	sessionGCLockOpTimeout     = 2 * time.Second
 )
 
 func (s *Server) runSessionGC(ctx context.Context) {
@@ -29,9 +34,45 @@ func (s *Server) runSessionGC(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.gcOnce(ctx); err != nil {
+			gcCtx, cancel := context.WithTimeout(ctx, sessionGCOnceTimeout+5*time.Second)
+
+			lock, err := db.NewRedisLock(s.gcLockClient, sessionGCLockKey)
+			if err != nil {
+				cancel()
+				zap.L().Error("session GC init lock failed", zap.Error(err))
+				continue
+			}
+
+			lockCtx, lockCancel := context.WithTimeout(gcCtx, sessionGCLockOpTimeout)
+			acquired, err := lock.Acquire(lockCtx, sessionGCLockTTL)
+			lockCancel()
+			if err != nil {
+				cancel()
+				zap.L().Error("session GC acquire lock failed", zap.Error(err))
+				continue
+			}
+			if !acquired {
+				cancel()
+				continue
+			}
+
+			go func() {
+				if err := lock.Watchdog(gcCtx, sessionGCLockRenewInterval, sessionGCLockTTL); err != nil {
+					zap.L().Warn("session GC lock watchdog stopped", zap.Error(err))
+				}
+			}()
+
+			if err := s.gcOnce(gcCtx); err != nil {
 				zap.L().Error("session GC cycle failed", zap.Error(err))
 			}
+
+			cancel()
+
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), sessionGCLockOpTimeout)
+			if err := lock.Release(releaseCtx); err != nil {
+				zap.L().Warn("session GC release lock failed", zap.Error(err))
+			}
+			releaseCancel()
 		}
 	}
 }

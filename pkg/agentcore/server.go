@@ -8,6 +8,7 @@ import (
 	pb "github.com/Fl0rencess720/agentland/pb/agentcore"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/config"
 	"github.com/Fl0rencess720/agentland/pkg/agentcore/pkgs/db"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -31,6 +32,7 @@ type Server struct {
 	k8sClient  dynamic.Interface
 
 	sessionStore sessionStore
+	gcLockClient *redis.Client
 
 	korokdImage            string
 	korokdRuntimeClassName string
@@ -68,6 +70,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		listener:               lis,
 		k8sClient:              cfg.K8sClient,
 		sessionStore:           db.NewSessionStore(),
+		gcLockClient:           db.NewRedis(),
 		korokdImage:            cfg.KorokdImage,
 		korokdRuntimeClassName: cfg.KorokdRuntimeClassName,
 
