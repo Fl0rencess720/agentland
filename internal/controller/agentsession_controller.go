@@ -130,9 +130,9 @@ func (r *AgentSessionReconciler) resolveSessionConfig(ctx context.Context, agent
 		resolved.Provisioning = &tmp
 	}
 
-	if resolved.Template == nil || resolved.Template.Image == "" {
+	if !templateHasWorkload(resolved.Template) {
 		if err := r.markAgentSessionFailed(ctx, agentSession, "TemplateMissing",
-			"effective sandboxTemplate is empty; set runtimeRef or sandboxTemplate"); err != nil {
+			"effective sandboxTemplate is empty; set sandboxTemplate.image or sandboxTemplate.podSpec.containers"); err != nil {
 			return nil, nil, err
 		}
 		return nil, &ctrl.Result{}, nil

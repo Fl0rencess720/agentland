@@ -17,21 +17,30 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // SandboxTemplate defines a generic pod startup template for all sandbox types.
 type SandboxTemplate struct {
-	// +kubebuilder:validation:Required
-	Image string `json:"image"`
-	// RuntimeClassName controls which container runtime to use for the sandbox Pod
-	// Typical values include "kata-qemu" or "gvisor" depending on cluster RuntimeClass setup
+	// Image is the legacy single-container shortcut. It is ignored when PodSpec is set.
+	// +optional
+	Image string `json:"image,omitempty"`
+	// RuntimeClassName controls which container runtime to use for the sandbox Pod.
+	// It is ignored when PodSpec.runtimeClassName is set.
+	// Typical values include "kata-qemu" or "gvisor" depending on cluster RuntimeClass setup.
 	// +optional
 	RuntimeClassName string `json:"runtimeClassName,omitempty"`
+	// Command is the legacy single-container shortcut. It is ignored when PodSpec is set.
 	// +optional
 	Command []string `json:"command,omitempty"`
+	// Args is the legacy single-container shortcut. It is ignored when PodSpec is set.
 	// +optional
 	Args []string `json:"args,omitempty"`
+	// PodSpec is the official Kubernetes PodSpec used to create sandbox Pods.
+	// Agentland still injects its reserved JWT and workspace volumes into the resulting Pod.
+	// +optional
+	PodSpec *corev1.PodSpec `json:"podSpec,omitempty"`
 }
 
 // SandboxSpec defines the desired state of Sandbox.

@@ -111,6 +111,155 @@ func sandboxStatusFromPod(pod *corev1.Pod) (phase string, podIP string) {
 	return string(corev1.PodPending), ""
 }
 
+const (
+	mainContainerName    = "main"
+	sandboxJWTMountPath  = "/var/run/agentland/jwt"
+	sandboxJWTSecretName = "gateway-sandbox-jwt-public-key"
+)
+
+func templateHasWorkload(template *agentlandv1alpha1.SandboxTemplate) bool {
+	if template == nil {
+		return false
+	}
+	if template.PodSpec != nil && len(template.PodSpec.Containers) > 0 {
+		return true
+	}
+	return template.Image != ""
+}
+
+func buildPodSpecFromTemplate(template *agentlandv1alpha1.SandboxTemplate, pullPolicy corev1.PullPolicy) (corev1.PodSpec, error) {
+	if template == nil {
+		return corev1.PodSpec{}, fmt.Errorf("sandboxTemplate is required")
+	}
+
+	var spec corev1.PodSpec
+	if template.PodSpec != nil {
+		spec = *template.PodSpec.DeepCopy()
+	} else if template.Image != "" {
+		spec = corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:            mainContainerName,
+				Image:           template.Image,
+				ImagePullPolicy: pullPolicy,
+				Command:         template.Command,
+				Args:            template.Args,
+			}},
+		}
+	} else {
+		return corev1.PodSpec{}, fmt.Errorf("sandboxTemplate must define either image or podSpec.containers")
+	}
+
+	if len(spec.Containers) == 0 {
+		return corev1.PodSpec{}, fmt.Errorf("sandboxTemplate.podSpec.containers must not be empty")
+	}
+
+	if spec.RuntimeClassName == nil && template.RuntimeClassName != "" {
+		runtimeClassName := template.RuntimeClassName
+		spec.RuntimeClassName = &runtimeClassName
+	}
+
+	applyDefaultPullPolicy(spec.Containers, pullPolicy)
+	applyDefaultPullPolicy(spec.InitContainers, pullPolicy)
+
+	if err := ensureReservedVolume(&spec.Volumes, sandboxJWTVolume()); err != nil {
+		return corev1.PodSpec{}, err
+	}
+	if err := ensureReservedVolume(&spec.Volumes, workspaceVolume()); err != nil {
+		return corev1.PodSpec{}, err
+	}
+
+	if err := ensureReservedMounts(spec.Containers); err != nil {
+		return corev1.PodSpec{}, err
+	}
+	if err := ensureReservedMounts(spec.InitContainers); err != nil {
+		return corev1.PodSpec{}, err
+	}
+
+	return spec, nil
+}
+
+func applyDefaultPullPolicy(containers []corev1.Container, pullPolicy corev1.PullPolicy) {
+	for i := range containers {
+		if containers[i].ImagePullPolicy == "" {
+			containers[i].ImagePullPolicy = pullPolicy
+		}
+	}
+}
+
+func ensureReservedVolume(volumes *[]corev1.Volume, desired corev1.Volume) error {
+	for i := range *volumes {
+		existing := (*volumes)[i]
+		if existing.Name != desired.Name {
+			continue
+		}
+		if !equality.Semantic.DeepEqual(existing.VolumeSource, desired.VolumeSource) {
+			return fmt.Errorf("volume %q is reserved by agentland and cannot be overridden", desired.Name)
+		}
+		return nil
+	}
+	*volumes = append(*volumes, desired)
+	return nil
+}
+
+func ensureReservedMounts(containers []corev1.Container) error {
+	for i := range containers {
+		if err := ensureVolumeMount(&containers[i], corev1.VolumeMount{
+			Name:      sandboxJWTVolumeName,
+			MountPath: sandboxJWTMountPath,
+			ReadOnly:  true,
+		}); err != nil {
+			return err
+		}
+		if err := ensureVolumeMount(&containers[i], corev1.VolumeMount{
+			Name:      workspaceVolumeName,
+			MountPath: workspaceMountPath,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureVolumeMount(container *corev1.Container, desired corev1.VolumeMount) error {
+	for i := range container.VolumeMounts {
+		existing := container.VolumeMounts[i]
+		if existing.Name == desired.Name {
+			if existing.MountPath != desired.MountPath {
+				return fmt.Errorf("container %q mount %q is reserved by agentland and cannot change path", container.Name, desired.Name)
+			}
+			if desired.ReadOnly && !existing.ReadOnly {
+				return fmt.Errorf("container %q mount %q must be readOnly", container.Name, desired.Name)
+			}
+			return nil
+		}
+		if existing.MountPath == desired.MountPath && existing.Name != desired.Name {
+			return fmt.Errorf("container %q mount path %q is reserved by agentland", container.Name, desired.MountPath)
+		}
+	}
+	container.VolumeMounts = append(container.VolumeMounts, desired)
+	return nil
+}
+
+func sandboxJWTVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: sandboxJWTVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: sandboxJWTSecretName,
+			},
+		},
+	}
+}
+
+func workspaceVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: workspaceVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
 func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentlandv1alpha1.Sandbox) (*corev1.Pod, error) {
 	logger := log.FromContext(ctx)
 	ctx, span := r.startSpan(ctx, "controller.sandbox.reconcile_pod")
@@ -176,46 +325,19 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 	if pullPolicy == "" {
 		pullPolicy = corev1.PullAlways
 	}
+	podSpec, err := buildPodSpecFromTemplate(sandbox.Spec.Template, pullPolicy)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "build sandbox pod spec failed")
+		return nil, err
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandbox.Name,
 			Namespace: sandbox.Namespace,
 			Labels:    labels,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:            "main",
-				Image:           sandbox.Spec.Template.Image,
-				ImagePullPolicy: pullPolicy,
-				Command:         sandbox.Spec.Template.Command,
-				Args:            sandbox.Spec.Template.Args,
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      sandboxJWTVolumeName,
-					MountPath: "/var/run/agentland/jwt",
-					ReadOnly:  true,
-				}, {
-					Name:      workspaceVolumeName,
-					MountPath: workspaceMountPath,
-				}},
-			}},
-			Volumes: []corev1.Volume{{
-				Name: sandboxJWTVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					Secret: &corev1.SecretVolumeSource{
-						SecretName: "gateway-sandbox-jwt-public-key",
-					},
-				},
-			}, {
-				Name: workspaceVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			}},
-		},
-	}
-	if sandbox.Spec.Template.RuntimeClassName != "" {
-		runtimeClassName := sandbox.Spec.Template.RuntimeClassName
-		pod.Spec.RuntimeClassName = &runtimeClassName
+		Spec: podSpec,
 	}
 
 	if err := controllerutil.SetControllerReference(sandbox, pod, r.Scheme); err != nil {

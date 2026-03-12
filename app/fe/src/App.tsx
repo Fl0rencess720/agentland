@@ -34,10 +34,59 @@ type ActiveProject = {
   viewMode: 'preview' | 'code';
 };
 
+type AuthBootstrapState = {
+  accessToken: string;
+  refreshToken: string;
+  user: UserProfile;
+};
+
 const JOB_POLL_INTERVAL_MS = 1500;
 const JOB_POLL_MAX_ATTEMPTS = 40;
 const ACCESS_TOKEN_KEY = 'access_token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
+const USER_PROFILE_KEY = 'current_user';
+const AUTH_CALLBACK_PATH = '/auth/github/callback';
+
+let pendingOAuthBootstrap: Promise<AuthBootstrapState> | null = null;
+
+function persistSession(session: AuthBootstrapState) {
+  localStorage.setItem(ACCESS_TOKEN_KEY, session.accessToken);
+  localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
+  localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(session.user));
+}
+
+function clearStoredSession() {
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  localStorage.removeItem(USER_PROFILE_KEY);
+}
+
+function readStoredUser(): UserProfile | null {
+  const raw = localStorage.getItem(USER_PROFILE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as UserProfile;
+  } catch {
+    localStorage.removeItem(USER_PROFILE_KEY);
+    return null;
+  }
+}
+
+async function bootstrapOAuthSession(code: string, state: string): Promise<AuthBootstrapState> {
+  const callback = await completeGithubAuth(code, state);
+  const user = await getCurrentUser(callback.access_token);
+  const session = {
+    accessToken: callback.access_token,
+    refreshToken: callback.refresh_token,
+    user,
+  };
+
+  persistSession(session);
+  return session;
+}
 
 function AppContent() {
   const [currentPage, setCurrentPage] = useState<AppPage>('login');
@@ -56,9 +105,133 @@ function AppContent() {
   useEffect(() => {
     let canceled = false;
 
+    const applySession = (session: AuthBootstrapState) => {
+      if (canceled) {
+        return;
+      }
+      setAccessToken(session.accessToken);
+      setRefreshToken(session.refreshToken);
+      setCurrentUser(session.user);
+      setGenerationError(null);
+      setCurrentPage('dashboard');
+    };
+
+    const resetToLogin = (message?: string) => {
+      clearStoredSession();
+      if (canceled) {
+        return;
+      }
+      setAccessToken(undefined);
+      setRefreshToken(undefined);
+      setCurrentUser(null);
+      setActiveProject(null);
+      setCurrentPage('login');
+      if (message) {
+        setAuthError(message);
+      }
+    };
+
+    const completeOAuthCallback = async () => {
+      if (window.location.pathname !== AUTH_CALLBACK_PATH) {
+        return false;
+      }
+
+      const callbackSearch = window.location.search;
+      window.history.replaceState({}, document.title, '/');
+
+      const searchParams = new URLSearchParams(callbackSearch);
+      const code = searchParams.get('code');
+      const state = searchParams.get('state');
+      const oauthError = searchParams.get('error');
+      const oauthErrorDescription = searchParams.get('error_description');
+
+      if (oauthError) {
+        resetToLogin(oauthErrorDescription || oauthError);
+        return true;
+      }
+
+      if (!code || !state) {
+        resetToLogin('Missing GitHub callback parameters');
+        return true;
+      }
+
+      if (!canceled) {
+        setIsAuthenticating(true);
+        setAuthError(null);
+      }
+
+      try {
+        pendingOAuthBootstrap ??= bootstrapOAuthSession(code, state);
+        const session = await pendingOAuthBootstrap;
+        applySession(session);
+      } catch (error) {
+        pendingOAuthBootstrap = null;
+        resetToLogin((error as Error).message || 'Failed to authenticate');
+      } finally {
+        pendingOAuthBootstrap = null;
+        if (!canceled) {
+          setIsAuthenticating(false);
+          setIsRestoringSession(false);
+        }
+      }
+
+      return true;
+    };
+
     const restoreSession = async () => {
-      const storedRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+      const handledCallback = await completeOAuthCallback();
+      if (handledCallback) {
+        return;
+      }
+
+      if (pendingOAuthBootstrap) {
+        try {
+          const session = await pendingOAuthBootstrap;
+          applySession(session);
+        } catch (error) {
+          resetToLogin((error as Error).message || 'Failed to authenticate');
+        } finally {
+          pendingOAuthBootstrap = null;
+          if (!canceled) {
+            setIsRestoringSession(false);
+          }
+        }
+        return;
+      }
+
+      const storedAccessToken = localStorage.getItem(ACCESS_TOKEN_KEY) ?? undefined;
+      const storedRefreshToken = localStorage.getItem(REFRESH_TOKEN_KEY) ?? undefined;
+      const storedUser = readStoredUser();
+
+      if (!storedAccessToken && !storedRefreshToken) {
+        if (!canceled) {
+          setCurrentUser(storedUser);
+          setIsRestoringSession(false);
+        }
+        return;
+      }
+
+      if (storedAccessToken) {
+        try {
+          const user = await getCurrentUser(storedAccessToken);
+          const session = {
+            accessToken: storedAccessToken,
+            refreshToken: storedRefreshToken ?? '',
+            user,
+          };
+          localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(user));
+          applySession(session);
+          if (!canceled) {
+            setIsRestoringSession(false);
+          }
+          return;
+        } catch {
+          localStorage.removeItem(ACCESS_TOKEN_KEY);
+        }
+      }
+
       if (!storedRefreshToken) {
+        resetToLogin();
         if (!canceled) {
           setIsRestoringSession(false);
         }
@@ -68,26 +241,15 @@ function AppContent() {
       try {
         const refreshed = await refreshAuthToken(storedRefreshToken);
         const user = await getCurrentUser(refreshed.access_token);
-
-        if (canceled) {
-          return;
-        }
-
-        localStorage.setItem(ACCESS_TOKEN_KEY, refreshed.access_token);
-        localStorage.setItem(REFRESH_TOKEN_KEY, refreshed.refresh_token);
-        setAccessToken(refreshed.access_token);
-        setRefreshToken(refreshed.refresh_token);
-        setCurrentUser(user);
-        setCurrentPage('dashboard');
-      } catch {
-        localStorage.removeItem(ACCESS_TOKEN_KEY);
-        localStorage.removeItem(REFRESH_TOKEN_KEY);
-        if (!canceled) {
-          setAccessToken(undefined);
-          setRefreshToken(undefined);
-          setCurrentUser(null);
-          setCurrentPage('login');
-        }
+        const session = {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token,
+          user,
+        };
+        persistSession(session);
+        applySession(session);
+      } catch (error) {
+        resetToLogin((error as Error).message || undefined);
       } finally {
         if (!canceled) {
           setIsRestoringSession(false);
@@ -164,21 +326,11 @@ function AppContent() {
     setAuthError(null);
 
     try {
-      const redirectUri = `${window.location.origin}/auth/github/callback`;
+      const redirectUri = `${window.location.origin}${AUTH_CALLBACK_PATH}`;
       const start = await startGithubAuth(redirectUri);
-      const callback = await completeGithubAuth('mock_github_code', start.state);
-      const user = await getCurrentUser(callback.access_token);
-
-      localStorage.setItem(ACCESS_TOKEN_KEY, callback.access_token);
-      localStorage.setItem(REFRESH_TOKEN_KEY, callback.refresh_token);
-      setAccessToken(callback.access_token);
-      setRefreshToken(callback.refresh_token);
-      setCurrentUser(user);
-      setGenerationError(null);
-      setCurrentPage('dashboard');
+      window.location.assign(start.authorize_url);
     } catch (error) {
       setAuthError((error as Error).message || 'Failed to authenticate');
-    } finally {
       setIsAuthenticating(false);
     }
   };
@@ -191,10 +343,13 @@ function AppContent() {
         await logout(storedRefreshToken, storedAccessToken);
       }
     } catch {
-      // Clear local session even if mock logout fails.
+      // Clear local session even if logout fails.
     } finally {
-      localStorage.removeItem(ACCESS_TOKEN_KEY);
-      localStorage.removeItem(REFRESH_TOKEN_KEY);
+      pendingOAuthBootstrap = null;
+      clearStoredSession();
+      setIsAuthenticating(false);
+      setIsRestoringSession(false);
+      setAuthError(null);
       setAccessToken(undefined);
       setRefreshToken(undefined);
       setCurrentUser(null);
@@ -247,6 +402,7 @@ function AppContent() {
             initialPrompt={activeProject.prompt}
             initialViewMode={activeProject.viewMode}
             accessToken={accessToken}
+            currentUser={currentUser}
           />
         )}
 
@@ -257,6 +413,7 @@ function AppContent() {
             onProjects={() => setCurrentPage('projects')}
             onLogout={handleLogout}
             accessToken={accessToken}
+            currentUser={currentUser}
           />
         )}
       </AnimatePresence>

@@ -56,10 +56,10 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		Message:            "sandboxTemplate is valid",
 	}
 
-	if runtimeObj.Spec.Template == nil || runtimeObj.Spec.Template.Image == "" {
+	if !templateHasWorkload(runtimeObj.Spec.Template) {
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "TemplateInvalid"
-		condition.Message = "sandboxTemplate.image is required"
+		condition.Message = "sandboxTemplate.image or sandboxTemplate.podSpec.containers is required"
 	}
 
 	meta.SetStatusCondition(&runtimeObj.Status.Conditions, condition)

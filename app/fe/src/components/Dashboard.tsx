@@ -2,7 +2,6 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import { motion } from 'motion/react';
 import {
   HelpCircle,
-  User,
   Sparkles,
   Settings,
   Zap,
@@ -14,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import LanguageSwitcher from './LanguageSwitcher';
+import UserMenu from './UserMenu';
 import type { FileUploadResult, GenerationAttachment, UserProfile } from '../api';
 
 type DashboardProps = {
@@ -127,13 +127,7 @@ export default function Dashboard({
             <HelpCircle size={18} />
             <span>{t('nav.docs')}</span>
           </button>
-          <button
-            onClick={onLogout}
-            title={currentUser?.name ?? 'Account'}
-            className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-all"
-          >
-            <User size={18} />
-          </button>
+          <UserMenu currentUser={currentUser} onLogout={onLogout} />
         </div>
       </header>
 

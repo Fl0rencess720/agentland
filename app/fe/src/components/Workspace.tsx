@@ -11,7 +11,6 @@ import {
   Smartphone,
   ArrowLeft,
   Folder,
-  User,
   Loader2,
   AlertCircle,
   Rocket,
@@ -19,6 +18,7 @@ import {
 import CodeEditor from './CodeEditor';
 import { useI18n } from '../i18n';
 import LanguageSwitcher from './LanguageSwitcher';
+import UserMenu from './UserMenu';
 import {
   getChatConversations,
   getChatMessages,
@@ -32,12 +32,14 @@ import {
   updateProject,
   type ChatMessage,
   type FileTreeNode,
+  type UserProfile,
 } from '../api';
 
 type WorkspaceProps = {
   onBack: () => void;
   onProjects: () => void;
   onLogout: () => void;
+  currentUser: UserProfile | null;
   projectId: string;
   projectName: string;
   initialPrompt: string;
@@ -59,6 +61,7 @@ export default function Workspace({
   onBack,
   onProjects,
   onLogout,
+  currentUser,
   projectId,
   projectName,
   initialPrompt,
@@ -338,12 +341,7 @@ export default function Workspace({
               <HelpCircle size={18} />
               <span>{t('nav.docs')}</span>
             </button>
-            <button
-              onClick={onLogout}
-              className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-all"
-            >
-              <User size={18} />
-            </button>
+            <UserMenu currentUser={currentUser} onLogout={onLogout} />
           </div>
         </div>
       </header>

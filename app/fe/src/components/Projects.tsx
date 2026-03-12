@@ -16,12 +16,12 @@ import {
   ArrowLeft,
   Folder,
   HelpCircle,
-  User,
   Loader2,
   AlertCircle,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import LanguageSwitcher from './LanguageSwitcher';
+import UserMenu from './UserMenu';
 import {
   createProject,
   deleteProject,
@@ -29,6 +29,7 @@ import {
   getProjectUsage,
   listProjects,
   type Project,
+  type UserProfile,
 } from '../api';
 
 type ProjectsProps = {
@@ -37,6 +38,7 @@ type ProjectsProps = {
   onProjects: () => void;
   onLogout: () => void;
   accessToken?: string;
+  currentUser: UserProfile | null;
 };
 
 type ViewMode = 'all' | 'recent' | 'shared';
@@ -77,7 +79,7 @@ function formatDate(iso?: string) {
   return date.toLocaleDateString();
 }
 
-export default function Projects({ onOpenEditor, onBack, onProjects, onLogout, accessToken }: ProjectsProps) {
+export default function Projects({ onOpenEditor, onBack, onProjects, onLogout, accessToken, currentUser }: ProjectsProps) {
   const { t } = useI18n();
 
   const [view, setView] = useState<ViewMode>('all');
@@ -225,9 +227,7 @@ export default function Projects({ onOpenEditor, onBack, onProjects, onLogout, a
               <HelpCircle size={18} />
               <span>{t('nav.docs')}</span>
             </button>
-            <button onClick={onLogout} className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-all">
-              <User size={18} />
-            </button>
+            <UserMenu currentUser={currentUser} onLogout={onLogout} />
           </div>
         </div>
       </header>

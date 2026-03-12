@@ -135,46 +135,17 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 	if pullPolicy == "" {
 		pullPolicy = corev1.PullAlways
 	}
+	podSpec, err := buildPodSpecFromTemplate(pool.Spec.Template, pullPolicy)
+	if err != nil {
+		return err
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-", pool.Name),
 			Namespace:    pool.Namespace,
 			Labels:       labelsMap,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:            "main",
-				Image:           pool.Spec.Template.Image,
-				ImagePullPolicy: pullPolicy,
-				Command:         pool.Spec.Template.Command,
-				Args:            pool.Spec.Template.Args,
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      sandboxJWTVolumeName,
-					MountPath: "/var/run/agentland/jwt",
-					ReadOnly:  true,
-				}, {
-					Name:      workspaceVolumeName,
-					MountPath: workspaceMountPath,
-				}},
-			}},
-			Volumes: []corev1.Volume{{
-				Name: sandboxJWTVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					Secret: &corev1.SecretVolumeSource{
-						SecretName: "gateway-sandbox-jwt-public-key",
-					},
-				},
-			}, {
-				Name: workspaceVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					EmptyDir: &corev1.EmptyDirVolumeSource{},
-				},
-			}},
-		},
-	}
-	if pool.Spec.Template.RuntimeClassName != "" {
-		runtimeClassName := pool.Spec.Template.RuntimeClassName
-		pod.Spec.RuntimeClassName = &runtimeClassName
+		Spec: podSpec,
 	}
 	if err := controllerutil.SetControllerReference(pool, pod, r.Scheme); err != nil {
 		return err
