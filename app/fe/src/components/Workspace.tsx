@@ -1,41 +1,323 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { 
-  HelpCircle, Bell, Bot, Paperclip, Mic, Smile, Send, 
-  Eye, Code2, Monitor, Tablet, Smartphone, Rocket, 
-  Calendar, Sun, MoreHorizontal, ArrowLeft, Folder, User
+import {
+  HelpCircle,
+  Bot,
+  Send,
+  Eye,
+  Code2,
+  Monitor,
+  Tablet,
+  Smartphone,
+  ArrowLeft,
+  Folder,
+  User,
+  Loader2,
+  AlertCircle,
+  Rocket,
 } from 'lucide-react';
 import CodeEditor from './CodeEditor';
 import { useI18n } from '../i18n';
 import LanguageSwitcher from './LanguageSwitcher';
+import {
+  getChatConversations,
+  getChatMessages,
+  getFileContent,
+  downloadProject,
+  getFileTree,
+  getPreview,
+  sendChatMessage,
+  sleep,
+  startPreview,
+  updateProject,
+  type ChatMessage,
+  type FileTreeNode,
+} from '../api';
 
-export default function Workspace({ onBack, onProjects, onLogout }: { onBack: () => void, onProjects: () => void, onLogout: () => void }) {
-  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
+type WorkspaceProps = {
+  onBack: () => void;
+  onProjects: () => void;
+  onLogout: () => void;
+  projectId: string;
+  projectName: string;
+  initialPrompt: string;
+  initialViewMode?: 'preview' | 'code';
+  accessToken?: string;
+};
+
+const PREVIEW_POLL_INTERVAL_MS = 1500;
+const PREVIEW_POLL_MAX_ATTEMPTS = 20;
+
+function messageTime(input?: string) {
+  if (!input) return 'just now';
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return 'just now';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+export default function Workspace({
+  onBack,
+  onProjects,
+  onLogout,
+  projectId,
+  projectName,
+  initialPrompt,
+  initialViewMode = 'preview',
+  accessToken,
+}: WorkspaceProps) {
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>(initialViewMode);
   const { t } = useI18n();
 
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const [bootstrapLoading, setBootstrapLoading] = useState(true);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+
+  const [conversationId, setConversationId] = useState('c_default');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatSubmitting, setChatSubmitting] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+
+  const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
+  const [fileLoading, setFileLoading] = useState(true);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [previewStatus, setPreviewStatus] = useState<string>('IDLE');
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const loadWorkspace = useCallback(async (isCanceled: () => boolean) => {
+    setBootstrapLoading(true);
+    setBootstrapError(null);
+    setChatError(null);
+
+    setFileLoading(true);
+    setFileError(null);
+
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    try {
+      const conversationData = await getChatConversations(projectId, accessToken);
+      const availableConversations = conversationData.items ?? [];
+      const initialConversationId = availableConversations[0]?.id ?? 'c_default';
+
+      const [chatData, treeData, previewData] = await Promise.all([
+        getChatMessages(projectId, initialConversationId, '', accessToken),
+        getFileTree(projectId, '/workspace', 3, accessToken),
+        startPreview(projectId, accessToken),
+      ]);
+
+      if (isCanceled()) return;
+
+      setConversationId(chatData.conversation_id || initialConversationId);
+      setMessages(chatData.items ?? []);
+
+      setFileTree(treeData.nodes ?? []);
+      setFileLoading(false);
+
+      setPreviewId(previewData.preview_id ?? null);
+      setPreviewStatus(previewData.status ?? 'STARTING');
+      setPreviewUrl(previewData.preview_url ?? null);
+      setPreviewLoading((previewData.status ?? 'STARTING') !== 'RUNNING');
+
+      if (previewData.preview_id && (previewData.status ?? 'STARTING') !== 'RUNNING') {
+        void (async () => {
+          for (let attempt = 0; attempt < PREVIEW_POLL_MAX_ATTEMPTS; attempt += 1) {
+            if (isCanceled()) return;
+
+            await sleep(PREVIEW_POLL_INTERVAL_MS);
+            const status = await getPreview(projectId, accessToken);
+
+            if (isCanceled()) return;
+
+            setPreviewStatus(status.status ?? 'RUNNING');
+            if (status.preview_url) {
+              setPreviewUrl(status.preview_url);
+            }
+
+            if (status.status === 'RUNNING') {
+              setPreviewLoading(false);
+              return;
+            }
+          }
+
+          if (!isCanceled()) {
+            setPreviewLoading(false);
+            setPreviewError('Preview startup timeout.');
+          }
+        })();
+      } else {
+        setPreviewLoading(false);
+      }
+    } catch (error) {
+      if (isCanceled()) return;
+
+      const message = (error as Error).message || 'Failed to load workspace.';
+      setBootstrapError(message);
+      setFileError(message);
+      setPreviewError(message);
+      setFileLoading(false);
+      setPreviewLoading(false);
+    } finally {
+      if (!isCanceled()) {
+        setBootstrapLoading(false);
+      }
+    }
+  }, [accessToken, projectId]);
+
+  useEffect(() => {
+    let canceled = false;
+    void loadWorkspace(() => canceled);
+    return () => {
+      canceled = true;
+    };
+  }, [loadWorkspace, reloadKey]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    const persistViewMode = async () => {
+      try {
+        await updateProject(projectId, {
+          metadata: {
+            last_view_mode: viewMode,
+          },
+        }, accessToken);
+      } catch {
+        if (!canceled) {
+          // Ignore persistence errors in the prototype UI.
+        }
+      }
+    };
+
+    void persistViewMode();
+
+    return () => {
+      canceled = true;
+    };
+  }, [accessToken, projectId, viewMode]);
+
+  const sendMessage = async () => {
+    const normalized = chatInput.trim();
+    if (!normalized || chatSubmitting) {
+      return;
+    }
+
+    setChatError(null);
+    setChatSubmitting(true);
+
+    const now = new Date().toISOString();
+    const optimisticUser: ChatMessage = {
+      id: `local_user_${Date.now()}`,
+      role: 'user',
+      content: normalized,
+      created_at: now,
+    };
+    const streamingAssistant: ChatMessage = {
+      id: `local_assistant_${Date.now()}`,
+      role: 'assistant',
+      content: '',
+      created_at: now,
+    };
+    let streamedAssistantText = '';
+
+    setMessages((previous) => [...previous, optimisticUser, streamingAssistant]);
+    setChatInput('');
+
+    try {
+      const result = await sendChatMessage(projectId, conversationId, normalized, accessToken, {
+        onDelta: (fullText) => {
+          streamedAssistantText = fullText;
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === streamingAssistant.id
+                ? {
+                    ...message,
+                    content: fullText,
+                  }
+                : message,
+            ),
+          );
+        },
+      });
+
+      setMessages((previous) => {
+        const withoutStreaming = previous.filter(
+          (msg) => msg.id !== optimisticUser.id && msg.id !== streamingAssistant.id,
+        );
+        const next = [...withoutStreaming, optimisticUser];
+
+        if (result.assistant_message) {
+          next.push({
+            ...result.assistant_message,
+            content: result.assistant_message.content || streamedAssistantText,
+            created_at: result.assistant_message.created_at || streamingAssistant.created_at,
+          });
+        } else {
+          next.push({
+            ...streamingAssistant,
+            content: streamedAssistantText,
+          });
+        }
+
+        return next;
+      });
+    } catch (error) {
+      setMessages((previous) =>
+        previous.filter((msg) => msg.id !== optimisticUser.id && msg.id !== streamingAssistant.id),
+      );
+      setChatError((error as Error).message || 'Failed to send message.');
+    } finally {
+      setChatSubmitting(false);
+    }
+  };
+
+  const messageItems = useMemo(() => {
+    if (messages.length > 0) {
+      return messages;
+    }
+
+    return [
+      {
+        id: 'local_seed_message',
+        role: 'assistant' as const,
+        content: initialPrompt
+          ? `I have started generating based on your prompt: ${initialPrompt}`
+          : 'Workspace is ready. Ask me what to build or change next.',
+        created_at: new Date().toISOString(),
+      },
+    ];
+  }, [messages, initialPrompt]);
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-      className="min-h-screen flex flex-col bg-[#0B1120] text-white font-sans"
+      transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+      className="h-screen overflow-hidden flex flex-col bg-[#0B1120] text-white font-sans"
     >
-      {/* Navbar */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-slate-800/50 bg-[#0B1120] z-10 shrink-0">
         <div className="flex items-center gap-4">
-          <button onClick={onBack} className="p-2 -ml-2 text-slate-400 hover:text-white transition-colors rounded-lg hover:bg-slate-800/50">
+          <button
+            onClick={onBack}
+            className="p-2 -ml-2 text-slate-400 hover:text-white transition-colors rounded-lg hover:bg-slate-800/50"
+          >
             <ArrowLeft size={20} />
           </button>
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 text-blue-500">
               <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
               </svg>
             </div>
-            <span className="text-lg font-bold tracking-tight">AI App Gen</span>
+            <span className="text-lg font-bold tracking-tight">Agentland</span>
           </div>
           <div className="w-px h-5 bg-slate-700 mx-2"></div>
-          <span className="text-slate-400 text-sm">{t('workspace.projectUntitled')}</span>
+          <span className="text-slate-400 text-sm truncate max-w-[320px]">{projectName}</span>
         </div>
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-3 border-r border-slate-800 pr-6">
@@ -56,101 +338,117 @@ export default function Workspace({ onBack, onProjects, onLogout }: { onBack: ()
               <HelpCircle size={18} />
               <span>{t('nav.docs')}</span>
             </button>
-            <button onClick={onLogout} className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-all">
+            <button
+              onClick={onLogout}
+              className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-all"
+            >
               <User size={18} />
             </button>
           </div>
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar Chat */}
-        <div className="w-[320px] flex flex-col border-r border-slate-800/50 bg-[#0B1120] shrink-0">
-          {/* Chat Header */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        <aside className="w-[360px] min-h-0 flex flex-col border-r border-slate-800/50 bg-[#0B1120] shrink-0">
           <div className="px-5 py-4 border-b border-slate-800/50 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
               <Bot size={20} className="text-blue-500" />
               <span className="font-semibold">{t('workspace.codingAgent')}</span>
             </div>
-            <span className="text-[10px] font-bold text-blue-500 bg-blue-500/10 px-2 py-0.5 rounded uppercase tracking-wider">{t('workspace.active')}</span>
           </div>
 
-          {/* Chat Messages */}
-          <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-6">
-            {/* Agent Message */}
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white">
-                  <Bot size={12} />
-                </div>
-                <span>{t('workspace.agentTimeOld')}</span>
-              </div>
-              <div className="bg-[#1E293B] text-slate-200 text-sm p-3.5 rounded-2xl rounded-tl-sm leading-relaxed">
-                {t('workspace.agentMsg1')}
-              </div>
-            </div>
 
-            {/* User Message */}
-            <div className="flex flex-col gap-1.5 items-end">
-              <div className="text-xs text-slate-500">
-                {t('workspace.youTime')}
+          <div className="chat-scrollbar flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-4">
+            {bootstrapLoading && (
+              <div className="text-sm text-slate-400 flex items-center gap-2">
+                <Loader2 size={14} className="animate-spin" /> Loading workspace...
               </div>
-              <div className="bg-blue-600 text-white text-sm p-3.5 rounded-2xl rounded-tr-sm leading-relaxed max-w-[90%]">
-                {t('workspace.userMsg1')}
-              </div>
-            </div>
+            )}
 
-            {/* Agent Message */}
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white">
-                  <Bot size={12} />
-                </div>
-                <span>{t('workspace.agentTimeNow')}</span>
-              </div>
-              <div className="bg-[#1E293B] text-slate-200 text-sm p-3.5 rounded-2xl rounded-tl-sm leading-relaxed">
-                {t('workspace.agentMsg2')}
-              </div>
-            </div>
-          </div>
-
-          {/* Chat Input */}
-          <div className="p-4 shrink-0">
-            <div className="bg-[#1E293B] rounded-xl p-3 flex flex-col gap-3">
-              <textarea 
-                placeholder={t('workspace.askPlaceholder')}
-                className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none min-h-[60px]"
-              />
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3 text-slate-400">
-                  <button className="hover:text-slate-200 transition-colors"><Paperclip size={16} /></button>
-                  <button className="hover:text-slate-200 transition-colors"><Mic size={16} /></button>
-                  <button className="hover:text-slate-200 transition-colors"><Smile size={16} /></button>
-                </div>
-                <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
-                  {t('workspace.send')} <Send size={14} />
+            {bootstrapError && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200 flex flex-col gap-3">
+                <span className="flex items-center gap-2">
+                  <AlertCircle size={14} /> {bootstrapError}
+                </span>
+                <button
+                  onClick={() => setReloadKey((previous) => previous + 1)}
+                  className="self-start px-3 py-1.5 text-xs rounded-md bg-red-500/20 hover:bg-red-500/30"
+                >
+                  Retry
                 </button>
               </div>
+            )}
+
+
+            {!bootstrapError &&
+              messageItems.map((message) => {
+                const isUser = message.role === 'user';
+                return (
+                  <div key={message.id} className={`flex flex-col gap-1.5 ${isUser ? 'items-end' : ''}`}>
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      {!isUser && (
+                        <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white">
+                          <Bot size={12} />
+                        </div>
+                      )}
+                      <span>{isUser ? `You • ${messageTime(message.created_at)}` : `Agent • ${messageTime(message.created_at)}`}</span>
+                    </div>
+                    <div
+                      className={`text-sm p-3.5 rounded-2xl leading-relaxed max-w-[95%] ${
+                        isUser
+                          ? 'bg-blue-600 text-white rounded-tr-sm'
+                          : 'bg-[#1E293B] text-slate-200 rounded-tl-sm'
+                      }`}
+                    >
+                      {message.content}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+
+          <div className="p-4 shrink-0 border-t border-slate-800/50">
+            <div className="bg-[#1E293B] rounded-xl p-3 flex flex-col gap-3">
+              <textarea
+                placeholder={t('workspace.askPlaceholder')}
+                className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 resize-none outline-none min-h-[60px]"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                disabled={chatSubmitting || Boolean(bootstrapError)}
+              />
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={sendMessage}
+                  disabled={chatSubmitting || !chatInput.trim() || Boolean(bootstrapError)}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
+                >
+                  {chatSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                  {t('workspace.send')}
+                </button>
+              </div>
+              {chatError && <div className="text-xs text-red-300">{chatError}</div>}
             </div>
           </div>
-        </div>
+        </aside>
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 bg-[#0B1120]">
-          {/* Top Bar */}
+        <main className="flex-1 min-h-0 flex flex-col min-w-0 bg-[#0B1120]">
           <div className="flex items-center justify-between px-6 py-2 border-b border-slate-800/50 shrink-0">
             <div className="flex items-center gap-6">
-              <button 
+              <button
                 onClick={() => setViewMode('preview')}
-                className={`flex items-center gap-2 font-medium relative py-3 ${viewMode === 'preview' ? 'text-blue-500' : 'text-slate-500 hover:text-slate-300 transition-colors'}`}
+                className={`flex items-center gap-2 font-medium relative py-3 ${
+                  viewMode === 'preview' ? 'text-blue-500' : 'text-slate-500 hover:text-slate-300 transition-colors'
+                }`}
               >
                 <Eye size={16} />
                 <span>{t('nav.preview')}</span>
                 {viewMode === 'preview' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500"></div>}
               </button>
-              <button 
+              <button
                 onClick={() => setViewMode('code')}
-                className={`flex items-center gap-2 font-medium relative py-3 ${viewMode === 'code' ? 'text-blue-500' : 'text-slate-500 hover:text-slate-300 transition-colors'}`}
+                className={`flex items-center gap-2 font-medium relative py-3 ${
+                  viewMode === 'code' ? 'text-blue-500' : 'text-slate-500 hover:text-slate-300 transition-colors'
+                }`}
               >
                 <Code2 size={16} />
                 <span>{t('nav.code')}</span>
@@ -159,9 +457,15 @@ export default function Workspace({ onBack, onProjects, onLogout }: { onBack: ()
             </div>
             <div className="flex items-center gap-4">
               <div className="flex items-center bg-slate-800/50 rounded-lg p-1">
-                <button className="p-1.5 bg-slate-700 text-white rounded-md shadow-sm"><Monitor size={14} /></button>
-                <button className="p-1.5 text-slate-500 hover:text-slate-300"><Tablet size={14} /></button>
-                <button className="p-1.5 text-slate-500 hover:text-slate-300"><Smartphone size={14} /></button>
+                <button className="p-1.5 bg-slate-700 text-white rounded-md shadow-sm">
+                  <Monitor size={14} />
+                </button>
+                <button className="p-1.5 text-slate-500 hover:text-slate-300">
+                  <Tablet size={14} />
+                </button>
+                <button className="p-1.5 text-slate-500 hover:text-slate-300">
+                  <Smartphone size={14} />
+                </button>
               </div>
               <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors">
                 <Rocket size={14} /> {t('nav.deploy')}
@@ -169,126 +473,51 @@ export default function Workspace({ onBack, onProjects, onLogout }: { onBack: ()
             </div>
           </div>
 
-          {/* Preview / Code Area */}
           <div className="flex-1 p-6 overflow-hidden flex flex-col">
             {viewMode === 'preview' ? (
-              <div className="flex-1 w-full max-w-5xl mx-auto bg-[#0B1120] rounded-xl overflow-hidden border border-slate-800 flex flex-col shadow-2xl">
-                {/* Browser Header */}
-                <div className="h-12 bg-[#111827] flex items-center px-4 gap-4 border-b border-slate-800 shrink-0">
-                  <div className="flex gap-2">
-                    <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-                    <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-                    <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
-                  </div>
-                  <div className="flex-1 flex justify-center">
-                    <div className="bg-[#0B1120] text-slate-400 text-xs px-32 py-1.5 rounded-md flex items-center gap-2 border border-slate-800">
-                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/></svg>
-                      localhost:3000/dashboard
-                    </div>
-                  </div>
+              <div className="flex-1 w-full max-w-6xl mx-auto bg-[#111827] rounded-xl overflow-hidden border border-slate-800 shadow-2xl">
+                <div className="h-10 bg-[#0F172A] border-b border-slate-800 px-3 flex items-center gap-3 text-xs text-slate-400">
+                  <div className="w-2 h-2 rounded-full bg-red-500/80"></div>
+                  <div className="w-2 h-2 rounded-full bg-yellow-500/80"></div>
+                  <div className="w-2 h-2 rounded-full bg-green-500/80"></div>
+                  <div className="ml-2 truncate">{previewUrl || 'starting preview...'}</div>
+                  <div className="ml-auto uppercase tracking-wide">{previewStatus}</div>
                 </div>
-                
-                {/* Browser Content - Analytics Dashboard */}
-                <div className="flex-1 bg-[#0B1120] p-8 overflow-y-auto">
-                  <div className="flex items-center justify-between mb-8">
-                    <h1 className="text-2xl font-bold">{t('workspace.analyticsTitle')}</h1>
-                    <div className="flex items-center gap-3">
-                      <button className="flex items-center gap-2 bg-[#1E293B] border border-slate-700 px-4 py-2 rounded-lg text-sm text-slate-300 hover:bg-slate-800 transition-colors">
-                        <Calendar size={16} className="text-blue-500" />
-                        {t('workspace.dateRange')}
-                      </button>
-                      <button className="p-2 bg-[#1E293B] border border-slate-700 rounded-lg text-yellow-500 hover:bg-slate-800 transition-colors">
-                        <Sun size={18} />
-                      </button>
-                    </div>
-                  </div>
 
-                  {/* Stats Cards */}
-                  <div className="grid grid-cols-4 gap-4 mb-6">
-                    <div className="bg-[#1E293B] p-5 rounded-xl border border-slate-800">
-                      <div className="text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">{t('workspace.revenue')}</div>
-                      <div className="flex items-end gap-3">
-                        <div className="text-3xl font-bold">$42,500</div>
-                        <div className="text-sm font-medium text-green-500 mb-1">+12%</div>
-                      </div>
+                <div className="h-[calc(100%-40px)] bg-[#0B1120]">
+                  {previewLoading ? (
+                    <div className="h-full flex items-center justify-center text-slate-300 gap-2 text-sm">
+                      <Loader2 size={16} className="animate-spin" /> Booting preview...
                     </div>
-                    <div className="bg-[#1E293B] p-5 rounded-xl border border-slate-800">
-                      <div className="text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">{t('workspace.users')}</div>
-                      <div className="flex items-end gap-3">
-                        <div className="text-3xl font-bold">8,432</div>
-                        <div className="text-sm font-medium text-green-500 mb-1">+5%</div>
-                      </div>
+                  ) : previewError ? (
+                    <div className="h-full flex items-center justify-center text-red-300 gap-2 text-sm">
+                      <AlertCircle size={14} /> {previewError}
                     </div>
-                    <div className="bg-[#1E293B] p-5 rounded-xl border border-slate-800">
-                      <div className="text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">{t('workspace.avgSession')}</div>
-                      <div className="flex items-end gap-3">
-                        <div className="text-3xl font-bold">4m 32s</div>
-                        <div className="text-sm font-medium text-red-500 mb-1">-2%</div>
-                      </div>
-                    </div>
-                    <div className="bg-[#1E293B] p-5 rounded-xl border border-slate-800">
-                      <div className="text-xs font-medium text-slate-400 mb-2 uppercase tracking-wider">{t('workspace.bounceRate')}</div>
-                      <div className="flex items-end gap-3">
-                        <div className="text-3xl font-bold">24.3%</div>
-                        <div className="text-sm font-medium text-green-500 mb-1">-8%</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Charts & Activity */}
-                  <div className="grid grid-cols-3 gap-6">
-                    <div className="col-span-2 bg-[#1E293B] p-6 rounded-xl border border-slate-800 flex flex-col">
-                      <div className="flex items-center justify-between mb-8">
-                        <h2 className="text-lg font-semibold">{t('workspace.growthTrends')}</h2>
-                        <button className="text-slate-400 hover:text-slate-200"><MoreHorizontal size={20} /></button>
-                      </div>
-                      <div className="flex-1 flex items-end justify-between gap-4 pt-4">
-                        {/* Mock Bar Chart */}
-                        {[40, 60, 45, 80, 65, 95].map((height, i) => (
-                          <div key={i} className="w-full flex flex-col justify-end gap-1 h-48">
-                            <div className="w-full bg-blue-500/20 rounded-t-sm" style={{ height: `${100 - height}%` }}></div>
-                            <div className="w-full bg-blue-600 rounded-t-sm" style={{ height: `${height}%` }}></div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    <div className="bg-[#1E293B] p-6 rounded-xl border border-slate-800">
-                      <h2 className="text-lg font-semibold mb-6">{t('workspace.recentActivity')}</h2>
-                      <div className="flex flex-col gap-6">
-                        <div className="flex gap-4">
-                          <div className="w-8 h-8 rounded-full bg-slate-700 shrink-0"></div>
-                          <div>
-                            <div className="text-sm font-medium text-slate-200">{t('workspace.activity1')}</div>
-                            <div className="text-xs text-slate-500 mt-1">{t('workspace.time1')}</div>
-                          </div>
-                        </div>
-                        <div className="flex gap-4">
-                          <div className="w-8 h-8 rounded-full bg-slate-700 shrink-0"></div>
-                          <div>
-                            <div className="text-sm font-medium text-slate-200">{t('workspace.activity2')}</div>
-                            <div className="text-xs text-slate-500 mt-1">{t('workspace.time2')}</div>
-                          </div>
-                        </div>
-                        <div className="flex gap-4">
-                          <div className="w-8 h-8 rounded-full bg-slate-700 shrink-0"></div>
-                          <div>
-                            <div className="text-sm font-medium text-slate-200">{t('workspace.activity3')}</div>
-                            <div className="text-xs text-slate-500 mt-1">{t('workspace.time3')}</div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  ) : previewUrl ? (
+                    <iframe
+                      title="project-preview"
+                      src={previewUrl}
+                      className="w-full h-full border-0 bg-white"
+                      sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                    />
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-slate-500 text-sm">No preview URL available.</div>
+                  )}
                 </div>
               </div>
             ) : (
               <div className="flex-1 flex flex-col bg-[#1e1e1e] overflow-hidden rounded-xl border border-slate-800 shadow-2xl">
-                <CodeEditor />
+                <CodeEditor
+                  tree={fileTree}
+                  loading={fileLoading}
+                  error={fileError}
+                  onOpenFile={(path) => getFileContent(projectId, path, accessToken)}
+                  onDownloadProject={() => downloadProject(projectId, projectName, accessToken)}
+                />
               </div>
             )}
           </div>
-        </div>
+        </main>
       </div>
     </motion.div>
   );

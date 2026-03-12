@@ -23,10 +23,9 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
-  "data": {},
-  "request_id": "req_01J..."
+  "data": {}
 }
 ```
 
@@ -34,9 +33,9 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "invalid_argument",
   "code": 400,
-  "message": "invalid_argument",
-  "error": {
+  "data": {
     "type": "VALIDATION_ERROR",
     "details": [
       {
@@ -44,8 +43,7 @@ Authorization: Bearer <access_token>
         "reason": "invalid format"
       }
     ]
-  },
-  "request_id": "req_01J..."
+  }
 }
 ```
 
@@ -68,13 +66,12 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "authorize_url": "https://github.com/login/oauth/authorize?...",
     "state": "st_abc123"
-  },
-  "request_id": "req_github_start_001"
+  }
 }
 ```
 
@@ -96,8 +93,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "user": {
       "id": "u_123",
@@ -110,8 +107,7 @@ Authorization: Bearer <access_token>
     "access_token": "jwt_access",
     "refresh_token": "jwt_refresh",
     "expires_in": 7200
-  },
-  "request_id": "req_github_callback_001"
+  }
 }
 ```
 
@@ -131,14 +127,13 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "access_token": "jwt_access_new",
     "refresh_token": "jwt_refresh_new",
     "expires_in": 7200
-  },
-  "request_id": "req_refresh_001"
+  }
 }
 ```
 
@@ -151,16 +146,15 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "id": "u_123",
     "email": "user@company.com",
     "name": "Alice",
     "avatar_url": "",
     "plan": "pro"
-  },
-  "request_id": "req_me_001"
+  }
 }
 ```
 
@@ -180,12 +174,11 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "logged_out",
   "code": 200,
-  "message": "logged_out",
   "data": {
     "success": true
-  },
-  "request_id": "req_logout_001"
+  }
 }
 ```
 
@@ -200,8 +193,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "items": [
       {
@@ -219,8 +212,7 @@ Authorization: Bearer <access_token>
       "page_size": 20,
       "total": 35
     }
-  },
-  "request_id": "req_projects_list_001"
+  }
 }
 ```
 
@@ -241,15 +233,14 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "created",
   "code": 200,
-  "message": "created",
   "data": {
     "id": "p_100",
     "name": "Untitled Project",
     "status": "DRAFT",
     "created_at": "2026-03-11T09:15:00Z"
-  },
-  "request_id": "req_projects_create_001"
+  }
 }
 ```
 
@@ -262,16 +253,15 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "id": "p_100",
     "name": "Untitled Project",
     "status": "BUILDING",
     "owner_id": "u_123",
     "last_opened_at": "2026-03-11T09:16:00Z"
-  },
-  "request_id": "req_project_detail_001"
+  }
 }
 ```
 
@@ -294,14 +284,13 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "updated",
   "code": 200,
-  "message": "updated",
   "data": {
     "id": "p_100",
     "name": "Marketing Analytics",
     "updated_at": "2026-03-11T09:20:00Z"
-  },
-  "request_id": "req_project_patch_001"
+  }
 }
 ```
 
@@ -314,12 +303,11 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "deleted",
   "code": 200,
-  "message": "deleted",
   "data": {
     "success": true
-  },
-  "request_id": "req_project_delete_001"
+  }
 }
 ```
 
@@ -332,13 +320,12 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "used": 8,
     "limit": 12
-  },
-  "request_id": "req_usage_001"
+  }
 }
 ```
 
@@ -353,17 +340,12 @@ Authorization: Bearer <access_token>
 ```json
 {
   "prompt": "Create a SaaS dashboard with dark mode and realtime charts.",
-  "model": "gemini-2.5-pro",
   "attachments": [
     {
       "file_id": "f_001",
       "name": "prd.md"
     }
-  ],
-  "options": {
-    "framework": "react",
-    "styling": "tailwind"
-  }
+  ]
 }
 ```
 
@@ -371,13 +353,12 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "accepted",
   "code": 200,
-  "message": "accepted",
   "data": {
     "job_id": "job_gen_001",
     "status": "QUEUED"
-  },
-  "request_id": "req_gen_start_001"
+  }
 }
 ```
 
@@ -390,8 +371,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "job_id": "job_gen_001",
     "type": "APP_GENERATION",
@@ -402,8 +383,7 @@ Authorization: Bearer <access_token>
       "Generating components"
     ],
     "result": null
-  },
-  "request_id": "req_job_status_001"
+  }
 }
 ```
 
@@ -418,8 +398,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "items": [
       {
@@ -428,8 +408,7 @@ Authorization: Bearer <access_token>
         "updated_at": "2026-03-11T09:40:00Z"
       }
     ]
-  },
-  "request_id": "req_conv_list_001"
+  }
 }
 ```
 
@@ -442,8 +421,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "conversation_id": "c_default",
     "items": [
@@ -455,61 +434,13 @@ Authorization: Bearer <access_token>
       }
     ],
     "next_cursor": null
-  },
-  "request_id": "req_chat_list_001"
-}
-```
-
-### 5.3 发送消息（非流式）
-
-- URL: `POST /api/v1/projects/{project_id}/chat/messages`
-- 功能说明: 对应 **Send**，一次性返回 agent 回复和变更摘要。
-- 请求体:
-
-```json
-{
-  "conversation_id": "c_default",
-  "content": "Add dark mode toggle to header and show code.",
-  "attachments": [
-    {
-      "file_id": "f_002",
-      "name": "design.png"
-    }
-  ]
-}
-```
-
-- 响应体:
-
-```json
-{
-  "code": 200,
-  "message": "ok",
-  "data": {
-    "user_message": {
-      "id": "m_10",
-      "role": "user",
-      "content": "Add dark mode toggle to header and show code."
-    },
-    "assistant_message": {
-      "id": "m_11",
-      "role": "assistant",
-      "content": "Done. Updated Header.tsx and theme context."
-    },
-    "changes": [
-      {
-        "path": "src/components/Header.tsx",
-        "action": "update"
-      }
-    ]
-  },
-  "request_id": "req_chat_send_001"
+  }
 }
 ```
 
 ### 5.4 发送消息（流式）
 
-- URL: `POST /api/v1/projects/{project_id}/chat/messages/stream`
+- URL: `POST /api/v1/projects/{project_id}/chat/messages`
 - 功能说明: 实时打字机输出，适配长回复与代码生成。
 - 请求体:
 
@@ -525,7 +456,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
-  "event": "delta",
+  "msg": "delta",
+  "code": 200,
   "data": {
     "text": "Refactoring layout..."
   }
@@ -534,7 +466,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
-  "event": "done",
+  "msg": "done",
+  "code": 200,
   "data": {
     "message_id": "m_12",
     "changes": [
@@ -558,8 +491,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "root": "/workspace",
     "nodes": [
@@ -577,8 +510,7 @@ Authorization: Bearer <access_token>
         ]
       }
     ]
-  },
-  "request_id": "req_fs_tree_001"
+  }
 }
 ```
 
@@ -591,44 +523,31 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "path": "/workspace/src/App.tsx",
     "language": "typescript",
     "content": "import { useState } from 'react';",
     "sha": "8f0d2a..."
-  },
-  "request_id": "req_fs_read_001"
+  }
 }
 ```
 
-### 6.3 下载文件
+### 6.3 下载项目归档
 
-- URL: `POST /api/v1/projects/{project_id}/files/download`
-- 功能说明: 导出构建产物或结果文件。
-- 请求体:
+- URL: `GET /api/v1/projects/{project_id}/download`
+- 功能说明: 导出当前项目代码归档。浏览器直接下载 zip 文件。
+- 请求体: `无`
+- 成功响应: `HTTP 200`
+- 响应 Header:
 
-```json
-{
-  "path": "/workspace/dist/app.zip",
-  "save_path": "/tmp/app.zip"
-}
+```http
+Content-Type: application/zip
+Content-Disposition: attachment; filename="untitled-project.zip"
 ```
 
-- 响应体:
-
-```json
-{
-  "code": 200,
-  "message": "downloaded",
-  "data": {
-    "path": "/workspace/dist/app.zip",
-    "save_path": "/tmp/app.zip"
-  },
-  "request_id": "req_fs_download_001"
-}
-```
+- 响应体: zip 二进制文件流
 
 ## 7. 预览、发布、部署与分享（Workspace 顶部）
 
@@ -649,14 +568,13 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "preview_started",
   "code": 200,
-  "message": "preview_started",
   "data": {
     "preview_id": "pv_001",
     "status": "STARTING",
     "preview_url": "https://preview.example.com/pv_001"
-  },
-  "request_id": "req_preview_start_001"
+  }
 }
 ```
 
@@ -669,40 +587,14 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "preview_id": "pv_001",
     "status": "RUNNING",
     "preview_url": "https://preview.example.com/pv_001",
     "last_heartbeat_at": "2026-03-11T09:35:00Z"
-  },
-  "request_id": "req_preview_status_001"
-}
-```
-
-### 7.3 停止预览
-
-- URL: `POST /api/v1/projects/{project_id}/preview/stop`
-- 功能说明: 释放预览资源。
-- 请求体:
-
-```json
-{
-  "preview_id": "pv_001"
-}
-```
-
-- 响应体:
-
-```json
-{
-  "code": 200,
-  "message": "preview_stopped",
-  "data": {
-    "success": true
-  },
-  "request_id": "req_preview_stop_001"
+  }
 }
 ```
 
@@ -723,14 +615,13 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "published",
   "code": 200,
-  "message": "published",
   "data": {
     "release_id": "rel_001",
     "public_url": "https://apps.example.com/p/p_100",
     "version": "v1.0.0"
-  },
-  "request_id": "req_publish_001"
+  }
 }
 ```
 
@@ -755,13 +646,12 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "deployment_started",
   "code": 200,
-  "message": "deployment_started",
   "data": {
     "deployment_id": "dep_001",
     "status": "QUEUED"
-  },
-  "request_id": "req_deploy_start_001"
+  }
 }
 ```
 
@@ -774,8 +664,8 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "deployment_id": "dep_001",
     "status": "SUCCESS",
@@ -785,8 +675,7 @@ Authorization: Bearer <access_token>
       "Upload artifacts"
     ],
     "live_url": "https://apps.example.com/p/p_100"
-  },
-  "request_id": "req_deploy_status_001"
+  }
 }
 ```
 
@@ -808,13 +697,12 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "share_id": "sh_001",
     "share_url": "https://app.example.com/share/sh_001"
-  },
-  "request_id": "req_share_create_001"
+  }
 }
 ```
 
@@ -827,12 +715,11 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "deleted",
   "code": 200,
-  "message": "deleted",
   "data": {
     "success": true
-  },
-  "request_id": "req_share_delete_001"
+  }
 }
 ```
 
@@ -855,15 +742,14 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "uploaded",
   "code": 200,
-  "message": "uploaded",
   "data": {
     "file_id": "f_002",
     "name": "design.png",
     "size": 48213,
     "mime_type": "image/png"
-  },
-  "request_id": "req_file_upload_001"
+  }
 }
 ```
 
@@ -876,21 +762,14 @@ Authorization: Bearer <access_token>
 
 ```json
 {
+  "msg": "ok",
   "code": 200,
-  "message": "ok",
   "data": {
     "file_id": "f_002",
     "name": "design.png",
     "size": 48213,
     "mime_type": "image/png",
     "download_url": "https://cdn.example.com/f_002"
-  },
-  "request_id": "req_file_meta_001"
+  }
 }
 ```
-
-## 9. 实现优先级建议
-
-第一阶段（必须）：`2.x`、`3.1~3.5`、`4.1~4.2`、`5.2~5.4`、`6.1~6.2`。  
-第二阶段（高优先）：`6.3`、`7.1~7.3`。  
-第三阶段（增强）：`7.4~7.8`、`8.x`、`3.6`。

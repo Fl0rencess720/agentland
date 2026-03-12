@@ -1,0 +1,891 @@
+{
+  "source": "mockoon:1.25.0",
+  "data": [
+    {
+      "type": "environment",
+      "item": {
+        "uuid": "2cf6e4e1-4e10-4d9f-9f7d-5f8f7d69f9ab",
+        "lastMigration": 35,
+        "name": "agentland-mvp",
+        "endpointPrefix": "",
+        "latency": 0,
+        "port": 8081,
+        "hostname": "",
+        "folders": [],
+        "routes": [
+          {
+            "uuid": "501dc486-f32d-4770-b76d-1f9e383a5399",
+            "documentation": "Start GitHub auth",
+            "method": "post",
+            "endpoint": "/api/v1/auth/github/start",
+            "responses": [
+              {
+                "uuid": "f74b01a2-2a5b-497d-a538-3d0be32a1fc0",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"authorize_url\": \"https://github.com/login/oauth/authorize?client_id=mock-client\",\n    \"state\": \"st_abc123\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "0b531785-4fd9-42ed-9b24-98df3a764b41",
+            "documentation": "Complete GitHub auth",
+            "method": "post",
+            "endpoint": "/api/v1/auth/github/callback",
+            "responses": [
+              {
+                "uuid": "627d39d7-c3e0-4af5-88f0-e294fc25f7fd",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"user\": {\n      \"id\": \"u_123\",\n      \"email\": \"user@company.com\",\n      \"name\": \"Alice\",\n      \"avatar_url\": \"https://avatars.githubusercontent.com/u/123?v=4\",\n      \"github_id\": \"1234567\",\n      \"github_login\": \"alice-dev\"\n    },\n    \"access_token\": \"jwt_access\",\n    \"refresh_token\": \"jwt_refresh\",\n    \"expires_in\": 7200\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "622d1b48-b785-416d-ac8a-0f4d263d2676",
+            "documentation": "Refresh auth token",
+            "method": "post",
+            "endpoint": "/api/v1/auth/refresh",
+            "responses": [
+              {
+                "uuid": "65517458-164c-4075-8931-c90314aaf7d3",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"user\": {\n      \"id\": \"u_123\",\n      \"email\": \"user@company.com\",\n      \"name\": \"Alice\",\n      \"avatar_url\": \"https://avatars.githubusercontent.com/u/123?v=4\",\n      \"plan\": \"pro\"\n    },\n    \"access_token\": \"jwt_access_new\",\n    \"refresh_token\": \"jwt_refresh_new\",\n    \"expires_in\": 7200\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "d3f0ac21-362e-499e-a0b0-c4c833f83d5f",
+            "documentation": "Get current user",
+            "method": "get",
+            "endpoint": "/api/v1/auth/me",
+            "responses": [
+              {
+                "uuid": "21942224-54fa-4bf1-852a-fc09b4b3e2f0",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"id\": \"u_123\",\n    \"email\": \"user@company.com\",\n    \"name\": \"Alice\",\n    \"avatar_url\": \"https://avatars.githubusercontent.com/u/123?v=4\",\n    \"plan\": \"pro\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "1714993e-2f8a-4d78-9cee-2e4e56ca90c5",
+            "documentation": "Logout",
+            "method": "post",
+            "endpoint": "/api/v1/auth/logout",
+            "responses": [
+              {
+                "uuid": "70c0e8c4-e9c7-49c8-b828-9b616bb3940b",
+                "body": "{\n  \"msg\": \"logged_out\",\n  \"code\": 200,\n  \"data\": {\n    \"success\": true\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "99828c7b-60b2-4261-b886-4b20e6fcbd3f",
+            "documentation": "List projects",
+            "method": "get",
+            "endpoint": "/api/v1/projects",
+            "responses": [
+              {
+                "uuid": "b3cba382-f0c9-4c57-be47-071703c9e10c",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"items\": [\n      {\n        \"id\": \"p_001\",\n        \"name\": \"SaaS Dashboard\",\n        \"status\": \"DEPLOYED\",\n        \"thumbnail_url\": \"https://cdn.example.com/p1.png\",\n        \"created_at\": \"2026-03-10T12:00:00Z\",\n        \"updated_at\": \"2026-03-11T09:00:00Z\",\n        \"is_shared\": true\n      },\n      {\n        \"id\": \"p_100\",\n        \"name\": \"Untitled Project\",\n        \"status\": \"DRAFT\",\n        \"thumbnail_url\": \"\",\n        \"created_at\": \"2026-03-11T09:15:00Z\",\n        \"updated_at\": \"2026-03-11T09:20:00Z\",\n        \"is_shared\": false\n      },\n      {\n        \"id\": \"p_233\",\n        \"name\": \"Marketing Analytics\",\n        \"status\": \"BUILDING\",\n        \"thumbnail_url\": \"\",\n        \"created_at\": \"2026-03-11T08:00:00Z\",\n        \"updated_at\": \"2026-03-11T10:00:00Z\",\n        \"is_shared\": false\n      }\n    ],\n    \"pagination\": {\n      \"page\": 1,\n      \"page_size\": 20,\n      \"total\": 3\n    }\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "a2e85bd2-7f7e-4de7-97b4-843f3857df66",
+            "documentation": "Create project",
+            "method": "post",
+            "endpoint": "/api/v1/projects",
+            "responses": [
+              {
+                "uuid": "0a4cf53f-38ce-4e59-89b6-e3bc6d3e52af",
+                "body": "{\n  \"msg\": \"created\",\n  \"code\": 200,\n  \"data\": {\n    \"id\": \"p_100\",\n    \"name\": \"Untitled Project\",\n    \"status\": \"DRAFT\",\n    \"created_at\": \"2026-03-11T09:15:00Z\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "4e7f8ebc-d405-4ebe-ad5a-7a5564ee9d16",
+            "documentation": "Get project usage",
+            "method": "get",
+            "endpoint": "/api/v1/projects/usage",
+            "responses": [
+              {
+                "uuid": "e869501c-2eac-44a0-ac23-29e04ee3f1a3",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"used\": 8,\n    \"limit\": 12\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "e76bb9aa-b1d7-40b1-85ba-93912071b3f4",
+            "documentation": "Get project detail",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id",
+            "responses": [
+              {
+                "uuid": "77036508-0e56-4701-825d-e18e376e68bf",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"id\": \"p_100\",\n    \"name\": \"Untitled Project\",\n    \"status\": \"BUILDING\",\n    \"owner_id\": \"u_123\",\n    \"last_opened_at\": \"2026-03-11T09:16:00Z\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "d1c913f5-7e6a-4a54-8d6f-8c302e00b101",
+            "documentation": "Update project",
+            "method": "patch",
+            "endpoint": "/api/v1/projects/:project_id",
+            "responses": [
+              {
+                "uuid": "4b54f4f2-2a66-4681-9c11-cdbe0ab8b102",
+                "body": "{\n  \"msg\": \"updated\",\n  \"code\": 200,\n  \"data\": {\n    \"id\": \"p_100\",\n    \"name\": \"Marketing Analytics\",\n    \"updated_at\": \"2026-03-11T09:20:00Z\",\n    \"metadata\": {\n      \"last_view_mode\": \"code\"\n    }\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "de154cda-6195-4b5c-83dc-1510dfead3eb",
+            "documentation": "Delete project",
+            "method": "delete",
+            "endpoint": "/api/v1/projects/:project_id",
+            "responses": [
+              {
+                "uuid": "90112ffc-d7d6-4cbf-b7d5-da25155c527a",
+                "body": "{\n  \"msg\": \"deleted\",\n  \"code\": 200,\n  \"data\": {\n    \"success\": true\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "fbf40202-ae1f-4961-9f4b-dda6d8f8122f",
+            "documentation": "Create generation",
+            "method": "post",
+            "endpoint": "/api/v1/projects/:project_id/generations",
+            "responses": [
+              {
+                "uuid": "4f3df358-45e4-4cea-a459-87d9a38a15c6",
+                "body": "{\n  \"msg\": \"accepted\",\n  \"code\": 200,\n  \"data\": {\n    \"job_id\": \"job_gen_001\",\n    \"status\": \"QUEUED\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "89dd7b6d-5cb4-4af2-bfdf-60057a3786cf",
+            "documentation": "Get generation job status",
+            "method": "get",
+            "endpoint": "/api/v1/jobs/:job_id",
+            "responses": [
+              {
+                "uuid": "af546e21-d9ea-4fa0-b5aa-cd69c65cfedd",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"job_id\": \"job_gen_001\",\n    \"type\": \"APP_GENERATION\",\n    \"status\": \"SUCCESS\",\n    \"progress\": 100,\n    \"logs\": [\n      \"Scaffolding project\",\n      \"Generating components\",\n      \"Done\"\n    ],\n    \"result\": {\n      \"project_id\": \"p_100\"\n    }\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "f0c96ee8-9f8a-42db-9301-4d890b52c201",
+            "documentation": "Get chat conversations",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id/chat/conversations",
+            "responses": [
+              {
+                "uuid": "3140b18b-901d-4881-a6fc-c4f6d7ddc202",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"items\": [\n      {\n        \"id\": \"c_default\",\n        \"title\": \"Default conversation\",\n        \"updated_at\": \"2026-03-11T09:40:00Z\"\n      },\n      {\n        \"id\": \"c_followup\",\n        \"title\": \"Landing page refinements\",\n        \"updated_at\": \"2026-03-11T09:52:00Z\"\n      }\n    ]\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "70698f95-6cb1-4c4f-9cb0-2f34d8992df0",
+            "documentation": "Get chat messages",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id/chat/messages",
+            "responses": [
+              {
+                "uuid": "7a8f2ad7-b8ec-4b0f-b367-084fd8efc164",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"conversation_id\": \"c_default\",\n    \"items\": [\n      {\n        \"id\": \"m_1\",\n        \"role\": \"assistant\",\n        \"content\": \"I have scaffolded your app and prepared initial files.\",\n        \"created_at\": \"2026-03-11T09:40:00Z\"\n      }\n    ],\n    \"next_cursor\": null\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "1d8fe6ef-f5f9-45c1-93f7-7886f6612f6d",
+            "documentation": "Send chat message",
+            "method": "post",
+            "endpoint": "/api/v1/projects/:project_id/chat/messages",
+            "responses": [
+              {
+                "uuid": "d9b4f66e-d0ce-4485-b08f-58d2510c769f",
+                "body": "data: {\"msg\":\"delta\",\"code\":200,\"data\":{\"text\":\"Refactoring layout...\"}}\n\ndata: {\"msg\":\"delta\",\"code\":200,\"data\":{\"text\":\" Updating explorer and preview wiring.\"}}\n\ndata: {\"msg\":\"done\",\"code\":200,\"data\":{\"message_id\":\"m_assistant_002\",\"changes\":[{\"path\":\"src/App.tsx\",\"action\":\"update\"},{\"path\":\"src/components/Workspace.tsx\",\"action\":\"update\"}]}}\n\n",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "text/event-stream"
+                  },
+                  {
+                    "key": "Cache-Control",
+                    "value": "no-cache"
+                  },
+                  {
+                    "key": "Connection",
+                    "value": "keep-alive"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "07fd7a3b-4f9f-4e3e-a7d6-e5bf4a60c04f",
+            "documentation": "Get file tree",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id/files/tree",
+            "responses": [
+              {
+                "uuid": "7638f046-b55b-4fe4-8ddf-e29ebda7ff54",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"root\": \"/workspace\",\n    \"nodes\": [\n      {\n        \"path\": \"/workspace/src\",\n        \"name\": \"src\",\n        \"type\": \"folder\",\n        \"children\": [\n          {\n            \"path\": \"/workspace/src/App.tsx\",\n            \"name\": \"App.tsx\",\n            \"type\": \"file\"\n          },\n          {\n            \"path\": \"/workspace/src/main.tsx\",\n            \"name\": \"main.tsx\",\n            \"type\": \"file\"\n          }\n        ]\n      },\n      {\n        \"path\": \"/workspace/package.json\",\n        \"name\": \"package.json\",\n        \"type\": \"file\"\n      }\n    ]\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "3affd66f-3c98-4323-b8f8-6f149c35f16d",
+            "documentation": "Get file content",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id/files/content",
+            "responses": [
+              {
+                "uuid": "d1b6433d-6702-44ee-9f92-fdba8f8e0ab8",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"path\": \"/workspace/src/App.tsx\",\n    \"language\": \"typescript\",\n    \"content\": \"export default function App() {\\n  return <div>Hello from Mockoon</div>;\\n}\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "50b023c6-db6b-42c3-b9d1-116ee69be15e",
+            "documentation": "Download project archive",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id/download",
+            "responses": [
+              {
+                "uuid": "f93c5119-de59-475d-a93f-660b34fb9edf",
+                "body": "",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/zip"
+                  },
+                  {
+                    "key": "Content-Disposition",
+                    "value": "attachment; filename=\"untitled-project.zip\""
+                  }
+                ],
+                "bodyType": "FILE",
+                "filePath": "assets/untitled-project.zip",
+                "databucketID": "",
+                "sendFileAsBody": true,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "191fcb8f-1a52-4704-99e0-f50f589423b6",
+            "documentation": "Start preview",
+            "method": "post",
+            "endpoint": "/api/v1/projects/:project_id/preview/start",
+            "responses": [
+              {
+                "uuid": "2f5be302-09e1-4128-9e90-632aa9a5a0bc",
+                "body": "{\n  \"msg\": \"preview_started\",\n  \"code\": 200,\n  \"data\": {\n    \"preview_id\": \"pv_001\",\n    \"status\": \"RUNNING\",\n    \"preview_url\": \"https://example.com\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "4ce8968e-3378-4628-b8cb-ef563875f0c1",
+            "documentation": "Get preview status",
+            "method": "get",
+            "endpoint": "/api/v1/projects/:project_id/preview",
+            "responses": [
+              {
+                "uuid": "f45d1f90-4fba-468a-a032-aac26e89ef2f",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"preview_id\": \"pv_001\",\n    \"status\": \"RUNNING\",\n    \"preview_url\": \"https://example.com\",\n    \"last_heartbeat_at\": \"2026-03-11T09:50:00Z\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "f5016e5e-1e67-4983-929c-2de71ab30ce8",
+            "documentation": "Upload image attachment",
+            "method": "post",
+            "endpoint": "/api/v1/files",
+            "responses": [
+              {
+                "uuid": "78727b92-1fe5-48b2-a74d-5a50193ab940",
+                "body": "{\n  \"msg\": \"uploaded\",\n  \"code\": 200,\n  \"data\": {\n    \"file_id\": \"f_002\",\n    \"name\": \"design.png\",\n    \"size\": 48213,\n    \"mime_type\": \"image/png\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          },
+          {
+            "uuid": "432fd3ef-7bfa-47b5-924f-2d16a3f845c6",
+            "documentation": "Get file metadata",
+            "method": "get",
+            "endpoint": "/api/v1/files/:file_id",
+            "responses": [
+              {
+                "uuid": "c2620da9-0178-4ce3-ae44-fd09b66d036e",
+                "body": "{\n  \"msg\": \"ok\",\n  \"code\": 200,\n  \"data\": {\n    \"file_id\": \"f_002\",\n    \"name\": \"design.png\",\n    \"size\": 48213,\n    \"mime_type\": \"image/png\",\n    \"download_url\": \"https://cdn.example.com/f_002\"\n  }\n}",
+                "latency": 0,
+                "statusCode": 200,
+                "label": "OK",
+                "headers": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "bodyType": "INLINE",
+                "filePath": "",
+                "databucketID": "",
+                "sendFileAsBody": false,
+                "rules": [],
+                "rulesOperator": "OR",
+                "disableTemplating": false
+              }
+            ],
+            "responseMode": null,
+            "streamingMode": null,
+            "streamingInterval": 0,
+            "rules": [],
+            "rulesOperator": "OR",
+            "enabled": true,
+            "randomResponse": false,
+            "sequentialResponse": false
+          }
+        ],
+        "rootChildren": [],
+        "proxyMode": false,
+        "proxyHost": "",
+        "proxyRemovePrefix": false,
+        "tlsOptions": {
+          "enabled": false,
+          "type": "CERT",
+          "pfxPath": "",
+          "certPath": "",
+          "keyPath": "",
+          "caPath": "",
+          "passphrase": ""
+        },
+        "cors": true,
+        "headers": [
+          {
+            "key": "Access-Control-Allow-Origin",
+            "value": "*"
+          },
+          {
+            "key": "Access-Control-Allow-Headers",
+            "value": "Content-Type, Authorization"
+          },
+          {
+            "key": "Access-Control-Allow-Methods",
+            "value": "GET, POST, PATCH, DELETE, OPTIONS"
+          }
+        ],
+        "proxyReqHeaders": [],
+        "proxyResHeaders": [],
+        "callbacks": []
+      }
+    }
+  ]
+}

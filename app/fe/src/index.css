@@ -11,3 +11,26 @@ html,
 body {
   overscroll-behavior-y: none;
 }
+
+.chat-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 #0f172a;
+}
+
+.chat-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #334155, #1e293b);
+  border-radius: 9999px;
+  border: 2px solid #0f172a;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #475569, #334155);
+}
