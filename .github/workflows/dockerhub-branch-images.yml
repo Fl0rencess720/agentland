@@ -33,7 +33,7 @@ jobs:
           - name: agent
             image: agentland-agent
             context: app/agentland-agent
-            dockerfile: Dockerfile
+            dockerfile: app/agentland-agent/Dockerfile
 
     steps:
       - uses: actions/checkout@v4
