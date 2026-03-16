@@ -10,7 +10,6 @@ func InitApi(group *gin.RouterGroup, projectHandler *ProjectHandler) {
 	group.PATCH("/:project_id", projectHandler.Update)
 	group.DELETE("/:project_id", projectHandler.Delete)
 	group.POST("/:project_id/generations", projectHandler.CreateGeneration)
-	group.GET("/:project_id/chat/conversations", projectHandler.ListConversations)
 	group.GET("/:project_id/chat/messages", projectHandler.ListMessages)
 	group.POST("/:project_id/chat/messages", projectHandler.CreateMessage)
 	group.GET("/:project_id/files/tree", projectHandler.FileTree)

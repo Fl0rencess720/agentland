@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   HelpCircle,
@@ -17,14 +17,16 @@ import {
 } from 'lucide-react';
 import CodeEditor from './CodeEditor';
 import { useI18n } from '../i18n';
+import DeepToggle from './DeepToggle';
 import LanguageSwitcher from './LanguageSwitcher';
 import UserMenu from './UserMenu';
 import {
-  getChatConversations,
+  ApiError,
   getChatMessages,
   getFileContent,
   downloadProject,
   getFileTree,
+  getJob,
   getPreview,
   sendChatMessage,
   sleep,
@@ -44,17 +46,58 @@ type WorkspaceProps = {
   projectName: string;
   initialPrompt: string;
   initialViewMode?: 'preview' | 'code';
+  generationJobId?: string;
   accessToken?: string;
+  deepEnabled: boolean;
+  onDeepEnabledChange: (next: boolean) => void;
 };
 
 const PREVIEW_POLL_INTERVAL_MS = 1500;
 const PREVIEW_POLL_MAX_ATTEMPTS = 20;
+const GENERATION_POLL_INTERVAL_MS = 1200;
+const CODE_REFRESH_INTERVAL_MS = 10000;
+const TERMINAL_GENERATION_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELED']);
+
+function extractAssistantText(result: unknown) {
+  if (!result || typeof result !== 'object') return '';
+  const content = (result as { assistant_text?: unknown }).assistant_text;
+  return typeof content === 'string' ? content : '';
+}
 
 function messageTime(input?: string) {
   if (!input) return 'just now';
   const date = new Date(input);
   if (Number.isNaN(date.getTime())) return 'just now';
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function messageOrderValue(role: ChatMessage['role']) {
+  switch (role) {
+    case 'user':
+      return 1;
+    case 'assistant':
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+function sortChatMessages(messages: ChatMessage[]) {
+  return [...messages].sort((left, right) => {
+    const leftTime = left.created_at ? new Date(left.created_at).getTime() : 0;
+    const rightTime = right.created_at ? new Date(right.created_at).getTime() : 0;
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return messageOrderValue(left.role) - messageOrderValue(right.role);
+  });
+}
+
+function shouldKeepPreviewLoading(error: unknown) {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+  return error.status === 400 || error.status === 409 || error.message === 'invalid_argument' || error.message === 'runtime_unavailable';
 }
 
 export default function Workspace({
@@ -66,7 +109,10 @@ export default function Workspace({
   projectName,
   initialPrompt,
   initialViewMode = 'preview',
+  generationJobId,
   accessToken,
+  deepEnabled,
+  onDeepEnabledChange,
 }: WorkspaceProps) {
   const [viewMode, setViewMode] = useState<'preview' | 'code'>(initialViewMode);
   const { t } = useI18n();
@@ -76,8 +122,8 @@ export default function Workspace({
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
-  const [conversationId, setConversationId] = useState('c_default');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pendingGenerationMessages, setPendingGenerationMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatSubmitting, setChatSubmitting] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -91,86 +137,159 @@ export default function Workspace({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(true);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [isGenerationOutputting, setIsGenerationOutputting] = useState(Boolean(generationJobId));
+  const [isChatOutputting, setIsChatOutputting] = useState(false);
+  const [codeRefreshSignal, setCodeRefreshSignal] = useState(0);
+  const fileRefreshInFlightRef = useRef(false);
+  const previewUrlRef = useRef<string | null>(null);
+
+  const isAgentOutputting = isGenerationOutputting || isChatOutputting;
+
+  useEffect(() => {
+    previewUrlRef.current = previewUrl;
+  }, [previewUrl]);
+
+  const refreshFileTree = useCallback(async (isCanceled: () => boolean, options?: { showLoading?: boolean; markRefresh?: boolean }) => {
+    if (fileRefreshInFlightRef.current) {
+      return;
+    }
+
+    fileRefreshInFlightRef.current = true;
+    const showLoading = options?.showLoading ?? false;
+
+    if (showLoading || fileTree.length === 0) {
+      setFileLoading(true);
+    }
+
+    try {
+      const treeData = await getFileTree(projectId, '/workspace', 3, accessToken);
+      if (isCanceled()) return;
+
+      setFileTree(treeData.nodes ?? []);
+      setFileError(null);
+      if (options?.markRefresh) {
+        setCodeRefreshSignal((previous) => previous + 1);
+      }
+    } catch (error) {
+      if (isCanceled()) return;
+      setFileError((error as Error).message || 'Failed to load workspace files.');
+    } finally {
+      fileRefreshInFlightRef.current = false;
+      if (!isCanceled()) {
+        setFileLoading(false);
+      }
+    }
+  }, [accessToken, fileTree.length, projectId]);
+
+  const waitForPreviewReady = useCallback(async (isCanceled: () => boolean) => {
+    const previewData = await startPreview(projectId, accessToken);
+
+    if (isCanceled()) return;
+
+    const initialStatus = previewData.status ?? 'STARTING';
+    setPreviewId(previewData.preview_id ?? null);
+    setPreviewStatus(initialStatus);
+    setPreviewUrl(previewData.preview_url ?? null);
+
+    if (!previewData.preview_id || initialStatus === 'RUNNING') {
+      setPreviewLoading(false);
+      return;
+    }
+
+    for (let attempt = 0; attempt < PREVIEW_POLL_MAX_ATTEMPTS; attempt += 1) {
+      if (isCanceled()) return;
+
+      await sleep(PREVIEW_POLL_INTERVAL_MS);
+      const status = await getPreview(projectId, accessToken);
+
+      if (isCanceled()) return;
+
+      setPreviewStatus(status.status ?? 'RUNNING');
+      if (status.preview_url) {
+        setPreviewUrl(status.preview_url);
+      }
+
+      if (status.status === 'RUNNING') {
+        setPreviewLoading(false);
+        return;
+      }
+    }
+
+    throw new Error('Preview startup timeout.');
+  }, [accessToken, projectId]);
+
+  const refreshPreview = useCallback(async (isCanceled: () => boolean, options?: { showLoading?: boolean }) => {
+    const showLoading = options?.showLoading ?? false;
+
+    if (showLoading || !previewUrlRef.current) {
+      setPreviewLoading(true);
+    }
+    setPreviewError(null);
+
+    try {
+      await waitForPreviewReady(isCanceled);
+    } catch (error) {
+      if (isCanceled()) return;
+      if (shouldKeepPreviewLoading(error)) {
+        setPreviewStatus('STARTING');
+        setPreviewError(null);
+        setPreviewLoading(true);
+        return;
+      }
+      setPreviewError((error as Error).message || 'Failed to load workspace preview.');
+      setPreviewLoading(false);
+    }
+  }, [waitForPreviewReady]);
 
   const loadWorkspace = useCallback(async (isCanceled: () => boolean) => {
     setBootstrapLoading(true);
     setBootstrapError(null);
     setChatError(null);
 
-    setFileLoading(true);
-    setFileError(null);
-
-    setPreviewLoading(true);
-    setPreviewError(null);
-
     try {
-      const conversationData = await getChatConversations(projectId, accessToken);
-      const availableConversations = conversationData.items ?? [];
-      const initialConversationId = availableConversations[0]?.id ?? 'c_default';
-
-      const [chatData, treeData, previewData] = await Promise.all([
-        getChatMessages(projectId, initialConversationId, '', accessToken),
-        getFileTree(projectId, '/workspace', 3, accessToken),
-        startPreview(projectId, accessToken),
-      ]);
+      const chatData = await getChatMessages(projectId, '', accessToken);
 
       if (isCanceled()) return;
 
-      setConversationId(chatData.conversation_id || initialConversationId);
       setMessages(chatData.items ?? []);
-
-      setFileTree(treeData.nodes ?? []);
-      setFileLoading(false);
-
-      setPreviewId(previewData.preview_id ?? null);
-      setPreviewStatus(previewData.status ?? 'STARTING');
-      setPreviewUrl(previewData.preview_url ?? null);
-      setPreviewLoading((previewData.status ?? 'STARTING') !== 'RUNNING');
-
-      if (previewData.preview_id && (previewData.status ?? 'STARTING') !== 'RUNNING') {
-        void (async () => {
-          for (let attempt = 0; attempt < PREVIEW_POLL_MAX_ATTEMPTS; attempt += 1) {
-            if (isCanceled()) return;
-
-            await sleep(PREVIEW_POLL_INTERVAL_MS);
-            const status = await getPreview(projectId, accessToken);
-
-            if (isCanceled()) return;
-
-            setPreviewStatus(status.status ?? 'RUNNING');
-            if (status.preview_url) {
-              setPreviewUrl(status.preview_url);
-            }
-
-            if (status.status === 'RUNNING') {
-              setPreviewLoading(false);
-              return;
-            }
-          }
-
-          if (!isCanceled()) {
-            setPreviewLoading(false);
-            setPreviewError('Preview startup timeout.');
-          }
-        })();
-      } else {
-        setPreviewLoading(false);
-      }
     } catch (error) {
       if (isCanceled()) return;
 
       const message = (error as Error).message || 'Failed to load workspace.';
       setBootstrapError(message);
-      setFileError(message);
-      setPreviewError(message);
-      setFileLoading(false);
-      setPreviewLoading(false);
+      return;
     } finally {
       if (!isCanceled()) {
         setBootstrapLoading(false);
       }
     }
-  }, [accessToken, projectId]);
+
+    await refreshFileTree(isCanceled, { showLoading: true });
+    if (isCanceled()) return;
+
+    await refreshPreview(isCanceled, { showLoading: true });
+  }, [accessToken, projectId, refreshFileTree, refreshPreview]);
+
+  const finalizeWorkspaceAfterGeneration = useCallback(async (isCanceled: () => boolean) => {
+    try {
+      const chatData = await getChatMessages(projectId, '', accessToken);
+      if (isCanceled()) return;
+      setMessages(chatData.items ?? []);
+    } catch (error) {
+      if (!isCanceled()) {
+        setChatError((error as Error).message || 'Failed to sync generation.');
+      }
+    }
+
+    if (isCanceled()) return;
+    await refreshFileTree(isCanceled, { showLoading: false, markRefresh: true });
+    if (isCanceled()) return;
+    await refreshPreview(isCanceled, { showLoading: true });
+  }, [accessToken, projectId, refreshFileTree, refreshPreview]);
+
+  useEffect(() => {
+    setIsGenerationOutputting(Boolean(generationJobId));
+  }, [generationJobId, projectId]);
 
   useEffect(() => {
     let canceled = false;
@@ -179,6 +298,147 @@ export default function Workspace({
       canceled = true;
     };
   }, [loadWorkspace, reloadKey]);
+
+  useEffect(() => {
+    if (!generationJobId || !initialPrompt.trim()) {
+      setPendingGenerationMessages([]);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    setPendingGenerationMessages([
+      {
+        id: `generation_user_${generationJobId}`,
+        role: 'user',
+        content: initialPrompt.trim(),
+        created_at: now,
+      },
+      {
+        id: `generation_assistant_${generationJobId}`,
+        role: 'assistant',
+        content: '',
+        created_at: now,
+      },
+    ]);
+  }, [generationJobId, initialPrompt, projectId]);
+
+  useEffect(() => {
+    if (!generationJobId) {
+      return;
+    }
+
+    let canceled = false;
+    let refreshedAfterCompletion = false;
+
+    const syncGeneration = async () => {
+      while (!canceled) {
+        try {
+          const job = await getJob(generationJobId, accessToken);
+          const assistantText = extractAssistantText(job.result).trim();
+
+          setPendingGenerationMessages((previous) => {
+            const now = new Date().toISOString();
+            const base = previous.length > 0
+              ? previous
+              : initialPrompt.trim()
+                ? [
+                    {
+                      id: `generation_user_${generationJobId}`,
+                      role: 'user' as const,
+                      content: initialPrompt.trim(),
+                      created_at: now,
+                    },
+                    {
+                      id: `generation_assistant_${generationJobId}`,
+                      role: 'assistant' as const,
+                      content: '',
+                      created_at: now,
+                    },
+                  ]
+                : [];
+
+            const assistantIndex = base.findIndex((message) => message.id === `generation_assistant_${generationJobId}`);
+            const next = [...base];
+            const assistantMessage = {
+              id: `generation_assistant_${generationJobId}`,
+              role: 'assistant' as const,
+              content: assistantText,
+              created_at: next[0]?.created_at ?? now,
+            };
+
+            if (assistantIndex >= 0) {
+              next[assistantIndex] = {
+                ...next[assistantIndex],
+                content: assistantText,
+              };
+            } else {
+              next.push(assistantMessage);
+            }
+
+            return next;
+          });
+
+          if (job.status === 'FAILED' || job.status === 'CANCELED') {
+            if (!canceled) {
+              setIsGenerationOutputting(false);
+              setPendingGenerationMessages([]);
+              setChatError(`Generation ${job.status.toLowerCase()}`);
+              setPreviewStatus(job.status);
+            }
+            return;
+          }
+
+          if (job.status === 'SUCCESS') {
+            if (!refreshedAfterCompletion) {
+              refreshedAfterCompletion = true;
+              await finalizeWorkspaceAfterGeneration(() => canceled);
+              if (canceled) {
+                return;
+              }
+              setIsGenerationOutputting(false);
+              setPendingGenerationMessages([]);
+            }
+            return;
+          }
+
+          if (TERMINAL_GENERATION_STATUSES.has(job.status)) {
+            return;
+          }
+
+          await sleep(GENERATION_POLL_INTERVAL_MS);
+        } catch (error) {
+          if (!canceled) {
+            setChatError((error as Error).message || 'Failed to sync generation.');
+          }
+          return;
+        }
+      }
+    };
+
+    void syncGeneration();
+
+    return () => {
+      canceled = true;
+    };
+  }, [accessToken, finalizeWorkspaceAfterGeneration, generationJobId, initialPrompt]);
+
+  useEffect(() => {
+    if (!isAgentOutputting) {
+      return;
+    }
+
+    let canceled = false;
+    void refreshFileTree(() => canceled, { showLoading: fileTree.length === 0, markRefresh: true });
+
+    const timer = window.setInterval(() => {
+      void refreshFileTree(() => canceled, { showLoading: false, markRefresh: true });
+    }, CODE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+    };
+  }, [fileTree.length, isAgentOutputting, refreshFileTree]);
 
   useEffect(() => {
     let canceled = false;
@@ -212,6 +472,7 @@ export default function Workspace({
 
     setChatError(null);
     setChatSubmitting(true);
+    setIsChatOutputting(true);
 
     const now = new Date().toISOString();
     const optimisticUser: ChatMessage = {
@@ -232,7 +493,8 @@ export default function Workspace({
     setChatInput('');
 
     try {
-      const result = await sendChatMessage(projectId, conversationId, normalized, accessToken, {
+      const result = await sendChatMessage(projectId, normalized, accessToken, {
+        deep: deepEnabled,
         onDelta: (fullText) => {
           streamedAssistantText = fullText;
           setMessages((previous) =>
@@ -275,26 +537,55 @@ export default function Workspace({
       );
       setChatError((error as Error).message || 'Failed to send message.');
     } finally {
+      setIsChatOutputting(false);
       setChatSubmitting(false);
     }
   };
 
+  const handleOpenFile = useCallback((path: string) => getFileContent(projectId, path, accessToken), [accessToken, projectId]);
+  const handleDownloadProject = useCallback(() => downloadProject(projectId, projectName, accessToken), [accessToken, projectId, projectName]);
+
   const messageItems = useMemo(() => {
-    if (messages.length > 0) {
-      return messages;
+    const normalizedPrompt = initialPrompt.trim();
+    const filteredMessages = generationJobId
+      ? messages.filter((message) => !(message.role === 'assistant' && !message.content.trim()))
+      : messages;
+    const merged = [...filteredMessages];
+
+    const pendingUser = pendingGenerationMessages.find((message) => message.role === 'user');
+    if (pendingUser && !filteredMessages.some((message) => message.role === 'user' && message.content.trim() === pendingUser.content.trim())) {
+      merged.push(pendingUser);
+    }
+
+    const pendingAssistant = pendingGenerationMessages.find((message) => message.role === 'assistant');
+    if (pendingAssistant) {
+      const pendingAssistantContent = pendingAssistant.content.trim();
+      const hasSameAssistant = pendingAssistantContent !== ''
+        && filteredMessages.some((message) => message.role === 'assistant' && message.content.trim() === pendingAssistantContent);
+      if (!hasSameAssistant) {
+        if (pendingAssistantContent !== '' || (!normalizedPrompt && !filteredMessages.some((message) => message.role === 'assistant'))) {
+          merged.push(pendingAssistant);
+        }
+      }
+    }
+
+    if (merged.length > 0) {
+      return sortChatMessages(merged);
+    }
+
+    if (bootstrapLoading || Boolean(generationJobId)) {
+      return [];
     }
 
     return [
       {
         id: 'local_seed_message',
         role: 'assistant' as const,
-        content: initialPrompt
-          ? `I have started generating based on your prompt: ${initialPrompt}`
-          : 'Workspace is ready. Ask me what to build or change next.',
+        content: 'Workspace is ready. Ask me what to build or change next.',
         created_at: new Date().toISOString(),
       },
     ];
-  }, [messages, initialPrompt]);
+  }, [bootstrapLoading, generationJobId, initialPrompt, messages, pendingGenerationMessages]);
 
   return (
     <motion.div
@@ -414,7 +705,12 @@ export default function Workspace({
                 onChange={(event) => setChatInput(event.target.value)}
                 disabled={chatSubmitting || Boolean(bootstrapError)}
               />
-              <div className="flex items-center justify-end">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <DeepToggle
+                  checked={deepEnabled}
+                  onChange={onDeepEnabledChange}
+                  disabled={chatSubmitting || Boolean(bootstrapError)}
+                />
                 <button
                   onClick={sendMessage}
                   disabled={chatSubmitting || !chatInput.trim() || Boolean(bootstrapError)}
@@ -482,22 +778,29 @@ export default function Workspace({
                   <div className="ml-auto uppercase tracking-wide">{previewStatus}</div>
                 </div>
 
-                <div className="h-[calc(100%-40px)] bg-[#0B1120]">
-                  {previewLoading ? (
+                <div className="h-[calc(100%-40px)] bg-[#0B1120] relative">
+                  {previewUrl ? (
+                    <>
+                      <iframe
+                        title="project-preview"
+                        src={previewUrl}
+                        className="w-full h-full border-0 bg-white"
+                        sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                      />
+                      {previewLoading && (
+                        <div className="absolute inset-0 bg-[#0B1120]/45 backdrop-blur-[1px] flex items-center justify-center text-slate-100 gap-2 text-sm pointer-events-none">
+                          <Loader2 size={16} className="animate-spin" /> {t('workspace.previewBooting')}
+                        </div>
+                      )}
+                    </>
+                  ) : previewLoading ? (
                     <div className="h-full flex items-center justify-center text-slate-300 gap-2 text-sm">
-                      <Loader2 size={16} className="animate-spin" /> Booting preview...
+                      <Loader2 size={16} className="animate-spin" /> {t('workspace.previewBooting')}
                     </div>
                   ) : previewError ? (
                     <div className="h-full flex items-center justify-center text-red-300 gap-2 text-sm">
                       <AlertCircle size={14} /> {previewError}
                     </div>
-                  ) : previewUrl ? (
-                    <iframe
-                      title="project-preview"
-                      src={previewUrl}
-                      className="w-full h-full border-0 bg-white"
-                      sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-                    />
                   ) : (
                     <div className="h-full flex items-center justify-center text-slate-500 text-sm">No preview URL available.</div>
                   )}
@@ -509,8 +812,9 @@ export default function Workspace({
                   tree={fileTree}
                   loading={fileLoading}
                   error={fileError}
-                  onOpenFile={(path) => getFileContent(projectId, path, accessToken)}
-                  onDownloadProject={() => downloadProject(projectId, projectName, accessToken)}
+                  refreshSignal={codeRefreshSignal}
+                  onOpenFile={handleOpenFile}
+                  onDownloadProject={handleDownloadProject}
                 />
               </div>
             )}

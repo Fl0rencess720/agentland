@@ -129,6 +129,7 @@ type AttachmentRef struct {
 type GenerationCreateReq struct {
 	Prompt      string          `json:"prompt" binding:"required"`
 	Attachments []AttachmentRef `json:"attachments"`
+	Deep        bool            `json:"deep"`
 }
 
 type GenerationCreateResp struct {
@@ -136,19 +137,8 @@ type GenerationCreateResp struct {
 	Status string `json:"status"`
 }
 
-type ConversationItem struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	UpdatedAt string `json:"updated_at"`
-}
-
-type ConversationListResp struct {
-	Items []ConversationItem `json:"items"`
-}
-
 type ChatMessagesReq struct {
-	ConversationID string `form:"conversation_id" binding:"required"`
-	Cursor         string `form:"cursor"`
+	Cursor string `form:"cursor"`
 }
 
 type ChatMessageItem struct {
@@ -159,15 +149,14 @@ type ChatMessageItem struct {
 }
 
 type ChatMessagesResp struct {
-	ConversationID string            `json:"conversation_id"`
-	Items          []ChatMessageItem `json:"items"`
-	NextCursor     *string           `json:"next_cursor"`
+	Items      []ChatMessageItem `json:"items"`
+	NextCursor *string           `json:"next_cursor"`
 }
 
 type ChatMessageCreateReq struct {
-	ConversationID string          `json:"conversation_id" binding:"required"`
-	Content        string          `json:"content" binding:"required"`
-	Attachments    []AttachmentRef `json:"attachments"`
+	Content     string          `json:"content" binding:"required"`
+	Attachments []AttachmentRef `json:"attachments"`
+	Deep        bool            `json:"deep"`
 }
 
 type ChatMessageStreamDeltaResp struct {
@@ -182,6 +171,44 @@ type FileChange struct {
 type ChatMessageStreamDoneResp struct {
 	MessageID string       `json:"message_id"`
 	Changes   []FileChange `json:"changes"`
+}
+
+type ProjectChatSession struct {
+	ProjectID          string
+	OwnerID            string
+	GatewaySessionID   string
+	AgentChatSessionID string
+	WorkspacePath      string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	LastMessageAt      time.Time
+}
+
+type ProjectChatMessage struct {
+	ID        string
+	ProjectID string
+	OwnerID   string
+	Role      string
+	Content   string
+	CreatedAt time.Time
+}
+
+type UpsertProjectChatSessionInput struct {
+	ProjectID          string
+	OwnerID            string
+	GatewaySessionID   string
+	AgentChatSessionID string
+	WorkspacePath      string
+	Now                time.Time
+}
+
+type CreateProjectChatMessageInput struct {
+	ID        string
+	ProjectID string
+	OwnerID   string
+	Role      string
+	Content   string
+	Now       time.Time
 }
 
 type FileTreeReq struct {

@@ -1,0 +1,9 @@
+apiVersion: agentland.fl0rencess720.app/v1alpha1
+kind: AgentSession
+metadata:
+  name: agentland-agent-session
+  namespace: agentland-sandboxes
+spec:
+  runtimeRef:
+    name: agentland-agent
+    namespace: agentland-sandboxes

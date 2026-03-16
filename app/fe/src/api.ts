@@ -95,19 +95,8 @@ export type ChatMessage = {
 };
 
 export type ChatHistory = {
-  conversation_id: string;
   items: ChatMessage[];
   next_cursor?: string | null;
-};
-
-export type ChatConversation = {
-  id: string;
-  title: string;
-  updated_at?: string;
-};
-
-export type ChatConversationList = {
-  items: ChatConversation[];
 };
 
 export type ChatSendResult = {
@@ -127,6 +116,7 @@ type ChatDoneEvent = ApiEnvelope<{
 
 type SendChatMessageOptions = {
   onDelta?: (fullText: string, deltaText: string) => void;
+  deep?: boolean;
 };
 
 export type FileTreeNode = {
@@ -177,6 +167,89 @@ function normalizeBaseUrl() {
 
 const API_BASE_URL = normalizeBaseUrl();
 
+const ACCESS_TOKEN_KEY = 'access_token';
+const REFRESH_TOKEN_KEY = 'refresh_token';
+const USER_PROFILE_KEY = 'current_user';
+
+let refreshInFlight: Promise<AuthRefreshResult> | null = null;
+
+function readStoredAccessToken() {
+  return localStorage.getItem(ACCESS_TOKEN_KEY) ?? undefined;
+}
+
+function readStoredRefreshToken() {
+  return localStorage.getItem(REFRESH_TOKEN_KEY) ?? undefined;
+}
+
+function resolveAccessToken(accessToken?: string) {
+  return readStoredAccessToken() ?? accessToken;
+}
+
+export function persistAuthSession(input: { accessToken: string; refreshToken: string; user?: UserProfile | null }) {
+  localStorage.setItem(ACCESS_TOKEN_KEY, input.accessToken);
+  localStorage.setItem(REFRESH_TOKEN_KEY, input.refreshToken);
+  if (input.user !== undefined) {
+    if (input.user) {
+      localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(input.user));
+    } else {
+      localStorage.removeItem(USER_PROFILE_KEY);
+    }
+  }
+}
+
+export function clearPersistedAuthSession() {
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  localStorage.removeItem(USER_PROFILE_KEY);
+}
+
+async function refreshAccessTokenIfNeeded(): Promise<AuthRefreshResult> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  const refreshToken = readStoredRefreshToken();
+  if (!refreshToken) {
+    throw new ApiError('unauthorized', 401);
+  }
+
+  refreshInFlight = (async () => {
+    const response = await fetch(buildUrl('/auth/refresh'), {
+      method: 'POST',
+      headers: buildHeaders(undefined, undefined, true),
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    const text = await response.text();
+    let payload: ApiEnvelope<AuthRefreshResult> | null = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text) as ApiEnvelope<AuthRefreshResult>;
+      } catch (error) {
+        throw new ApiError(`Invalid JSON response from /auth/refresh: ${(error as Error).message}`, response.status, text);
+      }
+    }
+
+    if (!response.ok || !payload || payload.code !== 200) {
+      clearPersistedAuthSession();
+      throw new ApiError(payload?.msg ?? `HTTP ${response.status}`, response.status, payload ?? text);
+    }
+
+    persistAuthSession({
+      accessToken: payload.data.access_token,
+      refreshToken: payload.data.refresh_token,
+    });
+
+    return payload.data;
+  })();
+
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   payload?: unknown;
@@ -212,11 +285,13 @@ async function request<T>(
   path: string,
   init: RequestInit = {},
   accessToken?: string,
+  allowRefresh = true,
 ): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
+  const resolvedAccessToken = resolveAccessToken(accessToken);
   const response = await fetch(buildUrl(path), {
     ...init,
-    headers: buildHeaders(init.headers, accessToken, init.body !== undefined && !isFormData),
+    headers: buildHeaders(init.headers, resolvedAccessToken, init.body !== undefined && !isFormData),
   });
 
   const text = await response.text();
@@ -232,6 +307,11 @@ async function request<T>(
         text,
       );
     }
+  }
+
+  if (response.status === 401 && allowRefresh && path !== '/auth/refresh') {
+    await refreshAccessTokenIfNeeded();
+    return request<T>(path, init, resolveAccessToken(), false);
   }
 
   if (!response.ok) {
@@ -351,12 +431,14 @@ export async function createGeneration(
   prompt: string,
   attachments: GenerationAttachment[] = [],
   accessToken?: string,
+  deep = false,
 ): Promise<GenerationJob> {
   return request<GenerationJob>(`/projects/${encodeURIComponent(projectId)}/generations`, {
     method: 'POST',
     body: JSON.stringify({
       prompt,
       attachments,
+      deep,
     }),
   }, accessToken);
 }
@@ -365,21 +447,12 @@ export async function getJob(jobId: string, accessToken?: string): Promise<JobDe
   return request<JobDetail>(`/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' }, accessToken);
 }
 
-export async function getChatConversations(
-  projectId: string,
-  accessToken?: string,
-): Promise<ChatConversationList> {
-  return request<ChatConversationList>(`/projects/${encodeURIComponent(projectId)}/chat/conversations`, { method: 'GET' }, accessToken);
-}
-
 export async function getChatMessages(
   projectId: string,
-  conversationId: string,
   cursor = '',
   accessToken?: string,
 ): Promise<ChatHistory> {
   const params = new URLSearchParams({
-    conversation_id: conversationId,
     cursor,
   });
   return request<ChatHistory>(
@@ -391,10 +464,10 @@ export async function getChatMessages(
 
 export async function sendChatMessage(
   projectId: string,
-  conversationId: string,
   content: string,
   accessToken?: string,
   options: SendChatMessageOptions = {},
+  allowRefresh = true,
 ): Promise<ChatSendResult> {
   const response = await fetch(buildUrl(`/projects/${encodeURIComponent(projectId)}/chat/messages`), {
     method: 'POST',
@@ -402,15 +475,20 @@ export async function sendChatMessage(
       {
         Accept: 'text/event-stream',
       },
-      accessToken,
+      resolveAccessToken(accessToken),
       true,
     ),
     body: JSON.stringify({
-      conversation_id: conversationId,
       content,
       attachments: [],
+      deep: options.deep ?? false,
     }),
   });
+
+  if (response.status === 401 && allowRefresh) {
+    await refreshAccessTokenIfNeeded();
+    return sendChatMessage(projectId, content, resolveAccessToken(), options, false);
+  }
 
   if (!response.ok) {
     const text = await response.text();

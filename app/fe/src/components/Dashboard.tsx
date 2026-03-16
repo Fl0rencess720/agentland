@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import LanguageSwitcher from './LanguageSwitcher';
+import DeepToggle from './DeepToggle';
 import UserMenu from './UserMenu';
 import type { FileUploadResult, GenerationAttachment, UserProfile } from '../api';
 
@@ -21,6 +22,8 @@ type DashboardProps = {
   onGenerate: (prompt: string, attachments: GenerationAttachment[]) => Promise<void> | void;
   onProjects: () => void;
   onUploadImage: (file: File) => Promise<FileUploadResult>;
+  deepEnabled: boolean;
+  onDeepEnabledChange: (next: boolean) => void;
   isGenerating: boolean;
   generationError: string | null;
   currentUser: UserProfile | null;
@@ -37,6 +40,8 @@ export default function Dashboard({
   onGenerate,
   onProjects,
   onUploadImage,
+  deepEnabled,
+  onDeepEnabledChange,
   isGenerating,
   generationError,
   currentUser,
@@ -172,21 +177,28 @@ export default function Dashboard({
             </div>
           )}
 
-          <div className="flex items-center justify-between pt-2 border-t border-slate-800/50">
-            <div className="flex items-center gap-4 text-slate-500">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleImageChange}
-                className="hidden"
+          <div className="flex flex-col gap-4 pt-2 border-t border-slate-800/50 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center">
+              <div className="flex items-center gap-4 text-slate-500">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  className="hidden"
+                />
+                <button onClick={handlePickImage} className="hover:text-slate-300 transition-colors" title="Upload image attachment">
+                  {uploading ? <Loader2 size={18} className="animate-spin" /> : <ImagePlus size={18} />}
+                </button>
+                <button className="hover:text-slate-300 transition-colors">
+                  <Settings size={18} />
+                </button>
+              </div>
+              <DeepToggle
+                checked={deepEnabled}
+                onChange={onDeepEnabledChange}
+                disabled={isGenerating || uploading}
               />
-              <button onClick={handlePickImage} className="hover:text-slate-300 transition-colors" title="Upload image attachment">
-                {uploading ? <Loader2 size={18} className="animate-spin" /> : <ImagePlus size={18} />}
-              </button>
-              <button className="hover:text-slate-300 transition-colors">
-                <Settings size={18} />
-              </button>
             </div>
             <button
               onClick={handleGenerateClick}

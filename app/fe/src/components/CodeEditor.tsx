@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import Editor from '@monaco-editor/react';
 import {
@@ -30,8 +30,14 @@ type CodeEditorProps = {
   tree: FileTreeNode[];
   loading: boolean;
   error: string | null;
+  refreshSignal?: number;
   onOpenFile: (path: string) => Promise<FileContentResult>;
   onDownloadProject: () => Promise<FileDownloadResult>;
+};
+
+type TreeIndex = {
+  paths: Set<string>;
+  folderPaths: Set<string>;
 };
 
 function filename(path: string) {
@@ -65,7 +71,34 @@ function getDefaultExpanded(nodes: FileTreeNode[]) {
   return new Set(paths);
 }
 
-export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloadProject }: CodeEditorProps) {
+function buildTreeIndex(nodes: FileTreeNode[]): TreeIndex {
+  const paths = new Set<string>();
+  const folderPaths = new Set<string>();
+
+  const walk = (items: FileTreeNode[]) => {
+    items.forEach((node) => {
+      paths.add(node.path);
+      if (node.type === 'folder') {
+        folderPaths.add(node.path);
+        if (node.children) {
+          walk(node.children);
+        }
+      }
+    });
+  };
+
+  walk(nodes);
+  return { paths, folderPaths };
+}
+
+const CodeEditor = memo(function CodeEditor({
+  tree,
+  loading,
+  error,
+  refreshSignal = 0,
+  onOpenFile,
+  onDownloadProject,
+}: CodeEditorProps) {
   const { t } = useI18n();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [openFiles, setOpenFiles] = useState<OpenFileTab[]>([]);
@@ -76,16 +109,143 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
     error: null,
   });
 
+  const treeIndex = useMemo(() => buildTreeIndex(tree), [tree]);
+
   useEffect(() => {
-    setExpandedFolders(getDefaultExpanded(tree));
-    setOpenFiles([]);
-    setActiveFilePath('');
-  }, [tree]);
+    const defaultExpanded = getDefaultExpanded(tree);
+
+    setExpandedFolders((previous) => {
+      const next = new Set<string>();
+      previous.forEach((path) => {
+        if (treeIndex.folderPaths.has(path)) {
+          next.add(path);
+        }
+      });
+      defaultExpanded.forEach((path) => {
+        if (treeIndex.folderPaths.has(path)) {
+          next.add(path);
+        }
+      });
+      return next;
+    });
+
+    setOpenFiles((previous) => previous.filter((file) => treeIndex.paths.has(file.path)));
+  }, [tree, treeIndex]);
+
+  useEffect(() => {
+    setActiveFilePath((previous) => {
+      if (previous && openFiles.some((file) => file.path === previous)) {
+        return previous;
+      }
+      return openFiles.length ? openFiles[openFiles.length - 1].path : '';
+    });
+  }, [openFiles]);
 
   const activeFile = useMemo(
     () => openFiles.find((file) => file.path === activeFilePath),
     [openFiles, activeFilePath],
   );
+
+  const loadFile = useCallback(async (
+    path: string,
+    options?: {
+      activate?: boolean;
+      forceReload?: boolean;
+      silent?: boolean;
+    },
+  ) => {
+    const activate = options?.activate ?? true;
+    const forceReload = options?.forceReload ?? false;
+    const silent = options?.silent ?? false;
+    const name = filename(path);
+    let shouldFetch = forceReload;
+
+    if (activate) {
+      setActiveFilePath(path);
+    }
+
+    setOpenFiles((previous) => {
+      const existing = previous.find((file) => file.path === path);
+
+      if (!existing) {
+        shouldFetch = true;
+        return [
+          ...previous,
+          {
+            path,
+            name,
+            loading: !silent,
+            error: undefined,
+          },
+        ];
+      }
+
+      if (!forceReload && !existing.loading && (existing.content !== undefined || existing.error)) {
+        return previous;
+      }
+
+      shouldFetch = true;
+      return previous.map((file) => {
+        if (file.path !== path) return file;
+        return {
+          ...file,
+          loading: silent ? file.loading : true,
+          error: undefined,
+        };
+      });
+    });
+
+    if (!shouldFetch) {
+      return;
+    }
+
+    try {
+      const content = await onOpenFile(path);
+      setOpenFiles((previous) => {
+        const existing = previous.find((file) => file.path === path);
+        const nextFile: OpenFileTab = {
+          path,
+          name: existing?.name || name,
+          loading: false,
+          error: undefined,
+          language: content.language ?? guessLanguage(path),
+          content: content.content,
+        };
+
+        if (!existing) {
+          return [...previous, nextFile];
+        }
+
+        return previous.map((file) => (file.path === path ? nextFile : file));
+      });
+    } catch (openError) {
+      const message = (openError as Error).message;
+      setOpenFiles((previous) =>
+        previous.map((file) => {
+          if (file.path !== path) return file;
+          if (silent && file.content !== undefined) {
+            return {
+              ...file,
+              loading: false,
+            };
+          }
+          return {
+            ...file,
+            loading: false,
+            error: message,
+          };
+        }),
+      );
+    }
+  }, [onOpenFile]);
+
+  useEffect(() => {
+    if (!refreshSignal || !activeFilePath) {
+      return;
+    }
+
+    void loadFile(activeFilePath, { activate: false, forceReload: true, silent: true });
+  }, [activeFilePath, loadFile, refreshSignal]);
 
   const toggleFolder = (path: string) => {
     setExpandedFolders((previous) => {
@@ -104,59 +264,12 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
       return;
     }
 
-    setActiveFilePath(node.path);
-
-    const existing = openFiles.find((file) => file.path === node.path);
-    if (!existing) {
-      setOpenFiles((previous) => [
-        ...previous,
-        {
-          path: node.path,
-          name: node.name || filename(node.path),
-          loading: true,
-        },
-      ]);
-    } else if (!existing.loading && (existing.content || existing.error)) {
-      return;
-    }
-
-    try {
-      const content = await onOpenFile(node.path);
-      setOpenFiles((previous) =>
-        previous.map((file) => {
-          if (file.path !== node.path) return file;
-          return {
-            ...file,
-            loading: false,
-            error: undefined,
-            language: content.language ?? guessLanguage(node.path),
-            content: content.content,
-          };
-        }),
-      );
-    } catch (openError) {
-      setOpenFiles((previous) =>
-        previous.map((file) => {
-          if (file.path !== node.path) return file;
-          return {
-            ...file,
-            loading: false,
-            error: (openError as Error).message,
-          };
-        }),
-      );
-    }
+    await loadFile(node.path, { activate: true, forceReload: false, silent: false });
   };
 
   const closeFile = (event: React.MouseEvent, path: string) => {
     event.stopPropagation();
-    setOpenFiles((previous) => {
-      const next = previous.filter((file) => file.path !== path);
-      if (activeFilePath === path) {
-        setActiveFilePath(next.length ? next[next.length - 1].path : '');
-      }
-      return next;
-    });
+    setOpenFiles((previous) => previous.filter((file) => file.path !== path));
   };
 
   const downloadProjectArchive = async () => {
@@ -169,8 +282,8 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
       const result = await onDownloadProject();
       const fileName = result.file_name || 'project.zip';
       setDownloadState({ loading: false, message: t('editor.downloaded', { fileName }), error: null });
-    } catch (error) {
-      setDownloadState({ loading: false, message: null, error: (error as Error).message });
+    } catch (downloadError) {
+      setDownloadState({ loading: false, message: null, error: (downloadError as Error).message });
     }
   };
 
@@ -206,7 +319,7 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
           className={`flex items-center gap-1.5 py-1 px-2 cursor-pointer text-sm select-none
             ${isActive ? 'bg-[#37373d] text-white' : 'hover:bg-[#2a2d2e] text-[#cccccc]'}`}
           style={{ paddingLeft: `${depth * 12 + 28}px` }}
-          onClick={() => openFile(node)}
+          onClick={() => void openFile(node)}
         >
           {node.name.endsWith('.json') ? (
             <FileJson size={14} className="text-yellow-400" />
@@ -230,7 +343,7 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
         <div className="flex-1 overflow-y-auto py-2">
           {loading ? (
             <div className="h-full flex items-center justify-center text-slate-400 gap-2 text-sm">
-              <Loader2 size={16} className="animate-spin" /> Loading files...
+              <Loader2 size={16} className="animate-spin" /> {t('editor.loadingFiles')}
             </div>
           ) : error ? (
             <div className="h-full px-3 flex items-center justify-center text-red-300 gap-2 text-sm">
@@ -247,35 +360,37 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center justify-between gap-3 bg-[#252526] border-b border-[#2b2b2b]">
           <div className="flex overflow-x-auto scrollbar-hide flex-1 min-w-0">
-          {openFiles.map((file) => (
-            <div
-              key={file.path}
-              onClick={() => setActiveFilePath(file.path)}
-              className={`flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[260px] cursor-pointer border-r border-[#2b2b2b] group select-none
-                ${
-                  activeFilePath === file.path
-                    ? 'bg-[#1e1e1e] text-white border-t border-t-blue-500'
-                    : 'bg-[#2d2d2d] text-[#969696] hover:bg-[#2b2b2b]'
-                }`}
-            >
-              {file.name.endsWith('.json') ? (
-                <FileJson size={14} className="text-yellow-400 shrink-0" />
-              ) : file.name.endsWith('.tsx') || file.name.endsWith('.ts') ? (
-                <FileCode2 size={14} className="text-blue-400 shrink-0" />
-              ) : (
-                <File size={14} className="text-slate-400 shrink-0" />
-              )}
-              <span className="text-sm truncate flex-1">{file.name}</span>
-              <button
-                onClick={(event) => closeFile(event, file.path)}
-                className={`p-0.5 rounded-md hover:bg-[#333333] ${
-                  activeFilePath === file.path ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                }`}
+            {openFiles.map((file) => (
+              <div
+                key={file.path}
+                onClick={() => {
+                  void loadFile(file.path, { activate: true, forceReload: true, silent: true });
+                }}
+                className={`flex items-center gap-2 px-3 py-2 min-w-[140px] max-w-[260px] cursor-pointer border-r border-[#2b2b2b] group select-none
+                  ${
+                    activeFilePath === file.path
+                      ? 'bg-[#1e1e1e] text-white border-t border-t-blue-500'
+                      : 'bg-[#2d2d2d] text-[#969696] hover:bg-[#2b2b2b]'
+                  }`}
               >
-                <X size={14} />
-              </button>
-            </div>
-          ))}
+                {file.name.endsWith('.json') ? (
+                  <FileJson size={14} className="text-yellow-400 shrink-0" />
+                ) : file.name.endsWith('.tsx') || file.name.endsWith('.ts') ? (
+                  <FileCode2 size={14} className="text-blue-400 shrink-0" />
+                ) : (
+                  <File size={14} className="text-slate-400 shrink-0" />
+                )}
+                <span className="text-sm truncate flex-1">{file.name}</span>
+                <button
+                  onClick={(event) => closeFile(event, file.path)}
+                  className={`p-0.5 rounded-md hover:bg-[#333333] ${
+                    activeFilePath === file.path ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                  }`}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
           </div>
 
           <div className="shrink-0 px-3">
@@ -298,7 +413,7 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
           )}
           {!activeFile ? (
             <div className="flex items-center justify-center h-full text-[#cccccc] text-lg">{t('editor.empty')}</div>
-          ) : activeFile.loading ? (
+          ) : activeFile.loading && activeFile.content === undefined ? (
             <div className="flex items-center justify-center h-full text-slate-300 text-sm gap-2">
               <Loader2 size={16} className="animate-spin" /> Loading {activeFile.name}...
             </div>
@@ -326,4 +441,6 @@ export default function CodeEditor({ tree, loading, error, onOpenFile, onDownloa
       </div>
     </div>
   );
-}
+});
+
+export default CodeEditor;

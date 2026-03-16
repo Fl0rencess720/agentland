@@ -15,10 +15,8 @@ import {
   createGeneration,
   createProject,
   getCurrentUser,
-  getJob,
   logout,
   refreshAuthToken,
-  sleep,
   startGithubAuth,
   uploadImageAttachment,
   type GenerationAttachment,
@@ -32,6 +30,7 @@ type ActiveProject = {
   name: string;
   prompt: string;
   viewMode: 'preview' | 'code';
+  generationJobId?: string;
 };
 
 type AuthBootstrapState = {
@@ -40,11 +39,10 @@ type AuthBootstrapState = {
   user: UserProfile;
 };
 
-const JOB_POLL_INTERVAL_MS = 1500;
-const JOB_POLL_MAX_ATTEMPTS = 40;
 const ACCESS_TOKEN_KEY = 'access_token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const USER_PROFILE_KEY = 'current_user';
+const DEEP_ENABLED_KEY = 'deep_enabled';
 const AUTH_CALLBACK_PATH = '/auth/github/callback';
 
 let pendingOAuthBootstrap: Promise<AuthBootstrapState> | null = null;
@@ -75,6 +73,13 @@ function readStoredUser(): UserProfile | null {
   }
 }
 
+function readStoredDeepEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return window.localStorage.getItem(DEEP_ENABLED_KEY) === 'true';
+}
+
 async function bootstrapOAuthSession(code: string, state: string): Promise<AuthBootstrapState> {
   const callback = await completeGithubAuth(code, state);
   const user = await getCurrentUser(callback.access_token);
@@ -94,6 +99,7 @@ function AppContent() {
   const [refreshToken, setRefreshToken] = useState<string | undefined>(undefined);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [activeProject, setActiveProject] = useState<ActiveProject | null>(null);
+  const [deepEnabled, setDeepEnabled] = useState<boolean>(readStoredDeepEnabled);
 
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isRestoringSession, setIsRestoringSession] = useState(true);
@@ -101,6 +107,10 @@ function AppContent() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(DEEP_ENABLED_KEY, deepEnabled ? 'true' : 'false');
+  }, [deepEnabled]);
 
   useEffect(() => {
     let canceled = false;
@@ -264,23 +274,6 @@ function AppContent() {
     };
   }, []);
 
-  const waitForGeneration = async (jobId: string, token?: string) => {
-    for (let attempt = 0; attempt < JOB_POLL_MAX_ATTEMPTS; attempt += 1) {
-      const job = await getJob(jobId, token);
-
-      if (job.status === 'SUCCESS') {
-        return job;
-      }
-
-      if (job.status === 'FAILED' || job.status === 'CANCELED') {
-        throw new Error(`Generation ${job.status.toLowerCase()}`);
-      }
-
-      await sleep(JOB_POLL_INTERVAL_MS);
-    }
-
-    throw new Error('Generation timeout');
-  };
 
   const handleGenerate = async (prompt: string, attachments: GenerationAttachment[] = []) => {
     const normalizedPrompt = prompt.trim();
@@ -300,14 +293,14 @@ function AppContent() {
         accessToken,
       );
 
-      const generation = await createGeneration(project.id, normalizedPrompt, attachments, accessToken);
-      await waitForGeneration(generation.job_id, accessToken);
+      const generation = await createGeneration(project.id, normalizedPrompt, attachments, accessToken, deepEnabled);
 
       setActiveProject({
         id: project.id,
         name: project.name,
         prompt: normalizedPrompt,
         viewMode: 'preview',
+        generationJobId: generation.job_id,
       });
       setCurrentPage('workspace');
     } catch (error) {
@@ -365,6 +358,7 @@ function AppContent() {
       name: project.name,
       prompt: '',
       viewMode: project.viewMode ?? 'preview',
+      generationJobId: undefined,
     });
     setCurrentPage('workspace');
   };
@@ -386,6 +380,8 @@ function AppContent() {
             onGenerate={handleGenerate}
             onProjects={() => setCurrentPage('projects')}
             onUploadImage={handleUploadImage}
+            deepEnabled={deepEnabled}
+            onDeepEnabledChange={setDeepEnabled}
             isGenerating={isGenerating}
             generationError={generationError}
             currentUser={currentUser}
@@ -401,7 +397,10 @@ function AppContent() {
             projectName={activeProject.name}
             initialPrompt={activeProject.prompt}
             initialViewMode={activeProject.viewMode}
+            generationJobId={activeProject.generationJobId}
             accessToken={accessToken}
+            deepEnabled={deepEnabled}
+            onDeepEnabledChange={setDeepEnabled}
             currentUser={currentUser}
           />
         )}

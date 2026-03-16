@@ -4,6 +4,7 @@ import (
 	"github.com/Fl0rencess720/agentland/app/be/internal/biz"
 	"github.com/Fl0rencess720/agentland/app/be/internal/models"
 	"github.com/Fl0rencess720/agentland/app/be/internal/pkgs/response"
+	"github.com/Fl0rencess720/agentland/app/be/internal/service/middlewares"
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,8 +17,17 @@ func NewJobHandler(jobUseCase biz.JobUseCase) *JobHandler {
 }
 
 func (h *JobHandler) Detail(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
+	resp, apiErr := h.jobUseCase.Detail(c.Request.Context(), principalFromContext(c), c.Param("job_id"))
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.SuccessResponse(c, resp)
+}
 
-	response.SuccessResponse(c, models.JobStatusResp{JobID: c.Param("job_id")})
+func principalFromContext(c *gin.Context) models.AuthPrincipal {
+	return models.AuthPrincipal{
+		UserID:    c.GetString(string(middlewares.UserIDKey)),
+		SessionID: c.GetString(string(middlewares.SessionIDKey)),
+	}
 }

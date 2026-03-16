@@ -94,125 +94,140 @@ func (h *ProjectHandler) Usage(c *gin.Context) {
 }
 
 func (h *ProjectHandler) CreateGeneration(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
 	req := models.GenerationCreateReq{}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		zap.L().Error("request bind error", zap.Error(err))
-		response.ErrorResponse(c, http.StatusBadRequest, "invalid_argument", gin.H{"type": "VALIDATION_ERROR"})
+		response.WriteAPIError(c, response.ValidationError(err))
 		return
 	}
-
-	response.MessageResponse(c, "accepted", models.GenerationCreateResp{})
-}
-
-func (h *ProjectHandler) ListConversations(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
-	response.SuccessResponse(c, models.ConversationListResp{})
+	resp, apiErr := h.projectUseCase.CreateGeneration(c.Request.Context(), principalFromContext(c), c.Param("project_id"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.MessageResponse(c, "accepted", resp)
 }
 
 func (h *ProjectHandler) ListMessages(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
 	req := models.ChatMessagesReq{}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		zap.L().Error("request bind error", zap.Error(err))
-		response.ErrorResponse(c, http.StatusBadRequest, "invalid_argument", gin.H{"type": "VALIDATION_ERROR"})
+		response.WriteAPIError(c, response.ValidationError(err))
 		return
 	}
-
-	response.SuccessResponse(c, models.ChatMessagesResp{ConversationID: req.ConversationID})
+	resp, apiErr := h.projectUseCase.ListMessages(c.Request.Context(), principalFromContext(c), c.Param("project_id"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.SuccessResponse(c, resp)
 }
 
 func (h *ProjectHandler) CreateMessage(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
 	req := models.ChatMessageCreateReq{}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		zap.L().Error("request bind error", zap.Error(err))
-		response.ErrorResponse(c, http.StatusBadRequest, "invalid_argument", gin.H{"type": "VALIDATION_ERROR"})
+		response.WriteAPIError(c, response.ValidationError(err))
 		return
 	}
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
 
-	body, err := json.Marshal(response.Body{
-		Msg:  "done",
-		Code: 200,
-		Data: models.ChatMessageStreamDoneResp{},
+	writeEvent := func(msg string, data any) error {
+		body, err := json.Marshal(response.Body{Msg: msg, Code: http.StatusOK, Data: data})
+		if err != nil {
+			return err
+		}
+		if _, err = fmt.Fprintf(c.Writer, "data: %s\n\n", body); err != nil {
+			return err
+		}
+		c.Writer.Flush()
+		return nil
+	}
+
+	resp, err := h.projectUseCase.CreateMessage(c.Request.Context(), principalFromContext(c), c.Param("project_id"), &req, func(delta string) error {
+		return writeEvent("delta", models.ChatMessageStreamDeltaResp{Text: delta})
 	})
 	if err != nil {
-		zap.L().Error("marshal stream response error", zap.Error(err))
+		zap.L().Error("create project chat message failed", zap.Error(err), zap.String("project_id", c.Param("project_id")))
+		if streamErr := writeEvent("error", gin.H{"message": err.Error()}); streamErr != nil {
+			zap.L().Error("write project chat error event failed", zap.Error(streamErr), zap.String("project_id", c.Param("project_id")))
+		}
 		return
 	}
 
-	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", body)
-	c.Writer.Flush()
+	if err := writeEvent("done", resp); err != nil {
+		zap.L().Error("write project chat done event failed", zap.Error(err), zap.String("project_id", c.Param("project_id")))
+	}
 }
 
 func (h *ProjectHandler) FileTree(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
 	req := models.FileTreeReq{}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		zap.L().Error("request bind error", zap.Error(err))
-		response.ErrorResponse(c, http.StatusBadRequest, "invalid_argument", gin.H{"type": "VALIDATION_ERROR"})
+		response.WriteAPIError(c, response.ValidationError(err))
 		return
 	}
-
-	response.SuccessResponse(c, models.FileTreeResp{Root: req.Path})
+	resp, apiErr := h.projectUseCase.FileTree(c.Request.Context(), principalFromContext(c), c.Param("project_id"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.SuccessResponse(c, resp)
 }
 
 func (h *ProjectHandler) FileContent(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
 	req := models.FileContentReq{}
 	if err := c.ShouldBindQuery(&req); err != nil {
 		zap.L().Error("request bind error", zap.Error(err))
-		response.ErrorResponse(c, http.StatusBadRequest, "invalid_argument", gin.H{"type": "VALIDATION_ERROR"})
+		response.WriteAPIError(c, response.ValidationError(err))
 		return
 	}
-
-	response.SuccessResponse(c, models.FileContentResp{Path: req.Path})
+	resp, apiErr := h.projectUseCase.FileContent(c.Request.Context(), principalFromContext(c), c.Param("project_id"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.SuccessResponse(c, resp)
 }
 
 func (h *ProjectHandler) Download(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
-	c.Header("Content-Type", "application/zip")
-	c.Header("Content-Disposition", "attachment; filename=\"project.zip\"")
-	c.Status(http.StatusOK)
+	archive, apiErr := h.projectUseCase.Download(c.Request.Context(), principalFromContext(c), c.Param("project_id"))
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	c.Header("Content-Type", archive.ContentType)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", archive.FileName))
+	c.Data(http.StatusOK, archive.ContentType, archive.Content)
 }
 
 func (h *ProjectHandler) StartPreview(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
 	req := models.PreviewStartReq{}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		zap.L().Error("request bind error", zap.Error(err))
-		response.ErrorResponse(c, http.StatusBadRequest, "invalid_argument", gin.H{"type": "VALIDATION_ERROR"})
+		response.WriteAPIError(c, response.ValidationError(err))
 		return
 	}
-
-	response.MessageResponse(c, "preview_started", models.PreviewStartResp{})
+	resp, apiErr := h.projectUseCase.StartPreview(c.Request.Context(), principalFromContext(c), c.Param("project_id"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.MessageResponse(c, "preview_started", resp)
 }
 
 func (h *ProjectHandler) PreviewStatus(c *gin.Context) {
-	ctx := c.Request.Context()
-	_ = ctx
-
-	response.SuccessResponse(c, models.PreviewStatusResp{})
+	resp, apiErr := h.projectUseCase.PreviewStatus(c.Request.Context(), principalFromContext(c), c.Param("project_id"))
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.SuccessResponse(c, resp)
 }
 
 func (h *ProjectHandler) Publish(c *gin.Context) {

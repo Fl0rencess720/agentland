@@ -30,7 +30,6 @@ export default function Login({ onLogin, isAuthenticating, authError }: LoginPro
           <span className="text-xl font-bold tracking-tight">Agentland</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-slate-400">{t('login.authType')}</span>
           <LanguageSwitcher />
         </div>
       </header>

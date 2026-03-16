@@ -192,6 +192,24 @@ returning id, owner_id, name, template, status, thumbnail_url, metadata, last_op
 	return project, nil
 }
 
+func (r *projectRepo) UpdateProjectStatus(ctx context.Context, ownerID, projectID, status string, now time.Time) error {
+	pool, err := r.ensurePool(ctx)
+	if err != nil {
+		return err
+	}
+	if err = r.ensureSchema(ctx); err != nil {
+		return err
+	}
+	result, err := pool.Exec(ctx, `update projects set status = $3, updated_at = $4 where id = $1 and owner_id = $2 and deleted_at is null`, projectID, ownerID, status, now)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return autherr.ErrProjectNotFound
+	}
+	return nil
+}
+
 func (r *projectRepo) SoftDeleteProject(ctx context.Context, ownerID, projectID string, now time.Time) error {
 	pool, err := r.ensurePool(ctx)
 	if err != nil {
@@ -240,6 +258,138 @@ func (r *projectRepo) GetUserPlan(ctx context.Context, userID string) (string, e
 	return plan, nil
 }
 
+func (r *projectRepo) GetProjectChatSession(ctx context.Context, ownerID, projectID string) (*models.ProjectChatSession, error) {
+	pool, err := r.ensurePool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.ensureSchema(ctx); err != nil {
+		return nil, err
+	}
+	query := `select project_id, owner_id, gateway_session_id, agent_chat_session_id, workspace_path, created_at, updated_at, last_message_at
+from project_chat_sessions
+where project_id = $1 and owner_id = $2`
+	session, err := r.scanProjectChatSession(pool.QueryRow(ctx, query, projectID, ownerID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return session, nil
+}
+
+func (r *projectRepo) UpsertProjectChatSession(ctx context.Context, input *models.UpsertProjectChatSessionInput) (*models.ProjectChatSession, error) {
+	pool, err := r.ensurePool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.ensureSchema(ctx); err != nil {
+		return nil, err
+	}
+	query := `insert into project_chat_sessions (project_id, owner_id, gateway_session_id, agent_chat_session_id, workspace_path, created_at, updated_at, last_message_at)
+values ($1,$2,$3,$4,$5,$6,$6,$6)
+on conflict (project_id) do update set
+	owner_id = excluded.owner_id,
+	gateway_session_id = excluded.gateway_session_id,
+	agent_chat_session_id = excluded.agent_chat_session_id,
+	workspace_path = excluded.workspace_path,
+	updated_at = excluded.updated_at,
+	last_message_at = excluded.last_message_at
+returning project_id, owner_id, gateway_session_id, agent_chat_session_id, workspace_path, created_at, updated_at, last_message_at`
+	return r.scanProjectChatSession(pool.QueryRow(ctx, query, input.ProjectID, input.OwnerID, input.GatewaySessionID, input.AgentChatSessionID, input.WorkspacePath, input.Now))
+}
+
+func (r *projectRepo) ListProjectChatMessages(ctx context.Context, ownerID, projectID, cursor string, limit int) ([]*models.ProjectChatMessage, *string, error) {
+	pool, err := r.ensurePool(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err = r.ensureSchema(ctx); err != nil {
+		return nil, nil, err
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	query := `select id, project_id, owner_id, role, content, created_at
+from project_chat_messages
+where project_id = $1 and owner_id = $2
+order by
+	created_at asc,
+	case role
+		when 'user' then 1
+		when 'assistant' then 2
+		else 3
+	end asc,
+	id asc
+limit $3`
+	rows, err := pool.Query(ctx, query, projectID, ownerID, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	messages := make([]*models.ProjectChatMessage, 0)
+	for rows.Next() {
+		message, scanErr := r.scanProjectChatMessage(rows)
+		if scanErr != nil {
+			return nil, nil, scanErr
+		}
+		messages = append(messages, message)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	_ = cursor
+	return messages, nil, nil
+}
+
+func (r *projectRepo) UpdateProjectChatMessageContent(ctx context.Context, ownerID, projectID, messageID, content string) error {
+	pool, err := r.ensurePool(ctx)
+	if err != nil {
+		return err
+	}
+	if err = r.ensureSchema(ctx); err != nil {
+		return err
+	}
+	result, err := pool.Exec(ctx, `update project_chat_messages set content = $4 where id = $1 and project_id = $2 and owner_id = $3`, messageID, projectID, ownerID, content)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return autherr.ErrProjectNotFound
+	}
+	return nil
+}
+
+func (r *projectRepo) CreateProjectChatMessage(ctx context.Context, input *models.CreateProjectChatMessageInput) (*models.ProjectChatMessage, error) {
+	pool, err := r.ensurePool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.ensureSchema(ctx); err != nil {
+		return nil, err
+	}
+	// pgx QueryRow cannot safely consume multi-statements here, so use a transaction.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	message, err := r.scanProjectChatMessage(tx.QueryRow(ctx, `insert into project_chat_messages (id, project_id, owner_id, role, content, created_at)
+values ($1,$2,$3,$4,$5,$6)
+returning id, project_id, owner_id, role, content, created_at`, input.ID, input.ProjectID, input.OwnerID, input.Role, input.Content, input.Now))
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(ctx, `update project_chat_sessions set updated_at = $3, last_message_at = $3 where project_id = $1 and owner_id = $2`, input.ProjectID, input.OwnerID, input.Now); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
 func (r *projectRepo) ensurePool(ctx context.Context) (*pgxpool.Pool, error) {
 	r.poolOnce.Do(func() {
 		dsn := strings.TrimSpace(viper.GetString("database.url"))
@@ -277,6 +427,26 @@ func (r *projectRepo) ensureSchema(ctx context.Context) error {
 			`create index if not exists idx_projects_owner_deleted_last_opened on projects (owner_id, deleted_at, last_opened_at desc)`,
 			`create index if not exists idx_projects_owner_deleted_status on projects (owner_id, deleted_at, status)`,
 			`create index if not exists idx_projects_owner_name_search on projects (owner_id, lower(name)) where deleted_at is null`,
+			`create table if not exists project_chat_sessions (
+				project_id text primary key references projects(id),
+				owner_id text not null references users(id),
+				gateway_session_id text not null,
+				agent_chat_session_id text not null,
+				workspace_path text not null,
+				created_at timestamptz not null,
+				updated_at timestamptz not null,
+				last_message_at timestamptz not null
+			)`,
+			`create index if not exists idx_project_chat_sessions_owner_updated on project_chat_sessions (owner_id, updated_at desc)`,
+			`create table if not exists project_chat_messages (
+				id text primary key,
+				project_id text not null references projects(id),
+				owner_id text not null references users(id),
+				role text not null,
+				content text not null,
+				created_at timestamptz not null
+			)`,
+			`create index if not exists idx_project_chat_messages_project_created on project_chat_messages (project_id, created_at asc)`,
 		}
 		for _, stmt := range statements {
 			if _, err = pool.Exec(ctx, stmt); err != nil {
@@ -328,4 +498,28 @@ func mustMarshalProjectMetadata(metadata models.ProjectMetadata) []byte {
 		return []byte("{}")
 	}
 	return payload
+}
+
+type projectChatSessionScanner interface {
+	Scan(dest ...any) error
+}
+
+func (r *projectRepo) scanProjectChatSession(scanner projectChatSessionScanner) (*models.ProjectChatSession, error) {
+	var session models.ProjectChatSession
+	if err := scanner.Scan(&session.ProjectID, &session.OwnerID, &session.GatewaySessionID, &session.AgentChatSessionID, &session.WorkspacePath, &session.CreatedAt, &session.UpdatedAt, &session.LastMessageAt); err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+type projectChatMessageScanner interface {
+	Scan(dest ...any) error
+}
+
+func (r *projectRepo) scanProjectChatMessage(scanner projectChatMessageScanner) (*models.ProjectChatMessage, error) {
+	var message models.ProjectChatMessage
+	if err := scanner.Scan(&message.ID, &message.ProjectID, &message.OwnerID, &message.Role, &message.Content, &message.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &message, nil
 }

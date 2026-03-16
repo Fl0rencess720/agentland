@@ -389,10 +389,10 @@ Authorization: Bearer <access_token>
 
 ## 5. Chat Agent（Workspace 左侧）
 
-### 5.1 获取会话列表
+### 5.1 获取消息历史
 
-- URL: `GET /api/v1/projects/{project_id}/chat/conversations`
-- 功能说明: 支持多会话切换（可扩展）。
+- URL: `GET /api/v1/projects/{project_id}/chat/messages?cursor=`
+- 功能说明: 每个项目固定只有一个聊天会话，页面初始化时拉取该项目的消息历史，支持翻页。
 - 请求体: `无`
 - 响应体:
 
@@ -401,30 +401,6 @@ Authorization: Bearer <access_token>
   "msg": "ok",
   "code": 200,
   "data": {
-    "items": [
-      {
-        "id": "c_default",
-        "title": "Default conversation",
-        "updated_at": "2026-03-11T09:40:00Z"
-      }
-    ]
-  }
-}
-```
-
-### 5.2 获取消息历史
-
-- URL: `GET /api/v1/projects/{project_id}/chat/messages?conversation_id=c_default&cursor=`
-- 功能说明: 渲染聊天记录，支持翻页。
-- 请求体: `无`
-- 响应体:
-
-```json
-{
-  "msg": "ok",
-  "code": 200,
-  "data": {
-    "conversation_id": "c_default",
     "items": [
       {
         "id": "m_1",
@@ -438,15 +414,14 @@ Authorization: Bearer <access_token>
 }
 ```
 
-### 5.4 发送消息（流式）
+### 5.2 发送消息（流式）
 
 - URL: `POST /api/v1/projects/{project_id}/chat/messages`
-- 功能说明: 实时打字机输出，适配长回复与代码生成。
+- 功能说明: 每个项目固定只有一个聊天会话。前端发送消息后，服务端以 SSE 形式实时返回内容。
 - 请求体:
 
 ```json
 {
-  "conversation_id": "c_default",
   "content": "Refactor project layout and keep responsive.",
   "attachments": []
 }

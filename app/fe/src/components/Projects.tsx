@@ -7,7 +7,6 @@ import {
   Search,
   Filter,
   ArrowUpDown,
-  Plus,
   Trash2,
   MessageSquare,
   ShoppingCart,
@@ -23,7 +22,6 @@ import { useI18n } from '../i18n';
 import LanguageSwitcher from './LanguageSwitcher';
 import UserMenu from './UserMenu';
 import {
-  createProject,
   deleteProject,
   getProject,
   getProjectUsage,
@@ -95,7 +93,6 @@ export default function Projects({ onOpenEditor, onBack, onProjects, onLogout, a
 
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
-  const [creatingProject, setCreatingProject] = useState(false);
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -168,19 +165,6 @@ export default function Projects({ onOpenEditor, onBack, onProjects, onLogout, a
     }
   };
 
-  const createAndOpenProject = async () => {
-    setCreatingProject(true);
-    setError(null);
-    try {
-      const project = await createProject({ name: 'Untitled Project', template: 'blank' }, accessToken);
-      onOpenEditor({ id: project.id, name: project.name, viewMode: 'preview' });
-    } catch (createError) {
-      setError((createError as Error).message || 'Failed to create project.');
-    } finally {
-      setCreatingProject(false);
-    }
-  };
-
   const usageText = useMemo(() => {
     return t('projects.usageCount', { used: usage.used, limit: usage.limit });
   }, [t, usage.limit, usage.used]);
@@ -208,15 +192,6 @@ export default function Projects({ onOpenEditor, onBack, onProjects, onLogout, a
           <span className="text-lg font-bold tracking-tight">AI App Gen</span>
         </div>
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-4 border-r border-slate-800 pr-6">
-            <button
-              onClick={createAndOpenProject}
-              disabled={creatingProject}
-              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors shadow-lg shadow-blue-500/20"
-            >
-              {creatingProject ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} {t('projects.newApp')}
-            </button>
-          </div>
           <div className="flex items-center gap-6">
             <LanguageSwitcher />
             <button onClick={onProjects} className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 transition-colors">

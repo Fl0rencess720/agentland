@@ -85,6 +85,14 @@ func NotFoundError() *APIError {
 	}
 }
 
+func RuntimeUnavailableError() *APIError {
+	return &APIError{
+		StatusCode: http.StatusConflict,
+		Msg:        "runtime_unavailable",
+		Data:       ErrorData{Type: "RUNTIME_UNAVAILABLE"},
+	}
+}
+
 func InternalError() *APIError {
 	return &APIError{
 		StatusCode: http.StatusInternalServerError,

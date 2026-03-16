@@ -22,9 +22,21 @@ type ProjectUseCase interface {
 	Update(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.ProjectUpdateReq) (*models.ProjectUpdateResp, *response.APIError)
 	Delete(ctx context.Context, principal models.AuthPrincipal, projectID string) (*models.ProjectDeleteResp, *response.APIError)
 	Usage(ctx context.Context, principal models.AuthPrincipal) (*models.ProjectUsageResp, *response.APIError)
+	CreateGeneration(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.GenerationCreateReq) (*models.GenerationCreateResp, *response.APIError)
+	ListMessages(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.ChatMessagesReq) (*models.ChatMessagesResp, *response.APIError)
+	CreateMessage(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.ChatMessageCreateReq, onDelta func(string) error) (*models.ChatMessageStreamDoneResp, error)
+	FileTree(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.FileTreeReq) (*models.FileTreeResp, *response.APIError)
+	FileContent(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.FileContentReq) (*models.FileContentResp, *response.APIError)
+	Download(ctx context.Context, principal models.AuthPrincipal, projectID string) (*models.WorkspaceArchive, *response.APIError)
+	StartPreview(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.PreviewStartReq) (*models.PreviewStartResp, *response.APIError)
+	PreviewStatus(ctx context.Context, principal models.AuthPrincipal, projectID string) (*models.PreviewStatusResp, *response.APIError)
 }
 
 type UserUseCase interface{}
-type JobUseCase interface{}
+
+type JobUseCase interface {
+	Detail(ctx context.Context, principal models.AuthPrincipal, jobID string) (*models.JobStatusResp, *response.APIError)
+}
+
 type DeploymentUseCase interface{}
 type FileUseCase interface{}

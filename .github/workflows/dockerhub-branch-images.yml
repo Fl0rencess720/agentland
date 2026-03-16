@@ -27,6 +27,9 @@ jobs:
           - name: agentcore
             image: agentland-agentcore
             dockerfile: docker/Dockerfile.agentcore
+          - name: agent
+            image: agentland-agent
+            dockerfile: app/agentland-agent/Dockerfile
 
     steps:
       - uses: actions/checkout@v4

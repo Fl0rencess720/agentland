@@ -1,0 +1,49 @@
+apiVersion: agentland.fl0rencess720.app/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: agentland-agent
+  namespace: agentland-sandboxes
+spec:
+  sandboxTemplate:
+    podSpec:
+      restartPolicy: Never
+      containers:
+        - name: agent
+          image: fl0rences720/agentland-agent:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentland-agent-secrets
+                  key: OPENAI_API_KEY
+            - name: OPENAI_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentland-agent-secrets
+                  key: OPENAI_BASE_URL
+            - name: AGENTLAND_AGENT_MCP_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: agentland-agent-secrets
+                  key: AGENTLAND_AGENT_MCP_CONFIG
+            - name: AGENTLAND_AGENT_SKILL_SOURCES
+              valueFrom:
+                secretKeyRef:
+                  name: agentland-agent-secrets
+                  key: AGENTLAND_AGENT_SKILL_SOURCES
+            - name: PI_SESSION_ROOT
+              value: /workspace/.pi/sessions
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+        - name: korokd
+          image: fl0rences720/agentland-korokd:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --port=1883
+          ports:
+            - containerPort: 1883
