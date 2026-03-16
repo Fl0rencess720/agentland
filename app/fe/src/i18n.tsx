@@ -177,7 +177,7 @@ const messages: Record<Locale, Record<string, string>> = {
     'status.deployed': '已部署',
     'status.draft': '草稿',
     'status.building': '构建中',
-    'editor.explorer': '资源管理器',
+    'editor.explorer': '文件',
     'editor.loadingFiles': '正在加载文件...',
     'editor.empty': '选择文件以查看代码',
     'editor.downloadProject': '下载项目',

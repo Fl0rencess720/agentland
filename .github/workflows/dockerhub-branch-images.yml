@@ -20,16 +20,20 @@ jobs:
         include:
           - name: korokd
             image: agentland-korokd
+            context: .
             dockerfile: docker/Dockerfile.korokd
           - name: gateway
             image: agentland-gateway
+            context: .
             dockerfile: docker/Dockerfile.gateway
           - name: agentcore
             image: agentland-agentcore
+            context: .
             dockerfile: docker/Dockerfile.agentcore
           - name: agent
             image: agentland-agent
-            dockerfile: app/agentland-agent/Dockerfile
+            context: app/agentland-agent
+            dockerfile: Dockerfile
 
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +47,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}:latest
