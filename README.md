@@ -4,6 +4,8 @@
 
 `agentland` 提供两种主要 Kubernetes 自定义资源定义（CRD），各自对应两类应用场景 `CodeInterpreter`（通用工具沙箱）和 `AgentSession`（Agent 运行时沙箱），可通预热池实现沙箱亚秒级启动。
 
+项目同时提供运行在 `AgentSession` Sandbox 内的轻量 Eino Agent `agentd`。它直接操作容器工作区，支持本地工具、MCP、Skills、流式事件和文件 Memory，设计与实现见 [docs/agentd.md](docs/agentd.md)。
+
 ## 架构概览
 
 系统由三个核心组件和一组控制器/CRD 组成。

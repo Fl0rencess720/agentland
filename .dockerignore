@@ -3,6 +3,11 @@
 **
 
 # Re-include Go source files (but not *_test.go)
+!api/
+!cmd/
+!internal/
+!pb/
+!pkg/
 !**/*.go
 **/*_test.go
 
@@ -14,4 +19,10 @@
 !pkg/korokd/handlers/ipykernel_helper.py
 
 # Re-include runtime entrypoint scripts used by Dockerfiles
+!docker/
 !docker/entrypoint.korokd.sh
+!docker/entrypoint.agentd.sh
+
+# Re-include skills bundled with agentd
+!skills/
+!skills/**
