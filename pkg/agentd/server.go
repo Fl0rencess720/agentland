@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/pkg/common/utils"
+	korokhandlers "github.com/Fl0rencess720/agentland/pkg/korokd/handlers"
 	korokmiddleware "github.com/Fl0rencess720/agentland/pkg/korokd/middleware"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
@@ -27,6 +29,11 @@ type chatRequest struct {
 	ConversationID string `json:"conversation_id"`
 	Message        string `json:"message"`
 }
+
+const (
+	maxChatRequestBodyBytes = 2 << 20
+	maxChatMessageBytes     = 256 << 10
+)
 
 func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	if cfg == nil {
@@ -51,7 +58,7 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 	if err != nil {
 		return nil, err
 	}
-	tools, err := NewLocalTools(cfg.WorkspaceRoot, skills)
+	tools, local, err := newLocalTools(cfg.WorkspaceRoot, skills)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +102,11 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 	api.POST("/chat", server.chat)
 	api.POST("/runs/:run_id/cancel", server.cancel)
 	api.GET("/conversations/:conversation_id/messages", server.messages)
+	workspace := &workspaceHandler{tools: local}
+	api.GET("/workspace/tree", workspace.tree)
+	api.GET("/workspace/file", workspace.readFile)
+	api.POST("/workspace/file", workspace.writeFile)
+	korokhandlers.InitProxyApi(api, korokhandlers.ProxyOptions{})
 
 	server.httpServer = &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -123,8 +135,24 @@ func (s *Server) health(c *gin.Context) {
 }
 
 func (s *Server) chat(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxChatRequestBodyBytes)
 	var request chatRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	if err := decoder.Decode(&request); err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body is too large"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body is too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
@@ -132,8 +160,12 @@ func (s *Server) chat(c *gin.Context) {
 	if request.ConversationID == "" {
 		request.ConversationID = "default"
 	}
-	if !validID(request.ConversationID) || request.Message == "" {
+	if !validID(request.ConversationID) || strings.TrimSpace(request.Message) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "conversation_id and message are invalid"})
+		return
+	}
+	if len(request.Message) > maxChatMessageBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("message exceeds %d bytes", maxChatMessageBytes)})
 		return
 	}
 

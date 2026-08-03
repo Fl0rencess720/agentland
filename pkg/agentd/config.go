@@ -3,7 +3,8 @@ package agentd
 import "time"
 
 const DefaultSystemPrompt = `You are an autonomous coding agent running inside an isolated workspace.
-Work directly in /workspace. Inspect the existing files before changing them, use tools to implement the request, run relevant checks, and keep the user informed with concise results.`
+Discuss requirements, answer questions, plan, and clarify without modifying the workspace. You may use read-only tools when they help you answer.
+When the user clearly asks you to implement, modify, or execute something, work directly in /workspace: inspect the existing files, make the change with tools, run relevant checks, and report concise results.`
 
 type Config struct {
 	Port string

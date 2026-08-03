@@ -3,6 +3,7 @@ package controller
 import (
 	"testing"
 
+	agentlandv1alpha1 "github.com/Fl0rencess720/agentland/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -57,5 +58,30 @@ func TestSandboxStatusFromPod(t *testing.T) {
 				t.Fatalf("sandboxStatusFromPod() = (%q, %q), want (%q, %q)", phase, ip, tc.wantPhase, tc.wantIP)
 			}
 		})
+	}
+}
+
+func TestSandboxMainContainerPropagatesEnvironment(t *testing.T) {
+	t.Parallel()
+	template := &agentlandv1alpha1.SandboxTemplate{
+		Image: "agentd:test",
+		Env: []corev1.EnvVar{{
+			Name: "AL_AGENT_MODEL_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "agentd-model"},
+				Key:                  "api-key",
+			}},
+		}},
+		EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "agentd-extra"},
+		}}},
+	}
+
+	container := sandboxMainContainer(template, corev1.PullIfNotPresent)
+	if len(container.Env) != 1 || container.Env[0].ValueFrom.SecretKeyRef.Name != "agentd-model" {
+		t.Fatalf("secret-backed environment was not propagated: %#v", container.Env)
+	}
+	if len(container.EnvFrom) != 1 || container.EnvFrom[0].SecretRef.Name != "agentd-extra" {
+		t.Fatalf("environment source was not propagated: %#v", container.EnvFrom)
 	}
 }

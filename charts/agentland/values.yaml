@@ -130,6 +130,24 @@ gateway:
     port: 8080
     targetPortName: http
 
+# Optional AgentRuntime used by the application backend. The model credential
+# stays in a Kubernetes Secret and is referenced by the runtime template.
+agentRuntime:
+  enabled: false
+  name: default-runtime
+  namespace: ""
+  image:
+    repository: fl0rences720/agentland-agentd
+    tag: latest
+  runtimeClassName: ""
+  model:
+    id: ""
+    baseURL: https://api.openai.com/v1
+    contextTokens: "128000"
+    apiKeySecret:
+      name: ""
+      key: api-key
+
 redis:
   deployment:
     enabled: true

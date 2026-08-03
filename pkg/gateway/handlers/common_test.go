@@ -98,6 +98,15 @@ func (s *CommonSuite) TestReadRequestBodyError() {
 	s.Equal(http.StatusBadRequest, s.recorder.Code)
 }
 
+func (s *CommonSuite) TestReadRequestBodyRejectsOversizedPayload() {
+	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(strings.Repeat("x", 17)))
+
+	body, ok := readRequestBodyLimit(s.ctx, 16)
+	s.False(ok)
+	s.Nil(body)
+	s.Equal(http.StatusRequestEntityTooLarge, s.recorder.Code)
+}
+
 func (s *CommonSuite) TestBindJSONWithBody() {
 	s.ctx.Request = httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(`{"language":"python","cwd":"/workspace"}`))
 
@@ -173,6 +182,62 @@ func (s *CommonSuite) TestProxyEngineForward() {
 	s.Equal("session-1", capturedSession)
 	s.Equal(`{"k":"v"}`, capturedBody)
 	s.Equal("session-1", s.recorder.Header().Get(SessionHeader))
+}
+
+func (s *CommonSuite) TestRewritePrefixedResponseRewritesViteAssets() {
+	body := `<script type="module" src="/@vite/client"></script><link href='/src/app.css'>`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}, "Location": []string{"/next"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	s.NoError(rewritePrefixedResponse(response, "/p/token-1"))
+	data, err := io.ReadAll(response.Body)
+	s.NoError(err)
+	s.Equal(`<script type="module" src="/p/token-1/@vite/client"></script><link href='/p/token-1/src/app.css'>`, string(data))
+	s.Equal("/p/token-1/next", response.Header.Get("Location"))
+}
+
+func (s *CommonSuite) TestRewritePrefixedResponseRewritesJavaScriptAndCSS() {
+	javascript := &http.Response{Header: http.Header{"Content-Type": []string{"text/javascript"}}, Body: io.NopCloser(strings.NewReader(`import "/src/main.tsx"; fetch('/api/items')`))}
+	s.NoError(rewritePrefixedResponse(javascript, "/p/token-1/"))
+	data, err := io.ReadAll(javascript.Body)
+	s.NoError(err)
+	s.Equal(`import "/p/token-1/src/main.tsx"; fetch('/p/token-1/api/items')`, string(data))
+
+	stylesheet := &http.Response{Header: http.Header{"Content-Type": []string{"text/css"}}, Body: io.NopCloser(strings.NewReader(`body{background:url(/assets/bg.png)}`))}
+	s.NoError(rewritePrefixedResponse(stylesheet, "/p/token-1/"))
+	data, err = io.ReadAll(stylesheet.Body)
+	s.NoError(err)
+	s.Equal(`body{background:url(/p/token-1/assets/bg.png)}`, string(data))
+}
+
+func (s *CommonSuite) TestProxyEngineAddsPreviewCORSHeaders() {
+	engine := &ProxyEngine{Transport: commonRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/javascript"}, "Access-Control-Allow-Credentials": []string{"true"}},
+			Body:       io.NopCloser(strings.NewReader(`export default true`)),
+			Request:    request,
+		}, nil
+	})}
+	target, err := url.Parse("http://sandbox.test:1883")
+	s.NoError(err)
+	s.ctx.Request = httptest.NewRequest(http.MethodGet, "/p/token-1/src/main.ts", nil)
+	s.ctx.Request.Header.Set("Origin", "null")
+
+	engine.Forward(s.ctx, ProxyConfig{
+		Target:             target,
+		Method:             http.MethodGet,
+		InternalPath:       "/api/proxy/by-port/3000/src/main.ts",
+		ResponsePathPrefix: "/p/token-1",
+	})
+
+	s.Equal(http.StatusOK, s.recorder.Code)
+	s.Equal("*", s.recorder.Header().Get("Access-Control-Allow-Origin"))
+	s.Contains(s.recorder.Header().Get("Access-Control-Allow-Methods"), http.MethodGet)
+	s.Empty(s.recorder.Header().Get("Access-Control-Allow-Credentials"))
 }
 
 func (s *CommonSuite) TestBuildTokenSigner() {

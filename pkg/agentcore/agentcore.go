@@ -83,7 +83,6 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, _ *pb.CreateSandboxR
 			},
 		},
 	}
-
 	if s.warmPoolEnabled {
 		mode := v1alpha1.ProvisioningModePoolPreferred
 		switch s.warmPoolDefaultMode {
@@ -94,7 +93,6 @@ func (s *Server) CreateCodeInterpreter(ctx context.Context, _ *pb.CreateSandboxR
 		case string(v1alpha1.ProvisioningModeDirect):
 			mode = v1alpha1.ProvisioningModeDirect
 		}
-
 		cr.Spec.Provisioning = &v1alpha1.ProvisioningSpec{
 			Mode:    mode,
 			PoolRef: s.warmPoolPoolRef,
@@ -175,24 +173,6 @@ func (s *Server) CreateAgentSession(ctx context.Context, req *pb.CreateAgentSess
 				Namespace: runtimeNamespace,
 			},
 		},
-	}
-
-	if s.warmPoolEnabled {
-		mode := v1alpha1.ProvisioningModePoolPreferred
-		switch s.warmPoolDefaultMode {
-		case string(v1alpha1.ProvisioningModePoolRequired):
-			mode = v1alpha1.ProvisioningModePoolRequired
-		case string(v1alpha1.ProvisioningModePoolPreferred):
-			mode = v1alpha1.ProvisioningModePoolPreferred
-		case string(v1alpha1.ProvisioningModeDirect):
-			mode = v1alpha1.ProvisioningModeDirect
-		}
-
-		cr.Spec.Provisioning = &v1alpha1.ProvisioningSpec{
-			Mode:    mode,
-			PoolRef: s.warmPoolPoolRef,
-			Profile: s.warmPoolProfile,
-		}
 	}
 
 	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cr)

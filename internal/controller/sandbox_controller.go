@@ -183,21 +183,7 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *agentland
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:            "main",
-				Image:           sandbox.Spec.Template.Image,
-				ImagePullPolicy: pullPolicy,
-				Command:         sandbox.Spec.Template.Command,
-				Args:            sandbox.Spec.Template.Args,
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      sandboxJWTVolumeName,
-					MountPath: "/var/run/agentland/jwt",
-					ReadOnly:  true,
-				}, {
-					Name:      workspaceVolumeName,
-					MountPath: workspaceMountPath,
-				}},
-			}},
+			Containers: []corev1.Container{sandboxMainContainer(sandbox.Spec.Template, pullPolicy)},
 			Volumes: []corev1.Volume{{
 				Name: sandboxJWTVolumeName,
 				VolumeSource: corev1.VolumeSource{

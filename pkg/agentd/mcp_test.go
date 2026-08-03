@@ -44,6 +44,8 @@ func TestLoadStreamableHTTPMCPTools(t *testing.T) {
 }
 
 func TestLoadStdioMCPTools(t *testing.T) {
+	t.Setenv("AL_AGENT_MODEL_API_KEY", "model-secret")
+	t.Setenv("OPENAI_API_KEY", "provider-secret")
 	configPath := writeMCPConfig(t, `{"servers":[{"name":"local","transport":"stdio","command":"`+os.Args[0]+`","args":["-test.run=TestMCPHelperProcess"],"env":{"GO_WANT_MCP_HELPER":"1"}}]}`)
 	tools, manager, err := LoadMCPTools(context.Background(), []string{configPath})
 	require.NoError(t, err)
@@ -57,6 +59,9 @@ func TestLoadStdioMCPTools(t *testing.T) {
 func TestMCPHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_MCP_HELPER") != "1" {
 		return
+	}
+	if os.Getenv("AL_AGENT_MODEL_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
+		os.Exit(3)
 	}
 	if err := newEchoMCPServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		os.Exit(2)

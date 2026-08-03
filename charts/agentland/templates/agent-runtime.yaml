@@ -1,0 +1,34 @@
+{{- if .Values.agentRuntime.enabled }}
+apiVersion: agentland.fl0rencess720.app/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: {{ .Values.agentRuntime.name }}
+  namespace: {{ default .Values.namespaces.sandboxes .Values.agentRuntime.namespace }}
+  labels:
+    app.kubernetes.io/name: agentd
+    app.kubernetes.io/part-of: agentland
+spec:
+  sandboxTemplate:
+    image: "{{ .Values.agentRuntime.image.repository }}:{{ .Values.agentRuntime.image.tag }}"
+    {{- with .Values.agentRuntime.runtimeClassName }}
+    runtimeClassName: {{ . | quote }}
+    {{- end }}
+    env:
+      - name: AL_AGENT_MODEL
+        value: {{ required "agentRuntime.model.id is required when agentRuntime.enabled=true" .Values.agentRuntime.model.id | quote }}
+      {{- with .Values.agentRuntime.model.baseURL }}
+      - name: AL_AGENT_MODEL_BASE_URL
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.agentRuntime.model.contextTokens }}
+      - name: AL_AGENT_MODEL_CONTEXT_TOKENS
+        value: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.agentRuntime.model.apiKeySecret.name }}
+      - name: AL_AGENT_MODEL_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: {{ . | quote }}
+            key: {{ required "agentRuntime.model.apiKeySecret.key is required when a Secret name is set" $.Values.agentRuntime.model.apiKeySecret.key | quote }}
+      {{- end }}
+{{- end }}

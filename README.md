@@ -6,6 +6,10 @@
 
 项目同时提供运行在 `AgentSession` Sandbox 内的轻量 Eino Agent `agentd`。它直接操作容器工作区，支持本地工具、MCP、Skills、流式事件和文件 Memory，设计与实现见 [docs/agentd.md](docs/agentd.md)。
 
+`app/fe` 与 `app/be` 提供面向用户的 AI 应用生成界面和应用后端，支持项目会话、Run、代码编辑与实时预览。
+
+应用后端默认以 `http://{token}.localhost:18081` 为每个预览分配独立来源；生产环境使用 `PREVIEW_PUBLIC_URL_TEMPLATE=https://{token}.preview.example.com` 配合通配 DNS 和 TLS。
+
 ## 架构概览
 
 系统由三个核心组件和一组控制器/CRD 组成。
@@ -27,6 +31,22 @@ helm upgrade --install agentland charts/agentland \
   -n agentland-system \
   --create-namespace
 ```
+
+应用生成平台需要一个运行 `agentd` 的 `AgentRuntime`。先在沙箱命名空间创建模型密钥，再启用 Chart 中的运行时：
+
+```bash
+kubectl -n agentland-sandboxes create secret generic agentd-model \
+  --from-literal=api-key="$MODEL_API_KEY"
+
+helm upgrade --install agentland charts/agentland \
+  -n agentland-system \
+  --create-namespace \
+  --set agentRuntime.enabled=true \
+  --set agentRuntime.model.id="$MODEL_ID" \
+  --set agentRuntime.model.apiKeySecret.name=agentd-model
+```
+
+兼容 OpenAI 协议的自托管模型可以同时设置 `agentRuntime.model.baseURL`，无需鉴权的服务可以省略 `apiKeySecret.name`。
 
 部署预热池
 

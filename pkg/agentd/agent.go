@@ -7,8 +7,10 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	modelopenai "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
@@ -73,8 +75,11 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 	if !validID(conversationID) {
 		return "", fmt.Errorf("invalid conversation_id")
 	}
-	if userMessage == "" {
+	if strings.TrimSpace(userMessage) == "" {
 		return "", fmt.Errorf("message is required")
+	}
+	if len(userMessage) > maxChatMessageBytes {
+		return "", fmt.Errorf("message exceeds %d bytes", maxChatMessageBytes)
 	}
 
 	runID = uuid.NewString()
@@ -147,11 +152,8 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 			if toolErr != nil {
 				output = "tool error: " + toolErr.Error()
 			}
-			if err := events.send(EventToolOutput, map[string]any{
-				"tool_call_id": call.ID,
-				"name":         call.Function.Name,
-				"output":       output,
-			}); err != nil {
+			output = boundToolOutput(output)
+			if err := emitToolOutput(events, call, output); err != nil {
 				return runID, err
 			}
 			completed := map[string]any{"tool_call_id": call.ID, "name": call.Function.Name}
@@ -167,6 +169,31 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 			}
 		}
 	}
+}
+
+func emitToolOutput(events *eventEmitter, call schema.ToolCall, output string) error {
+	if output == "" {
+		return events.send(EventToolOutput, map[string]any{
+			"tool_call_id": call.ID,
+			"name":         call.Function.Name,
+			"output":       "",
+		})
+	}
+	for len(output) != 0 {
+		split := min(len(output), maxToolOutputEventBytes)
+		for split < len(output) && split > 0 && !utf8.RuneStart(output[split]) {
+			split--
+		}
+		if err := events.send(EventToolOutput, map[string]any{
+			"tool_call_id": call.ID,
+			"name":         call.Function.Name,
+			"output":       output[:split],
+		}); err != nil {
+			return err
+		}
+		output = output[split:]
+	}
+	return nil
 }
 
 func (a *Agent) Cancel(runID string) bool {

@@ -3,6 +3,7 @@ package agentd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,13 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	maxSkills             = 256
+	maxSkillMetadataBytes = 64 << 10
+	maxSkillNameBytes     = 128
+	maxSkillDescription   = 2048
 )
 
 type SkillRegistry struct {
@@ -63,11 +71,24 @@ func (r *SkillRegistry) Read(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("skill %q not found", name)
 	}
-	data, err := os.ReadFile(item.Path)
+	file, err := os.Open(item.Path)
 	if err != nil {
 		return "", fmt.Errorf("read skill %q: %w", name, err)
 	}
-	return string(data), nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat skill %q: %w", name, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxToolOutputBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read skill %q: %w", name, err)
+	}
+	originalSize := max(info.Size(), int64(len(data)))
+	if len(data) > maxToolOutputBytes {
+		data = data[:maxToolOutputBytes]
+	}
+	return boundToolOutputSize(string(data), originalSize), nil
 }
 
 func (r *SkillRegistry) loadDir(root string) error {
@@ -75,16 +96,30 @@ func (r *SkillRegistry) loadDir(root string) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || entry.Name() != "SKILL.md" {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || entry.Name() != "SKILL.md" {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		file, err := os.Open(path)
 		if err != nil {
 			return err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, maxSkillMetadataBytes+1))
+		closeErr := file.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if len(data) > maxSkillMetadataBytes {
+			data = data[:maxSkillMetadataBytes]
 		}
 		metadata, err := parseSkillMetadata(data)
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		if _, exists := r.skills[metadata.Name]; !exists && len(r.skills) >= maxSkills {
+			return fmt.Errorf("skill count exceeds %d", maxSkills)
 		}
 		r.skills[metadata.Name] = skill{Name: metadata.Name, Description: metadata.Description, Path: path}
 		return nil
@@ -116,6 +151,9 @@ func parseSkillMetadata(data []byte) (*skillMetadata, error) {
 	metadata.Description = strings.TrimSpace(metadata.Description)
 	if metadata.Name == "" || metadata.Description == "" {
 		return nil, fmt.Errorf("name and description are required")
+	}
+	if len(metadata.Name) > maxSkillNameBytes || len(metadata.Description) > maxSkillDescription {
+		return nil, fmt.Errorf("name or description is too long")
 	}
 	return &metadata, nil
 }
