@@ -138,6 +138,17 @@ func FileConflictError(sha string) *APIError {
 	}
 }
 
+func ReplayUnavailableError(reason string) *APIError {
+	return &APIError{
+		StatusCode: http.StatusConflict,
+		Msg:        "replay_unavailable",
+		Data: ErrorData{
+			Type:    "REPLAY_UNAVAILABLE",
+			Details: []ErrorDetail{{Field: "run_id", Reason: reason}},
+		},
+	}
+}
+
 func InternalError() *APIError {
 	return &APIError{
 		StatusCode: http.StatusInternalServerError,

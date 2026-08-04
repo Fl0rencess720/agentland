@@ -1,6 +1,7 @@
 package data
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -25,6 +26,9 @@ func TestGatewayUsesAgentInvocationContracts(t *testing.T) {
 			return result, nil
 		case "/api/agent-sessions/invocations/api/chat":
 			require.Equal(t, "session-1", r.Header.Get(agentlandSessionHeader))
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"conversation_id":"project-1","message":"build an app","capture_trajectory":true}`, string(body))
 			result := response(http.StatusOK, "id: 1\nevent: run.started\ndata: {\"type\":\"run.started\",\"run_id\":\"agent-run-1\",\"conversation_id\":\"project-1\",\"sequence\":1,\"timestamp\":\"2026-08-02T00:00:00Z\",\"payload\":{}}\n\n")
 			result.Header.Set(agentlandSessionHeader, "session-1")
 			result.Header.Set("Content-Type", "text/event-stream")
@@ -76,6 +80,51 @@ func TestGatewayUsesAgentInvocationContracts(t *testing.T) {
 	preview, err := client.CreatePreview(ctx, sessionID, 3000)
 	require.NoError(t, err)
 	require.Equal(t, "http://preview-1.localhost:18081/p/preview-1/", preview.PreviewURL)
+}
+
+func TestGatewaySnapshotAndReplayContracts(t *testing.T) {
+	snapshot := []byte("compressed-workspace")
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		response := func(status int, body []byte) *http.Response {
+			result := &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: request}
+			result.Header.Set(agentlandSessionHeader, "session-1")
+			return result
+		}
+		switch request.URL.Path {
+		case "/api/agent-sessions/invocations/api/workspace/snapshot":
+			if request.Method == http.MethodGet {
+				return response(http.StatusOK, snapshot), nil
+			}
+			body, err := io.ReadAll(request.Body)
+			require.NoError(t, err)
+			require.Equal(t, snapshot, body)
+			return response(http.StatusOK, []byte(`{"restored":true}`)), nil
+		case "/api/agent-sessions/invocations/api/replays/decision", "/api/agent-sessions/invocations/api/replays/live":
+			body, err := io.ReadAll(request.Body)
+			require.NoError(t, err)
+			require.Contains(t, string(body), `"records"`)
+			mode := "decision"
+			if strings.HasSuffix(request.URL.Path, "/live") {
+				mode = "live"
+			}
+			return response(http.StatusOK, []byte(`{"mode":"`+mode+`","status":"completed","total_steps":2,"matched_steps":2,"score":1}`)), nil
+		default:
+			return response(http.StatusNotFound, []byte(`{"error":"not found"}`)), nil
+		}
+	})
+	client := &agentlandGatewayClient{baseURL: "http://gateway", httpClient: &http.Client{Transport: transport}}
+
+	got, err := client.GetWorkspaceSnapshot(context.Background(), "session-1")
+	require.NoError(t, err)
+	require.Equal(t, snapshot, got)
+	require.NoError(t, client.RestoreWorkspaceSnapshot(context.Background(), "session-1", snapshot))
+	records := []models.RunTrajectoryRecord{{Version: 1, RunID: "run", Sequence: 1, Hash: "hash"}}
+	decision, err := client.ReplayDecisions(context.Background(), "session-1", records)
+	require.NoError(t, err)
+	require.Equal(t, "decision", decision.Mode)
+	live, err := client.ReplayLive(context.Background(), "session-1", records)
+	require.NoError(t, err)
+	require.Equal(t, "live", live.Mode)
 }
 
 func TestGatewaySendsExplicitEmptySHAWhenRecreatingFile(t *testing.T) {

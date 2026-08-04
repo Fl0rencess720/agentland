@@ -2,8 +2,10 @@ package biz
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -13,7 +15,10 @@ import (
 	"github.com/Fl0rencess720/agentland/app/be/internal/pkgs/response"
 	"github.com/Fl0rencess720/agentland/app/be/internal/pkgs/token"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -93,15 +98,20 @@ type AgentlandGateway interface {
 }
 
 type projectUseCase struct {
-	projects ProjectRepo
-	runs     RunRepo
-	events   RunEventStore
-	gateway  AgentlandGateway
-	now      func() time.Time
+	projects  ProjectRepo
+	runs      RunRepo
+	events    RunEventStore
+	gateway   AgentlandGateway
+	evaluator EvaluationSink
+	now       func() time.Time
 }
 
-func NewProjectUsecase(projects ProjectRepo, runs RunRepo, events RunEventStore, gateway AgentlandGateway) ProjectUseCase {
-	return &projectUseCase{projects: projects, runs: runs, events: events, gateway: gateway, now: time.Now}
+func NewProjectUsecase(projects ProjectRepo, runs RunRepo, events RunEventStore, gateway AgentlandGateway, evaluators ...EvaluationSink) ProjectUseCase {
+	var evaluator EvaluationSink
+	if len(evaluators) != 0 {
+		evaluator = evaluators[0]
+	}
+	return &projectUseCase{projects: projects, runs: runs, events: events, gateway: gateway, evaluator: evaluator, now: time.Now}
 }
 
 func (u *projectUseCase) List(ctx context.Context, principal models.AuthPrincipal, req *models.ProjectListReq) (*models.ProjectListResp, *response.APIError) {
@@ -370,6 +380,142 @@ func (u *projectUseCase) CancelRun(ctx context.Context, principal models.AuthPri
 		}
 	}
 	return &models.RunCancelResp{ID: run.ID, Status: run.Status}, nil
+}
+
+func (u *projectUseCase) RunTrajectory(ctx context.Context, principal models.AuthPrincipal, runID string) (*models.RunTrajectoryResp, *response.APIError) {
+	if !authorized(principal) {
+		return nil, response.UnauthorizedError()
+	}
+	run, err := u.runs.GetRun(ctx, principal.UserID, strings.TrimSpace(runID))
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	artifacts, ok := u.runs.(RunArtifactRepo)
+	if !ok {
+		return nil, response.InternalError()
+	}
+	records, err := artifacts.LoadTrajectoryRecords(ctx, run.ID)
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	if len(records) == 0 {
+		return nil, response.ReplayUnavailableError("trajectory is unavailable")
+	}
+	return &models.RunTrajectoryResp{RunID: run.ID, Records: records}, nil
+}
+
+func (u *projectUseCase) ReplayRun(ctx context.Context, principal models.AuthPrincipal, runID string, req *models.ReplayRunReq) (*models.ReplayRunResp, *response.APIError) {
+	if !authorized(principal) {
+		return nil, response.UnauthorizedError()
+	}
+	if req == nil {
+		return nil, response.InvalidArgumentError("request", "required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode != models.ReplayModeDecision && mode != models.ReplayModeLive {
+		return nil, response.InvalidArgumentError("mode", "must be decision or live")
+	}
+	run, err := u.runs.GetRun(ctx, principal.UserID, strings.TrimSpace(runID))
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	if !isTerminalStatus(run.Status) {
+		return nil, response.ReplayUnavailableError("run is still active")
+	}
+	artifacts, repoOK := u.runs.(RunArtifactRepo)
+	replayGateway, gatewayOK := u.gateway.(ReplayGateway)
+	if !repoOK || !gatewayOK {
+		return nil, response.InternalError()
+	}
+	records, err := artifacts.LoadTrajectoryRecords(ctx, run.ID)
+	if err != nil {
+		return nil, mapAPIError(err)
+	}
+	if len(records) == 0 {
+		return nil, response.ReplayUnavailableError("trajectory is unavailable")
+	}
+
+	replayID := token.NewID("replay")
+	replayInputJSON, _ := json.Marshal(map[string]string{"source_run_id": run.ID, "mode": mode})
+	replayCtx, span := otel.Tracer("agentland/app-be/replay").Start(ctx, "agent.replay",
+		trace.WithNewRoot(),
+		trace.WithLinks(trace.LinkFromContext(ctx)),
+		trace.WithAttributes(
+			attribute.String("gen_ai.operation.name", "evaluate"),
+			attribute.String("langfuse.observation.type", "evaluator"),
+			attribute.String("langfuse.trace.name", "agent-replay"),
+			attribute.String("langfuse.session.id", run.ProjectID),
+			attribute.String("agent.replay.id", replayID),
+			attribute.String("agent.replay.mode", mode),
+			attribute.String("agent.source_run.id", run.ID),
+			attribute.Int("agent.trajectory_records", len(records)),
+			attribute.String("langfuse.observation.input", string(replayInputJSON)),
+		),
+	)
+	defer span.End()
+	var snapshot *models.WorkspaceSnapshot
+	if mode == models.ReplayModeLive {
+		snapshot, err = artifacts.LoadWorkspaceSnapshot(replayCtx, run.ID)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return nil, mapAPIError(err)
+		}
+		if snapshot == nil || snapshot.Error != "" || len(snapshot.Data) == 0 {
+			reason := "workspace snapshot is unavailable"
+			if snapshot != nil && snapshot.Error != "" {
+				reason = snapshot.Error
+			}
+			span.SetStatus(codes.Error, reason)
+			return nil, response.ReplayUnavailableError(reason)
+		}
+	}
+	sessionID, err := u.gateway.EnsureRuntime(replayCtx, "")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, gatewayAPIError(err)
+	}
+
+	var report *models.ReplayRunResp
+	if mode == models.ReplayModeDecision {
+		report, err = replayGateway.ReplayDecisions(replayCtx, sessionID, records)
+	} else {
+		err = replayGateway.RestoreWorkspaceSnapshot(replayCtx, sessionID, snapshot.Data)
+		if err == nil {
+			report, err = replayGateway.ReplayLive(replayCtx, sessionID, records)
+		}
+		if err == nil {
+			var outputSnapshot []byte
+			outputSnapshot, err = replayGateway.GetWorkspaceSnapshot(replayCtx, sessionID)
+			if err == nil {
+				digest := sha256.Sum256(outputSnapshot)
+				report.SourceSnapshotSHA = snapshot.SHA
+				report.OutputSnapshotSHA = fmt.Sprintf("%x", digest[:])
+				report.WorkspaceChanged = report.OutputSnapshotSHA != report.SourceSnapshotSHA
+			}
+		}
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, gatewayAPIError(err)
+	}
+	report.ID, report.SourceRunID, report.Mode = replayID, run.ID, mode
+	reportJSON, _ := json.Marshal(report)
+	span.SetAttributes(
+		attribute.Float64("agent.replay.score", report.Score),
+		attribute.Int("agent.replay.total_steps", report.TotalSteps),
+		attribute.Int("agent.replay.matched_steps", report.MatchedSteps),
+		attribute.String("agent.replay.status", report.Status),
+		attribute.String("langfuse.observation.output", string(reportJSON)),
+	)
+	if u.evaluator != nil {
+		if scoreErr := u.evaluator.ScoreReplay(replayCtx, span.SpanContext().TraceID().String(), report); scoreErr != nil {
+			span.AddEvent("langfuse.score.failed", trace.WithAttributes(attribute.String("error.message", scoreErr.Error())))
+		}
+	}
+	return report, nil
 }
 
 func (u *projectUseCase) ListMessages(ctx context.Context, principal models.AuthPrincipal, projectID string, req *models.MessageListReq) (*models.MessageListResp, *response.APIError) {

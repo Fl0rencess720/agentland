@@ -21,6 +21,7 @@ import (
 type fakeModel struct {
 	mu        sync.Mutex
 	responses []*schema.Message
+	requests  [][]*schema.Message
 	streamErr int
 	err       error
 	calls     int
@@ -30,10 +31,11 @@ func (f *fakeModel) Generate(context.Context, []*schema.Message, ...model.Option
 	return schema.AssistantMessage("summary", nil), nil
 }
 
-func (f *fakeModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (f *fakeModel) Stream(_ context.Context, messages []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.requests = append(f.requests, cloneMessages(messages))
 	if f.streamErr > 0 {
 		f.streamErr--
 		if f.err != nil {

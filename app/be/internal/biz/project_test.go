@@ -2,8 +2,10 @@ package biz
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -236,6 +238,110 @@ func (g *gatewayStub) CreatePreview(context.Context, string, int) (*models.Gatew
 	return &models.GatewayPreviewInfo{PreviewToken: "preview-token", PreviewURL: "http://preview-token.localhost:18081/p/preview-token/", Port: 3000, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
+type artifactRunRepoStub struct {
+	*runRepoStub
+	snapshot *models.WorkspaceSnapshot
+	records  []models.RunTrajectoryRecord
+}
+
+func (r *artifactRunRepoStub) SaveWorkspaceSnapshot(_ context.Context, _, _ string, data []byte, sha, captureError string, now time.Time) (bool, error) {
+	r.snapshot = &models.WorkspaceSnapshot{Data: append([]byte(nil), data...), SHA: sha, Error: captureError, CreatedAt: now}
+	return true, nil
+}
+
+func (r *artifactRunRepoStub) AppendTrajectoryRecord(_ context.Context, _, _, _ string, _ int64, raw json.RawMessage, _ time.Time) (bool, error) {
+	var record models.RunTrajectoryRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return false, err
+	}
+	r.records = append(r.records, record)
+	return true, nil
+}
+
+func (r *artifactRunRepoStub) LoadWorkspaceSnapshot(context.Context, string) (*models.WorkspaceSnapshot, error) {
+	return r.snapshot, nil
+}
+
+func (r *artifactRunRepoStub) LoadTrajectoryRecords(context.Context, string) ([]models.RunTrajectoryRecord, error) {
+	return append([]models.RunTrajectoryRecord(nil), r.records...), nil
+}
+
+type replayGatewayStub struct {
+	*gatewayStub
+	snapshot []byte
+	restored []byte
+	decision *models.ReplayRunResp
+	live     *models.ReplayRunResp
+}
+
+func (g *replayGatewayStub) GetWorkspaceSnapshot(context.Context, string) ([]byte, error) {
+	return append([]byte(nil), g.snapshot...), nil
+}
+
+func (g *replayGatewayStub) RestoreWorkspaceSnapshot(_ context.Context, _ string, snapshot []byte) error {
+	g.restored = append([]byte(nil), snapshot...)
+	return nil
+}
+
+func (g *replayGatewayStub) ReplayDecisions(context.Context, string, []models.RunTrajectoryRecord) (*models.ReplayRunResp, error) {
+	copy := *g.decision
+	return &copy, nil
+}
+
+func (g *replayGatewayStub) ReplayLive(context.Context, string, []models.RunTrajectoryRecord) (*models.ReplayRunResp, error) {
+	copy := *g.live
+	return &copy, nil
+}
+
+func TestRunTrajectoryAndDecisionReplay(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", Status: models.RunStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	records := []models.RunTrajectoryRecord{{Version: 1, RunID: "agent-run-1", ConversationID: "project-1", Sequence: 1, Type: "run.started", Hash: "hash-1"}}
+	runs := &artifactRunRepoStub{runRepoStub: &runRepoStub{run: run}, records: records}
+	gateway := &replayGatewayStub{
+		gatewayStub: &gatewayStub{ensure: func(_ context.Context, session string) (string, error) {
+			require.Empty(t, session)
+			return "fresh-session", nil
+		}},
+		decision: &models.ReplayRunResp{Status: "completed", TotalSteps: 2, MatchedSteps: 2, Score: 1},
+	}
+	usecase := NewProjectUsecase(&projectRepoStub{}, runs, &eventStoreStub{}, gateway).(*projectUseCase)
+
+	trajectory, apiErr := usecase.RunTrajectory(context.Background(), models.AuthPrincipal{UserID: "user-1"}, run.ID)
+	require.Nil(t, apiErr)
+	require.Equal(t, records, trajectory.Records)
+	report, apiErr := usecase.ReplayRun(context.Background(), models.AuthPrincipal{UserID: "user-1"}, run.ID, &models.ReplayRunReq{Mode: models.ReplayModeDecision})
+	require.Nil(t, apiErr)
+	require.NotEmpty(t, report.ID)
+	require.Equal(t, run.ID, report.SourceRunID)
+	require.Equal(t, models.ReplayModeDecision, report.Mode)
+	require.Equal(t, 1.0, report.Score)
+}
+
+func TestLiveReplayRestoresSnapshotInFreshRuntime(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", Status: models.RunStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	source := []byte("source-snapshot")
+	output := []byte("output-snapshot")
+	sourceDigest := sha256.Sum256(source)
+	runs := &artifactRunRepoStub{
+		runRepoStub: &runRepoStub{run: run},
+		snapshot:    &models.WorkspaceSnapshot{Data: source, SHA: fmt.Sprintf("%x", sourceDigest[:])},
+		records:     []models.RunTrajectoryRecord{{Version: 1, RunID: "agent-run-1", Sequence: 1, Hash: "hash-1"}},
+	}
+	gateway := &replayGatewayStub{
+		gatewayStub: &gatewayStub{}, snapshot: output,
+		live: &models.ReplayRunResp{Status: "completed", TotalSteps: 3, MatchedSteps: 2, Score: 2.0 / 3.0},
+	}
+	usecase := NewProjectUsecase(&projectRepoStub{}, runs, &eventStoreStub{}, gateway).(*projectUseCase)
+	report, apiErr := usecase.ReplayRun(context.Background(), models.AuthPrincipal{UserID: "user-1"}, run.ID, &models.ReplayRunReq{Mode: models.ReplayModeLive})
+	require.Nil(t, apiErr)
+	require.Equal(t, source, gateway.restored)
+	require.True(t, report.WorkspaceChanged)
+	require.Equal(t, runs.snapshot.SHA, report.SourceSnapshotSHA)
+	require.NotEmpty(t, report.OutputSnapshotSHA)
+}
+
 func TestCreateRunReturnsAcceptedContract(t *testing.T) {
 	previousTracer := otel.GetTracerProvider()
 	previousPropagator := otel.GetTextMapPropagator()
@@ -457,6 +563,55 @@ func TestRunWorkerStreamsThroughGatewayAndPersistsTerminal(t *testing.T) {
 	require.Equal(t, "run.execute", runSpan.Name())
 	require.Equal(t, requestSpanID, runSpan.Parent().SpanID())
 	require.Equal(t, codes.Ok, runSpan.Status().Code)
+}
+
+func TestRunWorkerPersistsPrivateTrajectoryAndWorkspaceSnapshot(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	baseRepo := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
+		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
+		Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour), UpdatedAt: now,
+	}}
+	runs := &artifactRunRepoStub{runRepoStub: baseRepo}
+	first := signedTrajectoryRecord(t, models.RunTrajectoryRecord{
+		Version: 1, RunID: "agent-run-1", ConversationID: "project-1", Sequence: 1,
+		Type: "run.started", Timestamp: now.Format(time.RFC3339Nano), Payload: json.RawMessage(`{"message":"build"}`),
+	})
+	second := signedTrajectoryRecord(t, models.RunTrajectoryRecord{
+		Version: 1, RunID: "agent-run-1", ConversationID: "project-1", Sequence: 2,
+		Type: "run.finished", Timestamp: now.Add(time.Second).Format(time.RFC3339Nano), PreviousHash: first.Hash, Payload: json.RawMessage(`{"status":"completed"}`),
+	})
+	privateFirst, err := json.Marshal(first)
+	require.NoError(t, err)
+	privateSecond, err := json.Marshal(second)
+	require.NoError(t, err)
+	gateway := &replayGatewayStub{gatewayStub: &gatewayStub{events: []*models.AgentEvent{
+		{Type: "trajectory.record", RunID: "agent-run-1", ConversationID: "project-1", Sequence: 1, Timestamp: now, Payload: privateFirst},
+		{Type: "run.started", RunID: "agent-run-1", ConversationID: "project-1", Sequence: 2, Timestamp: now, Payload: json.RawMessage(`{}`)},
+		{Type: "trajectory.record", RunID: "agent-run-1", ConversationID: "project-1", Sequence: 3, Timestamp: now, Payload: privateSecond},
+		{Type: "run.completed", RunID: "agent-run-1", ConversationID: "project-1", Sequence: 4, Timestamp: now, Payload: json.RawMessage(`{}`)},
+	}}, snapshot: []byte("workspace-before-run")}
+	store := &eventStoreStub{}
+	worker := NewRunWorker(runs, store, gateway)
+	worker.workerID, worker.heartbeat = "worker-1", time.Hour
+	worker.execute(context.Background(), run)
+
+	require.Len(t, runs.records, 2)
+	require.Equal(t, first.Hash, runs.records[0].Hash)
+	require.Equal(t, []byte("workspace-before-run"), runs.snapshot.Data)
+	require.Len(t, store.events, 2)
+	require.Equal(t, "run.started", store.events[0].Type)
+	require.Equal(t, "run.completed", store.events[1].Type)
+}
+
+func signedTrajectoryRecord(t *testing.T, record models.RunTrajectoryRecord) models.RunTrajectoryRecord {
+	t.Helper()
+	record.Hash = ""
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	digest := sha256.Sum256(data)
+	record.Hash = fmt.Sprintf("%x", digest[:])
+	return record
 }
 
 func TestRunWorkerCreatesRuntimeWithAbsoluteExpiry(t *testing.T) {

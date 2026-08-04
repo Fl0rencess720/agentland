@@ -102,7 +102,7 @@ func (c *agentlandGatewayClient) EnsureRuntime(ctx context.Context, sessionID st
 func (c *agentlandGatewayClient) StreamChat(ctx context.Context, sessionID, conversationID, message string, onEvent func(*models.AgentEvent) error) (err error) {
 	ctx, span := startGatewaySpan(ctx, "gateway.stream_chat", attribute.String("gateway.session_id", sessionID), attribute.String("agent.conversation_id", conversationID))
 	defer finishGatewaySpan(span, &err)
-	payload, err := json.Marshal(map[string]string{"conversation_id": conversationID, "message": message})
+	payload, err := json.Marshal(map[string]any{"conversation_id": conversationID, "message": message, "capture_trajectory": true})
 	if err != nil {
 		return err
 	}
@@ -125,6 +125,67 @@ func (c *agentlandGatewayClient) StreamChat(ctx context.Context, sessionID, conv
 		return decodeGatewayError(resp.StatusCode, body)
 	}
 	return parseAgentEvents(resp.Body, onEvent)
+}
+
+func (c *agentlandGatewayClient) GetWorkspaceSnapshot(ctx context.Context, sessionID string) (result []byte, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.workspace_snapshot", attribute.String("gateway.session_id", sessionID))
+	defer finishGatewaySpan(span, &err)
+	resp, err := c.do(ctx, http.MethodGet, "/api/agent-sessions/invocations/api/workspace/snapshot", sessionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20+1))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeGatewayError(resp.StatusCode, data)
+	}
+	if len(data) > 8<<20 {
+		return nil, errors.New("workspace snapshot exceeds 8 MiB")
+	}
+	return data, nil
+}
+
+func (c *agentlandGatewayClient) RestoreWorkspaceSnapshot(ctx context.Context, sessionID string, snapshot []byte) (err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.workspace_restore", attribute.String("gateway.session_id", sessionID), attribute.Int("workspace.snapshot_bytes", len(snapshot)))
+	defer finishGatewaySpan(span, &err)
+	resp, err := c.do(ctx, http.MethodPost, "/api/agent-sessions/invocations/api/workspace/snapshot", sessionID, bytes.NewReader(snapshot))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return decodeGatewayError(resp.StatusCode, body)
+	}
+	return nil
+}
+
+func (c *agentlandGatewayClient) ReplayDecisions(ctx context.Context, sessionID string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {
+	return c.replay(ctx, sessionID, "decision", records)
+}
+
+func (c *agentlandGatewayClient) ReplayLive(ctx context.Context, sessionID string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {
+	return c.replay(ctx, sessionID, "live", records)
+}
+
+func (c *agentlandGatewayClient) replay(ctx context.Context, sessionID, mode string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.replay_decisions", attribute.String("gateway.session_id", sessionID), attribute.Int("agent.trajectory_records", len(records)))
+	defer finishGatewaySpan(span, &err)
+	data, err := c.invocationJSON(ctx, http.MethodPost, "/api/agent-sessions/invocations/api/replays/"+url.PathEscape(mode), sessionID, map[string]any{"records": records})
+	if err != nil {
+		return nil, err
+	}
+	var report models.ReplayRunResp
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
 }
 
 func (c *agentlandGatewayClient) CancelRun(ctx context.Context, sessionID, agentRunID string) (err error) {

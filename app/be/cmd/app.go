@@ -32,7 +32,7 @@ func newApp(ctx context.Context) (*App, error) {
 	runRepo := data.NewRunRepo()
 	runEvents := data.NewRunEventStore()
 	gateway := data.NewAgentlandGatewayClient()
-	projectUseCase := biz.NewProjectUsecase(projectRepo, runRepo, runEvents, gateway)
+	projectUseCase := biz.NewProjectUsecase(projectRepo, runRepo, runEvents, gateway, data.NewLangfuseScoreClient())
 
 	httpServer := service.NewHTTPServer(
 		middlewares.NewDefaultIPRateLimiter(),

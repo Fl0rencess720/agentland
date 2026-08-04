@@ -22,4 +22,6 @@ func InitRunAPI(group *gin.RouterGroup, handler *ProjectHandler) {
 	group.GET("/:run_id", handler.GetRun)
 	group.GET("/:run_id/events", handler.RunEvents)
 	group.POST("/:run_id/cancel", handler.CancelRun)
+	group.GET("/:run_id/trajectory", handler.RunTrajectory)
+	group.POST("/:run_id/replays", handler.ReplayRun)
 }

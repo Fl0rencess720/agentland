@@ -160,6 +160,69 @@ type RunCancelResp struct {
 	Status string `json:"status"`
 }
 
+const (
+	ReplayModeDecision = "decision"
+	ReplayModeLive     = "live"
+)
+
+type RunTrajectoryRecord struct {
+	Version        int             `json:"version"`
+	RunID          string          `json:"run_id"`
+	ConversationID string          `json:"conversation_id"`
+	Sequence       int64           `json:"sequence"`
+	Type           string          `json:"type"`
+	Step           int             `json:"step,omitempty"`
+	Timestamp      string          `json:"timestamp"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
+	PreviousHash   string          `json:"previous_hash,omitempty"`
+	Hash           string          `json:"hash"`
+}
+
+type RunTrajectoryResp struct {
+	RunID   string                `json:"run_id"`
+	Records []RunTrajectoryRecord `json:"records"`
+}
+
+type ReplayRunReq struct {
+	Mode string `json:"mode" binding:"required"`
+}
+
+type ReplayToolCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ReplayStep struct {
+	Step           int              `json:"step"`
+	Matched        bool             `json:"matched"`
+	Expected       []ReplayToolCall `json:"expected"`
+	Actual         []ReplayToolCall `json:"actual"`
+	ContentChanged bool             `json:"content_changed"`
+}
+
+type ReplayRunResp struct {
+	ID                string       `json:"id"`
+	SourceRunID       string       `json:"source_run_id"`
+	Mode              string       `json:"mode"`
+	Status            string       `json:"status"`
+	TotalSteps        int          `json:"total_steps"`
+	MatchedSteps      int          `json:"matched_steps"`
+	Score             float64      `json:"score"`
+	Steps             []ReplayStep `json:"steps"`
+	SourceSnapshotSHA string       `json:"source_snapshot_sha,omitempty"`
+	OutputSnapshotSHA string       `json:"output_snapshot_sha,omitempty"`
+	WorkspaceChanged  bool         `json:"workspace_changed,omitempty"`
+	Output            string       `json:"output,omitempty"`
+	Error             string       `json:"error,omitempty"`
+}
+
+type WorkspaceSnapshot struct {
+	Data      []byte
+	SHA       string
+	Error     string
+	CreatedAt time.Time
+}
+
 type Run struct {
 	ID, OwnerID, ProjectID, IdempotencyKey string
 	InputMessageID, AssistantMessageID     string

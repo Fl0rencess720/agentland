@@ -125,6 +125,20 @@ func (h *ProjectHandler) CancelRun(c *gin.Context) {
 	response.AcceptedResponse(c, data)
 }
 
+func (h *ProjectHandler) RunTrajectory(c *gin.Context) {
+	data, apiErr := h.usecase.RunTrajectory(c.Request.Context(), principal(c), c.Param("run_id"))
+	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) ReplayRun(c *gin.Context) {
+	var req models.ReplayRunReq
+	if !bindJSON(c, &req, maxProjectJSONBodyBytes) {
+		return
+	}
+	data, apiErr := h.usecase.ReplayRun(c.Request.Context(), principal(c), c.Param("run_id"), &req)
+	write(c, data, apiErr)
+}
+
 func (h *ProjectHandler) ListMessages(c *gin.Context) {
 	var req models.MessageListReq
 	if !bindQuery(c, &req) {
