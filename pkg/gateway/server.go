@@ -27,6 +27,9 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		handlers.InitCodeInterpreterApi(app.Group("/code-runner"), cfg)
 		handlers.InitAgentSessionApi(app.Group("/agent-sessions"), cfg)
 		handlers.InitPreviewApi(app, e, cfg)
+		if err := handlers.InitPublicationAPI(app.Group("/publications"), cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	httpServer := &http.Server{

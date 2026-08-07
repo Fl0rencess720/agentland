@@ -193,6 +193,38 @@ func (h *ProjectHandler) Preview(c *gin.Context) {
 	write(c, data, apiErr)
 }
 
+func (h *ProjectHandler) CreatePublication(c *gin.Context) {
+	var req models.PublicationCreateReq
+	if !bindJSON(c, &req, maxProjectJSONBodyBytes) {
+		return
+	}
+	data, apiErr := h.usecase.CreatePublication(c.Request.Context(), principal(c), c.Param("project_id"), c.GetHeader("Idempotency-Key"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.AcceptedResponse(c, data)
+}
+
+func (h *ProjectHandler) ListPublications(c *gin.Context) {
+	data, apiErr := h.usecase.ListPublications(c.Request.Context(), principal(c), c.Param("project_id"))
+	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) GetPublication(c *gin.Context) {
+	data, apiErr := h.usecase.GetPublication(c.Request.Context(), principal(c), c.Param("publication_id"))
+	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) CancelPublication(c *gin.Context) {
+	data, apiErr := h.usecase.CancelPublication(c.Request.Context(), principal(c), c.Param("publication_id"))
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.AcceptedResponse(c, data)
+}
+
 func principal(c *gin.Context) models.AuthPrincipal {
 	return models.AuthPrincipal{UserID: c.GetString(string(middlewares.UserIDKey)), SessionID: c.GetString(string(middlewares.SessionIDKey))}
 }

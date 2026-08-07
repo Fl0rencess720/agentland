@@ -38,6 +38,8 @@ var (
 	ErrRuntimeUnavailable  = errors.New("project runtime unavailable")
 	ErrPreviewNotFound     = errors.New("preview not found")
 	ErrRunLeaseLost        = errors.New("run worker lease lost")
+	ErrPublicationNotFound = errors.New("publication not found")
+	ErrActivePublication   = errors.New("project already has an active publication")
 )
 
 var planProjectLimits = map[string]int{"free": 12, "pro": 100, "enterprise": 1000}
@@ -98,12 +100,21 @@ type AgentlandGateway interface {
 }
 
 type projectUseCase struct {
-	projects  ProjectRepo
-	runs      RunRepo
-	events    RunEventStore
-	gateway   AgentlandGateway
-	evaluator EvaluationSink
-	now       func() time.Time
+	projects     ProjectRepo
+	runs         RunRepo
+	events       RunEventStore
+	gateway      AgentlandGateway
+	publications PublicationRepo
+	publisher    PublicationGateway
+	evaluator    EvaluationSink
+	now          func() time.Time
+}
+
+func NewProjectUsecaseWithPublishing(projects ProjectRepo, runs RunRepo, events RunEventStore, gateway AgentlandGateway, publications PublicationRepo, publisher PublicationGateway, evaluators ...EvaluationSink) ProjectUseCase {
+	usecase := NewProjectUsecase(projects, runs, events, gateway, evaluators...).(*projectUseCase)
+	usecase.publications = publications
+	usecase.publisher = publisher
+	return usecase
 }
 
 func NewProjectUsecase(projects ProjectRepo, runs RunRepo, events RunEventStore, gateway AgentlandGateway, evaluators ...EvaluationSink) ProjectUseCase {
@@ -759,12 +770,14 @@ func mapAPIError(err error) *response.APIError {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, autherr.ErrProjectNotFound), errors.Is(err, ErrRunNotFound), errors.Is(err, ErrPreviewNotFound):
+	case errors.Is(err, autherr.ErrProjectNotFound), errors.Is(err, ErrRunNotFound), errors.Is(err, ErrPreviewNotFound), errors.Is(err, ErrPublicationNotFound):
 		return response.NotFoundError()
 	case errors.Is(err, autherr.ErrUserNotFound):
 		return response.UnauthorizedError()
 	case errors.Is(err, ErrActiveRun):
 		return response.ActiveRunConflictError()
+	case errors.Is(err, ErrActivePublication):
+		return response.ActivePublicationConflictError()
 	case errors.Is(err, ErrIdempotencyConflict):
 		return response.IdempotencyConflictError()
 	case errors.Is(err, ErrRuntimeExpired):

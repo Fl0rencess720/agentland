@@ -16,6 +16,13 @@ func InitAPI(group *gin.RouterGroup, handler *ProjectHandler) {
 	group.PUT("/:project_id/files/content", handler.UpdateFileContent)
 	group.POST("/:project_id/previews", handler.StartPreview)
 	group.GET("/:project_id/preview", handler.Preview)
+	group.POST("/:project_id/publications", handler.CreatePublication)
+	group.GET("/:project_id/publications", handler.ListPublications)
+}
+
+func InitPublicationAPI(group *gin.RouterGroup, handler *ProjectHandler) {
+	group.GET("/:publication_id", handler.GetPublication)
+	group.POST("/:publication_id/cancel", handler.CancelPublication)
 }
 
 func InitRunAPI(group *gin.RouterGroup, handler *ProjectHandler) {

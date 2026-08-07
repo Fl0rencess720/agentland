@@ -19,6 +19,7 @@ spec:
         app.kubernetes.io/part-of: agentland
     spec:
       serviceAccountName: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.serviceAccount.name) }}
+      terminationGracePeriodSeconds: 30
       containers:
         - name: gateway
           image: "{{ .Values.gateway.deployment.image.repository }}:{{ .Values.gateway.deployment.image.tag }}"
@@ -54,6 +55,37 @@ spec:
               value: {{ .Values.gateway.deployment.env.AL_SANDBOX_JWT_TTL | quote }}
             - name: AL_SANDBOX_JWT_KID
               value: {{ .Values.gateway.deployment.env.AL_SANDBOX_JWT_KID | quote }}
+            - name: AL_PUBLISHER_ENABLED
+              value: {{ .Values.gateway.publisher.enabled | quote }}
+            - name: AL_BUILDKIT_ADDRESS
+              value: {{ .Values.gateway.publisher.buildkitAddress | quote }}
+            - name: AL_BUILDKIT_ALLOW_INSECURE
+              value: {{ .Values.gateway.publisher.allowInsecureBuildkit | quote }}
+            - name: AL_BUILDKIT_PLATFORM
+              value: {{ .Values.gateway.publisher.platform | quote }}
+            - name: AL_BUILDKIT_TIMEOUT
+              value: {{ .Values.gateway.publisher.timeout | quote }}
+            - name: AL_REGISTRY_REPOSITORY_PREFIX
+              value: {{ .Values.gateway.publisher.repositoryPrefix | quote }}
+{{- if .Values.gateway.publisher.enabled }}
+            - name: AL_PUBLISHER_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "gateway.publisher.serviceTokenSecret is required when publishing is enabled" .Values.gateway.publisher.serviceTokenSecret | quote }}
+                  key: {{ .Values.gateway.publisher.serviceTokenSecretKey | quote }}
+{{- end }}
+{{- if .Values.gateway.publisher.registryCredentialsSecret }}
+            - name: AL_REGISTRY_DOCKER_CONFIG
+              value: /home/apiserver/.docker
+{{- end }}
+{{- if .Values.gateway.publisher.buildkitTLSSecret }}
+            - name: AL_BUILDKIT_CA_CERT
+              value: /var/run/secrets/agentland/buildkit/ca.pem
+            - name: AL_BUILDKIT_CLIENT_CERT
+              value: /var/run/secrets/agentland/buildkit/cert.pem
+            - name: AL_BUILDKIT_CLIENT_KEY
+              value: /var/run/secrets/agentland/buildkit/key.pem
+{{- end }}
           ports:
             - containerPort: 8080
               name: http
@@ -67,4 +99,41 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+          resources:
+{{ toYaml .Values.gateway.deployment.resources | indent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - name: temporary-files
+              mountPath: /tmp
+{{- if .Values.gateway.publisher.registryCredentialsSecret }}
+            - name: registry-credentials
+              mountPath: /home/apiserver/.docker/config.json
+              subPath: .dockerconfigjson
+              readOnly: true
+{{- end }}
+{{- if .Values.gateway.publisher.buildkitTLSSecret }}
+            - name: buildkit-mtls
+              mountPath: /var/run/secrets/agentland/buildkit
+              readOnly: true
+{{- end }}
+      volumes:
+        - name: temporary-files
+          emptyDir:
+            sizeLimit: 512Mi
+{{- if .Values.gateway.publisher.registryCredentialsSecret }}
+        - name: registry-credentials
+          secret:
+            secretName: {{ .Values.gateway.publisher.registryCredentialsSecret | quote }}
+{{- end }}
+{{- if .Values.gateway.publisher.buildkitTLSSecret }}
+        - name: buildkit-mtls
+          secret:
+            secretName: {{ .Values.gateway.publisher.buildkitTLSSecret | quote }}
+{{- end }}
 {{- end }}

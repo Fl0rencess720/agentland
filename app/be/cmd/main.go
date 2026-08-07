@@ -63,10 +63,14 @@ func main() {
 	}
 
 	var workerWG sync.WaitGroup
-	workerWG.Add(1)
+	workerWG.Add(2)
 	go func() {
 		defer workerWG.Done()
 		app.RunWorker.Run(ctx)
+	}()
+	go func() {
+		defer workerWG.Done()
+		app.PublicationWorker.Run(ctx)
 	}()
 
 	serverErr := make(chan error, 1)

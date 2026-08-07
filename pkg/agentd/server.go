@@ -76,7 +76,7 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 	if index := skills.Index(); index != "" {
 		prompt += "\n\n" + index
 	}
-	memory := NewMemoryStore(cfg.WorkspaceRoot, cfg.ContextTokens)
+	memory := NewMemoryStore(cfg.WorkspaceRoot, cfg.ContextTokens, cfg.SummaryModel)
 	agent, err := NewAgent(ctx, chatModel, tools, memory, prompt)
 	if err != nil {
 		manager.Close()

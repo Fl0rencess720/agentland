@@ -19,16 +19,32 @@ import (
 )
 
 type fakeModel struct {
-	mu        sync.Mutex
-	responses []*schema.Message
-	requests  [][]*schema.Message
-	streamErr int
-	err       error
-	calls     int
+	mu                sync.Mutex
+	responses         []*schema.Message
+	requests          [][]*schema.Message
+	generateResponses []*schema.Message
+	generateRequests  [][]*schema.Message
+	generateErr       error
+	streamErr         int
+	err               error
+	calls             int
+	generateCalls     int
 }
 
-func (f *fakeModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
-	return schema.AssistantMessage("summary", nil), nil
+func (f *fakeModel) Generate(_ context.Context, messages []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.generateCalls++
+	f.generateRequests = append(f.generateRequests, cloneMessages(messages))
+	if f.generateErr != nil {
+		return nil, f.generateErr
+	}
+	if len(f.generateResponses) == 0 {
+		return schema.AssistantMessage("summary", nil), nil
+	}
+	response := f.generateResponses[0]
+	f.generateResponses = f.generateResponses[1:]
+	return response, nil
 }
 
 func (f *fakeModel) Stream(_ context.Context, messages []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {

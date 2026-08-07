@@ -18,6 +18,12 @@ const (
 	RuntimeStatusActive      = "active"
 	RuntimeStatusExpired     = "expired"
 	RuntimeStatusUnavailable = "unavailable"
+
+	PublicationStatusQueued    = "queued"
+	PublicationStatusRunning   = "running"
+	PublicationStatusCompleted = "completed"
+	PublicationStatusFailed    = "failed"
+	PublicationStatusCancelled = "cancelled"
 )
 
 type ProjectListReq struct {
@@ -337,6 +343,68 @@ type ProjectPreview struct {
 	ID, ProjectID, OwnerID, Status, PreviewURL, PreviewToken string
 	Port                                                     int
 	CreatedAt, LastActiveAt, ExpiresAt, UpdatedAt            time.Time
+}
+
+type PublicationCreateReq struct {
+	Context    string `json:"context"`
+	Dockerfile string `json:"dockerfile"`
+}
+
+type PublicationResp struct {
+	ID                string  `json:"id"`
+	ProjectID         string  `json:"project_id"`
+	Status            string  `json:"status"`
+	Context           string  `json:"context"`
+	Dockerfile        string  `json:"dockerfile"`
+	ImageRef          string  `json:"image_ref,omitempty"`
+	Digest            string  `json:"digest,omitempty"`
+	Logs              string  `json:"logs,omitempty"`
+	ErrorCode         string  `json:"error_code,omitempty"`
+	ErrorMessage      string  `json:"error_message,omitempty"`
+	CancelRequestedAt *string `json:"cancel_requested_at,omitempty"`
+	CreatedAt         string  `json:"created_at"`
+	StartedAt         *string `json:"started_at,omitempty"`
+	CompletedAt       *string `json:"completed_at,omitempty"`
+}
+
+type PublicationListResp struct {
+	Items []PublicationResp `json:"items"`
+}
+
+type PublicationCancelResp struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+type Publication struct {
+	ID, OwnerID, ProjectID, IdempotencyKey string
+	Context, Dockerfile, Status, WorkerID  string
+	ImageRef, Digest, Logs                 string
+	ErrorCode, ErrorMessage                string
+	TraceParent, TraceState                string
+	CreatedAt, UpdatedAt                   time.Time
+	StartedAt, HeartbeatAt, CompletedAt    *time.Time
+	CancelRequestedAt                      *time.Time
+}
+
+type CreatePublicationInput struct {
+	ID, OwnerID, ProjectID, IdempotencyKey string
+	Context, Dockerfile                    string
+	TraceParent, TraceState                string
+	Now                                    time.Time
+}
+
+type FinishPublicationInput struct {
+	ID, WorkerID, Status    string
+	ImageRef, Digest, Logs  string
+	ErrorCode, ErrorMessage string
+	Now                     time.Time
+}
+
+type GatewayPublication struct {
+	ImageRef string `json:"image_ref"`
+	Digest   string `json:"digest"`
+	Logs     string `json:"logs"`
 }
 
 type AgentEvent struct {

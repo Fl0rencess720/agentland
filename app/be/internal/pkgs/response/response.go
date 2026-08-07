@@ -122,6 +122,14 @@ func ActiveRunConflictError() *APIError {
 	}
 }
 
+func ActivePublicationConflictError() *APIError {
+	return &APIError{
+		StatusCode: http.StatusConflict,
+		Msg:        "project_publication_active",
+		Data:       ErrorData{Type: "PROJECT_PUBLICATION_ACTIVE"},
+	}
+}
+
 func IdempotencyConflictError() *APIError {
 	return &APIError{
 		StatusCode: http.StatusConflict,

@@ -36,6 +36,10 @@ type ProjectUseCase interface {
 	UpdateFileContent(context.Context, models.AuthPrincipal, string, *models.FileContentReq, *models.FileContentUpdateReq) (*models.FileContentUpdateResp, *response.APIError)
 	StartPreview(context.Context, models.AuthPrincipal, string, *models.PreviewStartReq) (*models.PreviewResp, *response.APIError)
 	Preview(context.Context, models.AuthPrincipal, string) (*models.PreviewResp, *response.APIError)
+	CreatePublication(context.Context, models.AuthPrincipal, string, string, *models.PublicationCreateReq) (*models.PublicationResp, *response.APIError)
+	ListPublications(context.Context, models.AuthPrincipal, string) (*models.PublicationListResp, *response.APIError)
+	GetPublication(context.Context, models.AuthPrincipal, string) (*models.PublicationResp, *response.APIError)
+	CancelPublication(context.Context, models.AuthPrincipal, string) (*models.PublicationCancelResp, *response.APIError)
 }
 
 type RunArtifactRepo interface {

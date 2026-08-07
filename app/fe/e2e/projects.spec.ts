@@ -41,6 +41,11 @@ test('workspace tabs fit the viewport and open the code editor', async ({ page }
   await page.route('**/p/viewport-preview/**', (route) => route.fulfill({ contentType: 'text/html', body: previewDocument }));
   await page.route('**/api/v1/projects/project-1/files/tree*', (route) => route.fulfill({ json: envelope({ root: '.', nodes: [{ path: 'src/App.tsx', name: 'App.tsx', type: 'file' }] }) }));
   await page.route('**/api/v1/projects/project-1/files/content*', (route) => route.fulfill({ json: envelope({ path: 'src/App.tsx', content: 'export default function App() {}', sha: 'sha-1' }) }));
+  await page.route('**/api/v1/projects/project-1/publications', (route) => route.fulfill({ json: envelope({ items: [{
+    id: 'pub-1', project_id: 'project-1', status: 'completed', context: '.', dockerfile: 'Dockerfile',
+    image_ref: 'registry.example/apps/project-1:pub-1', digest: `sha256:${'a'.repeat(64)}`,
+    logs: 'build complete', created_at: '2026-08-02T10:00:00Z',
+  }] }) }));
 
   await page.goto('/projects/project-1');
   await expect(page.getByText('Demo app')).toBeVisible();
@@ -58,6 +63,10 @@ test('workspace tabs fit the viewport and open the code editor', async ({ page }
   await expect(page.getByRole('button', { name: 'App.tsx' })).toBeVisible();
   const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(hasHorizontalOverflow).toBe(false);
+  await page.getByRole('tab', { name: 'Publish' }).click();
+  await expect(page.getByText('Container image')).toBeVisible();
+  await expect(page.getByText(/registry\.example\/apps\/project-1@sha256:/)).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });
 
 test('runs the agent, saves code, and starts a sandboxed preview', async ({ page }, testInfo) => {

@@ -572,6 +572,15 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`create table if not exists run_trajectory_records (
 				run_id text not null references agent_runs(id) on delete cascade,sequence bigint not null,record_hash text not null,record bytea not null,created_at timestamptz not null,primary key(run_id,sequence))`,
 			`create unique index if not exists uq_run_trajectory_hash on run_trajectory_records(run_id,record_hash)`,
+			`create table if not exists project_publications (
+				id text primary key,owner_id text not null references users(id),project_id text not null references projects(id),idempotency_key text not null,
+				build_context text not null,dockerfile text not null,status text not null,worker_id text not null default '',image_ref text not null default '',image_digest text not null default '',
+				build_logs text not null default '',error_code text not null default '',error_message text not null default '',trace_parent text not null default '',trace_state text not null default '',
+				created_at timestamptz not null,updated_at timestamptz not null,started_at timestamptz,heartbeat_at timestamptz,completed_at timestamptz,cancel_requested_at timestamptz)`,
+			`create unique index if not exists uq_project_publications_idempotency on project_publications(owner_id,project_id,idempotency_key)`,
+			`create unique index if not exists uq_project_publications_active on project_publications(project_id) where status in ('queued','running')`,
+			`create index if not exists idx_project_publications_queue on project_publications(status,created_at)`,
+			`create index if not exists idx_project_publications_project_created on project_publications(project_id,created_at desc)`,
 		}
 		for _, statement := range statements {
 			if _, err := r.pool.Exec(ctx, statement); err != nil {

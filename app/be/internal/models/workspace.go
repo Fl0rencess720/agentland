@@ -10,6 +10,7 @@ type GatewayResponseError struct {
 	Code       string
 	Message    string
 	SHA        string
+	Logs       string
 }
 
 func (e *GatewayResponseError) Error() string {

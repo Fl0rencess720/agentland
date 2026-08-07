@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-export type WorkspaceTab = 'chat' | 'preview' | 'code';
+export type WorkspaceTab = 'chat' | 'preview' | 'code' | 'publish';
 
 export type FileDraft = {
   content: string;

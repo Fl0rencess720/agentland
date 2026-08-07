@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
-import { AlertCircle, Code2, Eye, LoaderCircle, MessageSquare } from 'lucide-react';
+import { AlertCircle, Box, Code2, Eye, LoaderCircle, MessageSquare } from 'lucide-react';
 import { getProject, PROJECT_RUNTIME_EXPIRED_EVENT, type ProjectRuntimeExpiredDetail } from '../api';
 import { useI18n } from '../i18n';
 import { queryKeys } from '../queryKeys';
@@ -10,11 +10,13 @@ import AppHeader from './AppHeader';
 import ChatPanel from './ChatPanel';
 import CodeEditor from './CodeEditor';
 import PreviewPanel from './PreviewPanel';
+import PublishPanel from './PublishPanel';
 
 const TAB_ICONS: Record<WorkspaceTab, typeof MessageSquare> = {
   chat: MessageSquare,
   preview: Eye,
   code: Code2,
+  publish: Box,
 };
 
 export default function Workspace() {
@@ -81,12 +83,14 @@ export default function Workspace() {
     chat: t('workspace.chat'),
     preview: t('workspace.preview'),
     code: t('workspace.code'),
+    publish: t('workspace.publish'),
   };
 
   const panel = (tab: WorkspaceTab) => {
     if (tab === 'chat') return <ChatPanel key={`chat:${project.id}`} project={project} readOnly={chatReadOnly} />;
     if (tab === 'preview') return <PreviewPanel key={`preview:${project.id}`} projectId={project.id} readOnly={workspaceReadOnly} />;
-    return <CodeEditor key={`code:${project.id}`} projectId={project.id} readOnly={workspaceReadOnly} />;
+    if (tab === 'code') return <CodeEditor key={`code:${project.id}`} projectId={project.id} readOnly={workspaceReadOnly} />;
+    return <PublishPanel key={`publish:${project.id}`} projectId={project.id} readOnly={workspaceReadOnly || Boolean(project.active_run_id)} />;
   };
 
   return (
@@ -105,7 +109,7 @@ export default function Workspace() {
           <div className="min-h-0 border-r border-slate-200">{panel('chat')}</div>
           <div className="flex min-h-0 min-w-0 flex-col">
             <div className="flex h-11 shrink-0 items-center border-b border-slate-200 bg-white px-2" role="tablist">
-              {(['preview', 'code'] as const).map((tab) => {
+              {(['preview', 'code', 'publish'] as const).map((tab) => {
                 const Icon = TAB_ICONS[tab];
                 return (
                   <button key={tab} type="button" role="tab" aria-selected={rightTab === tab} onClick={() => setRightTab(tab)} className={`flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium ${rightTab === tab ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
@@ -120,7 +124,7 @@ export default function Workspace() {
       ) : (
         <main className="flex min-h-0 flex-1 flex-col">
           <div className="flex h-11 shrink-0 items-center border-b border-slate-200 bg-white px-2" role="tablist">
-            {(['chat', 'preview', 'code'] as const).map((tab) => {
+            {(['chat', 'preview', 'code', 'publish'] as const).map((tab) => {
               const Icon = TAB_ICONS[tab];
               return (
                 <button key={tab} type="button" role="tab" aria-selected={mobileTab === tab} onClick={() => setMobileTab(tab)} className={`flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium sm:text-sm ${mobileTab === tab ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
