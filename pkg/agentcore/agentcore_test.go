@@ -222,8 +222,12 @@ func (s *AgentCoreSuite) TestCreateAgentSession() {
 	mockStore := &mockSessionStore{}
 
 	server := &Server{
-		k8sClient:    fakeDynamicClient,
-		sessionStore: mockStore,
+		k8sClient:           fakeDynamicClient,
+		sessionStore:        mockStore,
+		warmPoolEnabled:     true,
+		warmPoolDefaultMode: string(v1alpha1.ProvisioningModePoolRequired),
+		warmPoolPoolRef:     "code-interpreter-pool",
+		warmPoolProfile:     "code-interpreter",
 	}
 
 	done := make(chan struct{})
@@ -270,6 +274,10 @@ func (s *AgentCoreSuite) TestCreateAgentSession() {
 	s.NoError(err)
 	s.True(found)
 	s.Equal("default-runtime", runtimeName)
+	provisioning, found, err := unstructured.NestedMap(list.Items[0].Object, "spec", "provisioning")
+	s.NoError(err)
+	s.False(found, "AgentRuntime provisioning must control AgentSession pooling")
+	s.Nil(provisioning)
 }
 
 func (s *AgentCoreSuite) TestCreateAgentSession_FailedPhaseReturnsDetailedError() {

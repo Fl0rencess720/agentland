@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -32,6 +33,13 @@ type SandboxTemplate struct {
 	Command []string `json:"command,omitempty"`
 	// +optional
 	Args []string `json:"args,omitempty"`
+	// Env defines environment variables for the sandbox process. Prefer
+	// SecretKeyRef for credentials instead of embedding values in the CR.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+	// EnvFrom imports environment variables from ConfigMaps or Secrets.
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 }
 
 // SandboxSpec defines the desired state of Sandbox.

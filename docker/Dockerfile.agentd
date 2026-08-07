@@ -51,6 +51,11 @@ RUN npm config set fund false \
     && npm install -g agent-browser \
     && npm cache clean --force
 
+RUN groupadd --gid 10001 agentd-tool \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/agentd-tool --shell /bin/bash agentd-tool \
+    && groupadd --gid 10002 agentd-mcp \
+    && useradd --uid 10002 --gid 10002 --groups 10001 --create-home --home-dir /home/agentd-mcp --shell /bin/bash agentd-mcp
+
 WORKDIR /app
 
 COPY --from=builder /workspace/agentd /app/agentd
@@ -61,6 +66,14 @@ RUN chmod +x /app/entrypoint.sh
 ENV AL_AGENTD_WORKSPACE_ROOT=/workspace \
     AL_AGENTD_SKILLS_DIR=/app/skills \
     AL_AGENTD_MCP_CONFIG_PATHS=/etc/agentland/mcp.json,/workspace/.agentland/mcp.json \
+    AL_AGENTD_TOOL_UID=10001 \
+    AL_AGENTD_TOOL_GID=10001 \
+    AL_AGENTD_TOOL_HOME=/home/agentd-tool \
+    AL_AGENTD_TOOL_USER=agentd-tool \
+    AL_AGENTD_MCP_UID=10002 \
+    AL_AGENTD_MCP_GID=10002 \
+    AL_AGENTD_MCP_HOME=/home/agentd-mcp \
+    AL_AGENTD_MCP_USER=agentd-mcp \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 
 EXPOSE 1883

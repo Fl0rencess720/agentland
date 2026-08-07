@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,78 @@ func TestAgentCancelStopsRunningTool(t *testing.T) {
 		foundCancelled = foundCancelled || event.Type == EventRunCancelled
 	}
 	require.True(t, foundCancelled)
+}
+
+func TestAgentChunksLargeToolOutput(t *testing.T) {
+	output := strings.Repeat("界", 80_000)
+	largeTool, err := toolutils.InferTool("large", "return large output", func(context.Context, struct{}) (string, error) {
+		return output, nil
+	})
+	require.NoError(t, err)
+	chatModel := &fakeModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "large-call",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "large",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("done", nil),
+	}}
+	agent := newTestAgent(t, chatModel, []tool.BaseTool{largeTool})
+
+	var chunks []string
+	_, err = agent.Run(context.Background(), "large-output", "start", func(event Event) error {
+		if event.Type == EventToolOutput {
+			payload := event.Payload.(map[string]any)
+			chunk := payload["output"].(string)
+			require.LessOrEqual(t, len(chunk), maxToolOutputEventBytes)
+			chunks = append(chunks, chunk)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Greater(t, len(chunks), 1)
+	require.Equal(t, output, strings.Join(chunks, ""))
+}
+
+func TestAgentBoundsToolOutputBeforePersisting(t *testing.T) {
+	output := strings.Repeat("界", maxToolOutputBytes)
+	largeTool, err := toolutils.InferTool("large", "return oversized output", func(context.Context, struct{}) (string, error) {
+		return output, nil
+	})
+	require.NoError(t, err)
+	chatModel := &fakeModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "large-call",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "large",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("done", nil),
+	}}
+	agent := newTestAgent(t, chatModel, []tool.BaseTool{largeTool})
+
+	var chunks []string
+	_, err = agent.Run(context.Background(), "bounded-output", "start", func(event Event) error {
+		if event.Type == EventToolOutput {
+			payload := event.Payload.(map[string]any)
+			chunks = append(chunks, payload["output"].(string))
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	emitted := strings.Join(chunks, "")
+	require.LessOrEqual(t, len(emitted), maxToolOutputBytes)
+	require.Contains(t, emitted, "[tool output truncated;")
+	require.NotEqual(t, output, emitted)
+	messages, err := agent.memory.Messages("bounded-output")
+	require.NoError(t, err)
+	require.Equal(t, emitted, messages[2].Content)
 }
 
 func newTestAgent(t *testing.T, chatModel model.ToolCallingChatModel, tools []tool.BaseTool) *Agent {

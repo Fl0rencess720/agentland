@@ -52,7 +52,7 @@ func LoadMCPTools(ctx context.Context, paths []string) ([]tool.BaseTool, *MCPMan
 			return nil, nil, fmt.Errorf("read MCP config %s: %w", path, err)
 		}
 		var config mcpConfigFile
-		if err := json.Unmarshal([]byte(os.ExpandEnv(string(data))), &config); err != nil {
+		if err := json.Unmarshal([]byte(expandMCPConfigEnv(string(data))), &config); err != nil {
 			return nil, nil, fmt.Errorf("decode MCP config %s: %w", path, err)
 		}
 		for _, server := range config.Servers {
@@ -104,9 +104,18 @@ func connectMCP(ctx context.Context, config mcpServerConfig) ([]tool.BaseTool, *
 			return nil, nil, fmt.Errorf("MCP server %s requires command", config.Name)
 		}
 		cmd := exec.CommandContext(ctx, config.Command, config.Args...)
-		cmd.Env = os.Environ()
-		for key, value := range config.Env {
-			cmd.Env = append(cmd.Env, key+"="+value)
+		identity := toolIdentity
+		if len(config.Env) != 0 {
+			identity = mcpIdentity
+		}
+		env, err := processEnv(identity, config.Env)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configure MCP server %s environment: %w", config.Name, err)
+		}
+		cmd.Env = env
+		cmd.SysProcAttr, err = processSysProcAttr(identity, false)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configure MCP server %s identity: %w", config.Name, err)
 		}
 		transport = &mcp.CommandTransport{Command: cmd}
 	case "streamable_http":

@@ -134,14 +134,6 @@ func (h *PreviewHandler) ProxyPreview(ctx *gin.Context) {
 		return
 	}
 
-	bodyBytes, ok := readRequestBody(ctx)
-	if !ok {
-		return
-	}
-	if len(bodyBytes) == 0 {
-		bodyBytes = nil
-	}
-
 	reqCtx, requestID := initRequestContext(ctx)
 	info, err := h.previewStore.Get(reqCtx, previewToken)
 	if err != nil {
@@ -151,6 +143,18 @@ func (h *PreviewHandler) ProxyPreview(ctx *gin.Context) {
 		}
 		response.ErrorResponse(ctx, response.ServerError)
 		return
+	}
+	if ctx.Request.Method == http.MethodOptions && strings.TrimSpace(ctx.GetHeader("Origin")) != "" {
+		applyPreviewCORS(ctx.Writer.Header(), ctx.Request)
+		ctx.Status(http.StatusNoContent)
+		return
+	}
+	bodyBytes, ok := readRequestBody(ctx)
+	if !ok {
+		return
+	}
+	if len(bodyBytes) == 0 {
+		bodyBytes = nil
 	}
 
 	sandboxInfo, err := h.sessionStore.GetSession(reqCtx, info.SessionID)
@@ -189,13 +193,14 @@ func (h *PreviewHandler) ProxyPreview(ctx *gin.Context) {
 	}
 
 	h.proxyEngine.Forward(ctx, ProxyConfig{
-		Target:       target,
-		Method:       ctx.Request.Method,
-		InternalPath: internalPath,
-		Body:         bodyBytes,
-		SessionID:    info.SessionID,
-		SandboxToken: sandboxToken,
-		RequestID:    requestID,
+		Target:             target,
+		Method:             ctx.Request.Method,
+		InternalPath:       internalPath,
+		Body:               bodyBytes,
+		SessionID:          info.SessionID,
+		SandboxToken:       sandboxToken,
+		RequestID:          requestID,
+		ResponsePathPrefix: "/p/" + previewToken,
 	})
 }
 

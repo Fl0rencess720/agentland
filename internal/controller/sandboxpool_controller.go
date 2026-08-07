@@ -142,21 +142,7 @@ func (r *SandboxPoolReconciler) createPoolPod(ctx context.Context, pool *agentla
 			Labels:       labelsMap,
 		},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:            "main",
-				Image:           pool.Spec.Template.Image,
-				ImagePullPolicy: pullPolicy,
-				Command:         pool.Spec.Template.Command,
-				Args:            pool.Spec.Template.Args,
-				VolumeMounts: []corev1.VolumeMount{{
-					Name:      sandboxJWTVolumeName,
-					MountPath: "/var/run/agentland/jwt",
-					ReadOnly:  true,
-				}, {
-					Name:      workspaceVolumeName,
-					MountPath: workspaceMountPath,
-				}},
-			}},
+			Containers: []corev1.Container{sandboxMainContainer(pool.Spec.Template, pullPolicy)},
 			Volumes: []corev1.Volume{{
 				Name: sandboxJWTVolumeName,
 				VolumeSource: corev1.VolumeSource{

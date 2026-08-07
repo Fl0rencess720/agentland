@@ -8,4 +8,14 @@ metadata:
   namespace: agentland-sandboxes
 spec:
   sandboxTemplate:
-    image: fl0rences720/agentland-korokd:latest
+    image: fl0rences720/agentland-agentd:latest
+    env:
+      - name: AL_AGENT_MODEL
+        value: replace-with-model-id
+      - name: AL_AGENT_MODEL_BASE_URL
+        value: https://api.openai.com/v1
+      - name: AL_AGENT_MODEL_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: agentd-model
+            key: api-key

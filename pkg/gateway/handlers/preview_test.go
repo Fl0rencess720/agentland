@@ -172,3 +172,54 @@ func (s *PreviewSuite) TestProxyPreview_NotFound() {
 	s.Equal(http.StatusNotFound, s.recorder.Code)
 	s.Contains(s.recorder.Body.String(), `"error":"preview not found"`)
 }
+
+func (s *PreviewSuite) TestProxyPreviewChecksTokenBeforeReadingBody() {
+	s.handler.previewStore = &mockPreviewStore{
+		getFn: func(context.Context, string) (*db.PreviewInfo, error) {
+			return nil, db.ErrPreviewNotFound
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/p/missing", nil)
+	req.Body = errReadCloser{err: io.ErrUnexpectedEOF}
+	s.ctx.Request = req
+	s.ctx.Params = gin.Params{{Key: "previewToken", Value: "missing"}}
+
+	s.handler.ProxyPreview(s.ctx)
+
+	s.Equal(http.StatusNotFound, s.recorder.Code)
+}
+
+func (s *PreviewSuite) TestProxyPreviewHandlesSandboxedIframePreflight() {
+	s.handler.previewStore = &mockPreviewStore{
+		getFn: func(context.Context, string) (*db.PreviewInfo, error) {
+			return &db.PreviewInfo{SessionID: "session-1", Port: 3000}, nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodOptions, "/p/pv-token/api/items", nil)
+	req.Header.Set("Origin", "null")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "content-type,x-preview-test")
+	s.ctx.Request = req
+	s.ctx.Params = gin.Params{{Key: "previewToken", Value: "pv-token"}, {Key: "path", Value: "/api/items"}}
+
+	s.handler.ProxyPreview(s.ctx)
+
+	s.Equal(http.StatusNoContent, s.ctx.Writer.Status())
+	s.Equal("*", s.recorder.Header().Get("Access-Control-Allow-Origin"))
+	s.Equal("content-type,x-preview-test", s.recorder.Header().Get("Access-Control-Allow-Headers"))
+}
+
+func (s *PreviewSuite) TestProxyPreviewRejectsOversizedBody() {
+	s.handler.previewStore = &mockPreviewStore{
+		getFn: func(context.Context, string) (*db.PreviewInfo, error) {
+			return &db.PreviewInfo{SessionID: "session-1", Port: 3000}, nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/p/pv-token", strings.NewReader(strings.Repeat("x", int(maxGatewayRequestBodyBytes)+1)))
+	s.ctx.Request = req
+	s.ctx.Params = gin.Params{{Key: "previewToken", Value: "pv-token"}}
+
+	s.handler.ProxyPreview(s.ctx)
+
+	s.Equal(http.StatusRequestEntityTooLarge, s.recorder.Code)
+}
