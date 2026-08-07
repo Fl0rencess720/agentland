@@ -54,7 +54,15 @@ func InitAgentSessionApi(group *gin.RouterGroup, cfg *config.Config) {
 }
 
 func (h *AgentSessionHandler) Invoke(ctx *gin.Context) {
-	bodyBytes, ok := readRequestBody(ctx)
+	invokePath := ctx.Param("path")
+	if invokePath == "" {
+		invokePath = "/"
+	}
+	requestLimit := maxGatewayRequestBodyBytes
+	if strings.HasPrefix(invokePath, "/api/replays/") {
+		requestLimit = 32 << 20
+	}
+	bodyBytes, ok := readRequestBodyLimit(ctx, requestLimit)
 	if !ok {
 		return
 	}
@@ -64,11 +72,6 @@ func (h *AgentSessionHandler) Invoke(ctx *gin.Context) {
 		zap.L().Error("Resolve agent session failed", zap.Error(err))
 		response.ErrorResponse(ctx, response.ServerError)
 		return
-	}
-
-	invokePath := ctx.Param("path")
-	if invokePath == "" {
-		invokePath = "/"
 	}
 
 	h.forwardRequest(ctx, sessionID, sandboxInfo, ctx.Request.Method, invokePath, bodyBytes)

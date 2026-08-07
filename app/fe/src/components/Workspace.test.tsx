@@ -23,6 +23,9 @@ vi.mock('./CodeEditor', () => ({
 vi.mock('./PreviewPanel', () => ({
   default: ({ readOnly }: { readOnly: boolean }) => <div data-testid="preview-mode">{readOnly ? 'read-only' : 'editable'}</div>,
 }));
+vi.mock('./PublishPanel', () => ({
+  default: ({ readOnly }: { readOnly: boolean }) => <div data-testid="publish-mode">{readOnly ? 'read-only' : 'editable'}</div>,
+}));
 
 function envelope<T>(data: T, status = 200) {
   return HttpResponse.json({ msg: status === 200 ? 'ok' : 'runtime expired', code: status, data }, { status });
@@ -62,5 +65,7 @@ describe('Workspace', () => {
     expect(screen.getByTestId('code-mode')).toHaveTextContent('read-only');
     await user.click(screen.getByRole('tab', { name: 'Preview' }));
     expect(screen.getByTestId('preview-mode')).toHaveTextContent('read-only');
+    await user.click(screen.getByRole('tab', { name: 'Publish' }));
+    expect(screen.getByTestId('publish-mode')).toHaveTextContent('read-only');
   });
 });

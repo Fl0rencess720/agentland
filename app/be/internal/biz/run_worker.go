@@ -2,8 +2,10 @@ package biz
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,6 +170,9 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 		w.fail(parent, run, "RUNTIME_PERSIST_FAILED", err)
 		return
 	}
+	if !w.captureWorkspaceSnapshot(parent, run, runtime.GatewaySessionID) {
+		return
+	}
 	if w.finishCancellation(parent, run) {
 		return
 	}
@@ -185,6 +190,8 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 	var pendingDelta strings.Builder
 	pendingEvents := make([]*models.AgentEvent, 0, 32)
 	var pendingSequence int64
+	var trajectorySequence int64
+	var trajectoryHash string
 	var pendingMu sync.Mutex
 	flushDelta := func(ctx context.Context) error {
 		pendingMu.Lock()
@@ -271,6 +278,28 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 				return ErrRunLeaseLost
 			}
 		}
+		if event.Type == "trajectory.record" {
+			artifacts, ok := w.repo.(RunArtifactRepo)
+			if !ok {
+				return errors.New("run repository does not support trajectory records")
+			}
+			var record models.RunTrajectoryRecord
+			if err := json.Unmarshal(event.Payload, &record); err != nil {
+				return err
+			}
+			if err := verifyTrajectoryRecord(&record, upstreamRunID, runtime.AgentConversationID, trajectorySequence, trajectoryHash); err != nil {
+				return err
+			}
+			acquired, err := artifacts.AppendTrajectoryRecord(runCtx, run.ID, w.workerID, record.Hash, record.Sequence, event.Payload, w.now().UTC())
+			if err != nil {
+				return err
+			}
+			if !acquired {
+				return ErrRunLeaseLost
+			}
+			trajectorySequence, trajectoryHash = record.Sequence, record.Hash
+			return nil
+		}
 		switch event.Type {
 		case "run.completed":
 			if err := w.finish(runCtx, run.ID, models.RunStatusCompleted, "", "", event.Sequence); err != nil {
@@ -327,6 +356,54 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 		err = errors.New("agent stream ended without a terminal event")
 	}
 	w.fail(finalCtx, run, "AGENT_STREAM_FAILED", err)
+}
+
+func (w *RunWorker) captureWorkspaceSnapshot(ctx context.Context, run *models.Run, sessionID string) bool {
+	artifacts, repoOK := w.repo.(RunArtifactRepo)
+	replayGateway, gatewayOK := w.gateway.(ReplayGateway)
+	if !repoOK || !gatewayOK {
+		return true
+	}
+	snapshot, captureErr := replayGateway.GetWorkspaceSnapshot(ctx, sessionID)
+	captureError := ""
+	sha := ""
+	if captureErr != nil {
+		captureError = captureErr.Error()
+		snapshot = []byte{}
+	} else {
+		digest := sha256.Sum256(snapshot)
+		sha = fmt.Sprintf("%x", digest[:])
+	}
+	acquired, err := artifacts.SaveWorkspaceSnapshot(ctx, run.ID, w.workerID, snapshot, sha, captureError, w.now().UTC())
+	if err != nil {
+		w.fail(ctx, run, "TRAJECTORY_SNAPSHOT_FAILED", err)
+		return false
+	}
+	if !acquired {
+		return false
+	}
+	return true
+}
+
+func verifyTrajectoryRecord(record *models.RunTrajectoryRecord, upstreamRunID, conversationID string, previousSequence int64, previousHash string) error {
+	if record.Version != 1 || record.RunID != upstreamRunID || record.ConversationID != conversationID {
+		return errors.New("trajectory record identity is invalid")
+	}
+	if record.Sequence != previousSequence+1 || record.PreviousHash != previousHash || record.Hash == "" {
+		return errors.New("trajectory record chain is invalid")
+	}
+	expectedHash := record.Hash
+	copy := *record
+	copy.Hash = ""
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(data)
+	if fmt.Sprintf("%x", digest[:]) != expectedHash {
+		return errors.New("trajectory record hash is invalid")
+	}
+	return nil
 }
 
 func (w *RunWorker) keepAlive(ctx context.Context, cancelRun context.CancelFunc, run *models.Run, runtime *models.ProjectRuntime, agentRunID *atomic.Value, runtimeLost *atomic.Bool, done <-chan struct{}) {

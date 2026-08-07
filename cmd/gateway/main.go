@@ -47,6 +47,18 @@ func main() {
 	_ = viper.BindEnv("sandbox.jwt.kid", "AL_SANDBOX_JWT_KID")
 	_ = viper.BindEnv("agent_runtime.default_name", "AL_AGENT_RUNTIME_DEFAULT_NAME")
 	_ = viper.BindEnv("agent_runtime.default_namespace", "AL_AGENT_RUNTIME_DEFAULT_NAMESPACE")
+	_ = viper.BindEnv("publisher.enabled", "AL_PUBLISHER_ENABLED")
+	_ = viper.BindEnv("publisher.buildctl_path", "AL_BUILDCTL_PATH")
+	_ = viper.BindEnv("publisher.buildkit_address", "AL_BUILDKIT_ADDRESS")
+	_ = viper.BindEnv("publisher.platform", "AL_BUILDKIT_PLATFORM")
+	_ = viper.BindEnv("publisher.timeout", "AL_BUILDKIT_TIMEOUT")
+	_ = viper.BindEnv("publisher.buildkit_ca_cert", "AL_BUILDKIT_CA_CERT")
+	_ = viper.BindEnv("publisher.buildkit_client_cert", "AL_BUILDKIT_CLIENT_CERT")
+	_ = viper.BindEnv("publisher.buildkit_client_key", "AL_BUILDKIT_CLIENT_KEY")
+	_ = viper.BindEnv("publisher.repository_prefix", "AL_REGISTRY_REPOSITORY_PREFIX")
+	_ = viper.BindEnv("publisher.docker_config", "AL_REGISTRY_DOCKER_CONFIG")
+	_ = viper.BindEnv("publisher.buildkit_allow_insecure", "AL_BUILDKIT_ALLOW_INSECURE")
+	_ = viper.BindEnv("publisher.service_token", "AL_PUBLISHER_SERVICE_TOKEN")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
 	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
 	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
@@ -63,6 +75,11 @@ func main() {
 	viper.SetDefault("sandbox.jwt.kid", "default")
 	viper.SetDefault("agent_runtime.default_name", "default-runtime")
 	viper.SetDefault("agent_runtime.default_namespace", "agentland-sandboxes")
+	viper.SetDefault("publisher.enabled", false)
+	viper.SetDefault("publisher.buildctl_path", "buildctl")
+	viper.SetDefault("publisher.platform", "linux/amd64")
+	viper.SetDefault("publisher.timeout", "20m")
+	viper.SetDefault("publisher.buildkit_allow_insecure", false)
 	viper.SetDefault("otel.enabled", false)
 	viper.SetDefault("otel.endpoint", "otel-collector:4317")
 	viper.SetDefault("otel.insecure", true)
@@ -109,6 +126,18 @@ func main() {
 		SandboxJWTKID:                viper.GetString("sandbox.jwt.kid"),
 		DefaultAgentRuntimeName:      viper.GetString("agent_runtime.default_name"),
 		DefaultAgentRuntimeNamespace: viper.GetString("agent_runtime.default_namespace"),
+		PublisherEnabled:             viper.GetBool("publisher.enabled"),
+		BuildctlPath:                 viper.GetString("publisher.buildctl_path"),
+		BuildKitAddress:              viper.GetString("publisher.buildkit_address"),
+		BuildKitPlatform:             viper.GetString("publisher.platform"),
+		BuildKitTimeout:              viper.GetDuration("publisher.timeout"),
+		BuildKitCACert:               viper.GetString("publisher.buildkit_ca_cert"),
+		BuildKitClientCert:           viper.GetString("publisher.buildkit_client_cert"),
+		BuildKitClientKey:            viper.GetString("publisher.buildkit_client_key"),
+		RegistryRepositoryPrefix:     viper.GetString("publisher.repository_prefix"),
+		RegistryDockerConfig:         viper.GetString("publisher.docker_config"),
+		BuildKitAllowInsecure:        viper.GetBool("publisher.buildkit_allow_insecure"),
+		PublisherServiceToken:        viper.GetString("publisher.service_token"),
 	}
 
 	server, err := gateway.NewServer(config)

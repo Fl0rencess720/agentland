@@ -122,6 +122,14 @@ func ActiveRunConflictError() *APIError {
 	}
 }
 
+func ActivePublicationConflictError() *APIError {
+	return &APIError{
+		StatusCode: http.StatusConflict,
+		Msg:        "project_publication_active",
+		Data:       ErrorData{Type: "PROJECT_PUBLICATION_ACTIVE"},
+	}
+}
+
 func IdempotencyConflictError() *APIError {
 	return &APIError{
 		StatusCode: http.StatusConflict,
@@ -135,6 +143,17 @@ func FileConflictError(sha string) *APIError {
 		StatusCode: http.StatusConflict,
 		Msg:        "file_conflict",
 		Data:       ErrorData{Type: "FILE_CONFLICT", SHA: sha},
+	}
+}
+
+func ReplayUnavailableError(reason string) *APIError {
+	return &APIError{
+		StatusCode: http.StatusConflict,
+		Msg:        "replay_unavailable",
+		Data: ErrorData{
+			Type:    "REPLAY_UNAVAILABLE",
+			Details: []ErrorDetail{{Field: "run_id", Reason: reason}},
+		},
 	}
 }
 

@@ -152,6 +152,27 @@ export type PreviewResult = {
   last_heartbeat_at?: string;
 };
 
+export type PublicationStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type Publication = {
+  id: string;
+  project_id: string;
+  status: PublicationStatus;
+  context: string;
+  dockerfile: string;
+  image_ref?: string;
+  digest?: string;
+  logs?: string;
+  error_code?: string;
+  error_message?: string;
+  cancel_requested_at?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+};
+
+export type PublicationList = { items: Publication[] };
+
 type RequestOptions = RequestInit & {
   auth?: boolean;
   retryAuth?: boolean;
@@ -374,6 +395,26 @@ export function startPreview(projectId: string, port: number) {
     method: 'POST',
     body: JSON.stringify({ port }),
   });
+}
+
+export function createPublication(projectId: string, buildContext: string, dockerfile: string, idempotencyKey: string) {
+  return apiRequest<Publication>(`/projects/${encodeURIComponent(projectId)}/publications`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify({ context: buildContext, dockerfile }),
+  });
+}
+
+export function listPublications(projectId: string) {
+  return apiRequest<PublicationList>(`/projects/${encodeURIComponent(projectId)}/publications`);
+}
+
+export function getPublication(publicationId: string) {
+  return apiRequest<Publication>(`/publications/${encodeURIComponent(publicationId)}`);
+}
+
+export function cancelPublication(publicationId: string) {
+  return apiRequest<{ id: string; status: PublicationStatus }>(`/publications/${encodeURIComponent(publicationId)}/cancel`, { method: 'POST' });
 }
 
 type StreamRunOptions = {

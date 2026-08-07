@@ -13,8 +13,9 @@ import (
 )
 
 type App struct {
-	HTTPServer *service.HTTPServer
-	RunWorker  *biz.RunWorker
+	HTTPServer        *service.HTTPServer
+	RunWorker         *biz.RunWorker
+	PublicationWorker *biz.PublicationWorker
 }
 
 func newApp(ctx context.Context) (*App, error) {
@@ -30,9 +31,14 @@ func newApp(ctx context.Context) (*App, error) {
 
 	projectRepo := data.NewProjectRepo()
 	runRepo := data.NewRunRepo()
+	publicationRepo := data.NewPublicationRepo()
 	runEvents := data.NewRunEventStore()
 	gateway := data.NewAgentlandGatewayClient()
-	projectUseCase := biz.NewProjectUsecase(projectRepo, runRepo, runEvents, gateway)
+	publisher, ok := gateway.(biz.PublicationGateway)
+	if !ok {
+		return nil, fmt.Errorf("gateway does not support image publication")
+	}
+	projectUseCase := biz.NewProjectUsecaseWithPublishing(projectRepo, runRepo, runEvents, gateway, publicationRepo, publisher, data.NewLangfuseScoreClient())
 
 	httpServer := service.NewHTTPServer(
 		middlewares.NewDefaultIPRateLimiter(),
@@ -41,7 +47,8 @@ func newApp(ctx context.Context) (*App, error) {
 		runRepo,
 	)
 	return &App{
-		HTTPServer: httpServer,
-		RunWorker:  biz.NewRunWorker(runRepo, runEvents, gateway),
+		HTTPServer:        httpServer,
+		RunWorker:         biz.NewRunWorker(runRepo, runEvents, gateway),
+		PublicationWorker: biz.NewPublicationWorker(publicationRepo, publisher),
 	}, nil
 }

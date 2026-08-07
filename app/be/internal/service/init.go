@@ -41,6 +41,7 @@ func NewHTTPServer(
 		auth.InitApi(app.Group("/auth"), authHandler)
 		project.InitAPI(app.Group("/projects"), projectHandler)
 		project.InitRunAPI(app.Group("/runs"), projectHandler)
+		project.InitPublicationAPI(app.Group("/publications"), projectHandler)
 	}
 
 	appNoneAuth := e.Group("/api/v1", middlewares.IPRateLimitMiddleware(rateLimiter))

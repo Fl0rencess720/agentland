@@ -125,6 +125,20 @@ func (h *ProjectHandler) CancelRun(c *gin.Context) {
 	response.AcceptedResponse(c, data)
 }
 
+func (h *ProjectHandler) RunTrajectory(c *gin.Context) {
+	data, apiErr := h.usecase.RunTrajectory(c.Request.Context(), principal(c), c.Param("run_id"))
+	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) ReplayRun(c *gin.Context) {
+	var req models.ReplayRunReq
+	if !bindJSON(c, &req, maxProjectJSONBodyBytes) {
+		return
+	}
+	data, apiErr := h.usecase.ReplayRun(c.Request.Context(), principal(c), c.Param("run_id"), &req)
+	write(c, data, apiErr)
+}
+
 func (h *ProjectHandler) ListMessages(c *gin.Context) {
 	var req models.MessageListReq
 	if !bindQuery(c, &req) {
@@ -177,6 +191,38 @@ func (h *ProjectHandler) StartPreview(c *gin.Context) {
 func (h *ProjectHandler) Preview(c *gin.Context) {
 	data, apiErr := h.usecase.Preview(c.Request.Context(), principal(c), c.Param("project_id"))
 	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) CreatePublication(c *gin.Context) {
+	var req models.PublicationCreateReq
+	if !bindJSON(c, &req, maxProjectJSONBodyBytes) {
+		return
+	}
+	data, apiErr := h.usecase.CreatePublication(c.Request.Context(), principal(c), c.Param("project_id"), c.GetHeader("Idempotency-Key"), &req)
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.AcceptedResponse(c, data)
+}
+
+func (h *ProjectHandler) ListPublications(c *gin.Context) {
+	data, apiErr := h.usecase.ListPublications(c.Request.Context(), principal(c), c.Param("project_id"))
+	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) GetPublication(c *gin.Context) {
+	data, apiErr := h.usecase.GetPublication(c.Request.Context(), principal(c), c.Param("publication_id"))
+	write(c, data, apiErr)
+}
+
+func (h *ProjectHandler) CancelPublication(c *gin.Context) {
+	data, apiErr := h.usecase.CancelPublication(c.Request.Context(), principal(c), c.Param("publication_id"))
+	if apiErr != nil {
+		response.WriteAPIError(c, apiErr)
+		return
+	}
+	response.AcceptedResponse(c, data)
 }
 
 func principal(c *gin.Context) models.AuthPrincipal {

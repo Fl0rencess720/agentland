@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Server struct {
@@ -26,8 +27,9 @@ type Server struct {
 }
 
 type chatRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Message        string `json:"message"`
+	ConversationID    string `json:"conversation_id"`
+	Message           string `json:"message"`
+	CaptureTrajectory bool   `json:"capture_trajectory,omitempty"`
 }
 
 const (
@@ -74,12 +76,13 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 	if index := skills.Index(); index != "" {
 		prompt += "\n\n" + index
 	}
-	memory := NewMemoryStore(cfg.WorkspaceRoot, cfg.ContextTokens)
+	memory := NewMemoryStore(cfg.WorkspaceRoot, cfg.ContextTokens, cfg.SummaryModel)
 	agent, err := NewAgent(ctx, chatModel, tools, memory, prompt)
 	if err != nil {
 		manager.Close()
 		return nil, err
 	}
+	agent.modelName = cfg.Model
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -101,16 +104,22 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 	}
 	api.POST("/chat", server.chat)
 	api.POST("/runs/:run_id/cancel", server.cancel)
+	api.GET("/runs/:run_id/trajectory", server.trajectory)
+	api.POST("/replays/decision", server.replayDecision)
+	api.POST("/replays/live", server.replayLive)
 	api.GET("/conversations/:conversation_id/messages", server.messages)
 	workspace := &workspaceHandler{tools: local}
 	api.GET("/workspace/tree", workspace.tree)
 	api.GET("/workspace/file", workspace.readFile)
 	api.POST("/workspace/file", workspace.writeFile)
+	snapshot := &workspaceSnapshotHandler{tools: local}
+	api.GET("/workspace/snapshot", snapshot.download)
+	api.POST("/workspace/snapshot", snapshot.restore)
 	korokhandlers.InitProxyApi(api, korokhandlers.ProxyOptions{})
 
 	server.httpServer = &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           router,
+		Handler:           otelhttp.NewHandler(router, "agentd.http"),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return server, nil
@@ -189,10 +198,55 @@ func (s *Server) chat(c *gin.Context) {
 		flusher.Flush()
 		return nil
 	}
-	_, err := s.agent.Run(c.Request.Context(), request.ConversationID, request.Message, emit)
+	_, err := s.agent.RunWithOptions(c.Request.Context(), request.ConversationID, request.Message, request.CaptureTrajectory, emit)
 	if errors.Is(err, ErrConversationBusy) && !c.Writer.Written() {
 		c.JSON(http.StatusConflict, gin.H{"error": ErrConversationBusy.Error()})
 	}
+}
+
+func (s *Server) trajectory(c *gin.Context) {
+	records, err := s.agent.trajectory.Records(c.Param("run_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(records) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "trajectory not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"records": records})
+}
+
+func (s *Server) replayDecision(c *gin.Context) {
+	s.replay(c, func(ctx context.Context, records []TrajectoryRecord) (*DecisionReplayReport, error) {
+		return replayDecisions(ctx, s.agent.model, s.agent.prompt, records)
+	})
+}
+
+func (s *Server) replayLive(c *gin.Context) {
+	s.replay(c, func(ctx context.Context, records []TrajectoryRecord) (*DecisionReplayReport, error) {
+		return replayLive(ctx, s.agent, records)
+	})
+}
+
+func (s *Server) replay(c *gin.Context, execute func(context.Context, []TrajectoryRecord) (*DecisionReplayReport, error)) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxReplayRequestBytes)
+	records, err := parseReplayRecords(c.Request.Body)
+	if err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "replay request is too large"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	report, err := execute(c.Request.Context(), records)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, report)
 }
 
 func (s *Server) cancel(c *gin.Context) {

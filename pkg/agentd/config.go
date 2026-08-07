@@ -16,6 +16,7 @@ type Config struct {
 	Model         string
 	ModelBaseURL  string
 	ModelAPIKey   string
+	SummaryModel  string
 	SystemPrompt  string
 	ContextTokens int
 

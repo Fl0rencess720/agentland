@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ import (
 
 const agentlandSessionHeader = "x-agentland-session"
 
+var imageDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
 type gatewayEnvelope struct {
 	Msg  string          `json:"msg"`
 	Code int             `json:"code"`
@@ -38,6 +41,7 @@ type agentlandGatewayClient struct {
 	streamClient                  *http.Client
 	runtimeName, runtimeNamespace string
 	previewPublicURLTemplate      string
+	publisherToken                string
 }
 
 func NewAgentlandGatewayClient() biz.AgentlandGateway {
@@ -49,6 +53,7 @@ func NewAgentlandGatewayClient() biz.AgentlandGateway {
 		runtimeName:              strings.TrimSpace(viper.GetString("agentland-gateway.runtime.name")),
 		runtimeNamespace:         strings.TrimSpace(viper.GetString("agentland-gateway.runtime.namespace")),
 		previewPublicURLTemplate: strings.TrimSpace(viper.GetString("preview.public_url_template")),
+		publisherToken:           strings.TrimSpace(viper.GetString("agentland-gateway.publisher_token")),
 	}
 }
 
@@ -102,7 +107,7 @@ func (c *agentlandGatewayClient) EnsureRuntime(ctx context.Context, sessionID st
 func (c *agentlandGatewayClient) StreamChat(ctx context.Context, sessionID, conversationID, message string, onEvent func(*models.AgentEvent) error) (err error) {
 	ctx, span := startGatewaySpan(ctx, "gateway.stream_chat", attribute.String("gateway.session_id", sessionID), attribute.String("agent.conversation_id", conversationID))
 	defer finishGatewaySpan(span, &err)
-	payload, err := json.Marshal(map[string]string{"conversation_id": conversationID, "message": message})
+	payload, err := json.Marshal(map[string]any{"conversation_id": conversationID, "message": message, "capture_trajectory": true})
 	if err != nil {
 		return err
 	}
@@ -127,6 +132,67 @@ func (c *agentlandGatewayClient) StreamChat(ctx context.Context, sessionID, conv
 	return parseAgentEvents(resp.Body, onEvent)
 }
 
+func (c *agentlandGatewayClient) GetWorkspaceSnapshot(ctx context.Context, sessionID string) (result []byte, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.workspace_snapshot", attribute.String("gateway.session_id", sessionID))
+	defer finishGatewaySpan(span, &err)
+	resp, err := c.do(ctx, http.MethodGet, "/api/agent-sessions/invocations/api/workspace/snapshot", sessionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20+1))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeGatewayError(resp.StatusCode, data)
+	}
+	if len(data) > 8<<20 {
+		return nil, errors.New("workspace snapshot exceeds 8 MiB")
+	}
+	return data, nil
+}
+
+func (c *agentlandGatewayClient) RestoreWorkspaceSnapshot(ctx context.Context, sessionID string, snapshot []byte) (err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.workspace_restore", attribute.String("gateway.session_id", sessionID), attribute.Int("workspace.snapshot_bytes", len(snapshot)))
+	defer finishGatewaySpan(span, &err)
+	resp, err := c.do(ctx, http.MethodPost, "/api/agent-sessions/invocations/api/workspace/snapshot", sessionID, bytes.NewReader(snapshot))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return decodeGatewayError(resp.StatusCode, body)
+	}
+	return nil
+}
+
+func (c *agentlandGatewayClient) ReplayDecisions(ctx context.Context, sessionID string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {
+	return c.replay(ctx, sessionID, "decision", records)
+}
+
+func (c *agentlandGatewayClient) ReplayLive(ctx context.Context, sessionID string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {
+	return c.replay(ctx, sessionID, "live", records)
+}
+
+func (c *agentlandGatewayClient) replay(ctx context.Context, sessionID, mode string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.replay_decisions", attribute.String("gateway.session_id", sessionID), attribute.Int("agent.trajectory_records", len(records)))
+	defer finishGatewaySpan(span, &err)
+	data, err := c.invocationJSON(ctx, http.MethodPost, "/api/agent-sessions/invocations/api/replays/"+url.PathEscape(mode), sessionID, map[string]any{"records": records})
+	if err != nil {
+		return nil, err
+	}
+	var report models.ReplayRunResp
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
 func (c *agentlandGatewayClient) CancelRun(ctx context.Context, sessionID, agentRunID string) (err error) {
 	ctx, span := startGatewaySpan(ctx, "gateway.cancel_run", attribute.String("gateway.session_id", sessionID), attribute.String("agent.run_id", agentRunID))
 	defer finishGatewaySpan(span, &err)
@@ -147,6 +213,51 @@ func (c *agentlandGatewayClient) CancelRun(ctx context.Context, sessionID, agent
 		return decodeGatewayError(resp.StatusCode, body)
 	}
 	return nil
+}
+
+func (c *agentlandGatewayClient) PublishImage(ctx context.Context, sessionID, projectID, publicationID, buildContext, dockerfile string) (result *models.GatewayPublication, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.publish_image",
+		attribute.String("gateway.session_id", sessionID),
+		attribute.String("app.project.id", projectID),
+		attribute.String("app.publication.id", publicationID),
+	)
+	defer finishGatewaySpan(span, &err)
+	payload, err := json.Marshal(map[string]string{
+		"project_id": projectID, "release_id": publicationID, "context": buildContext, "dockerfile": dockerfile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/publications", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(agentlandSessionHeader, strings.TrimSpace(sessionID))
+	if c.publisherToken == "" {
+		return nil, errors.New("agentland-gateway.publisher_token is required")
+	}
+	request.Header.Set("Authorization", "Bearer "+c.publisherToken)
+	response, err := c.streamClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeGatewayError(response.StatusCode, body)
+	}
+	var publication models.GatewayPublication
+	if err = json.Unmarshal(body, &publication); err != nil {
+		return nil, err
+	}
+	if publication.ImageRef == "" || !imageDigestPattern.MatchString(publication.Digest) {
+		return nil, errors.New("gateway returned invalid publication metadata")
+	}
+	return &publication, nil
 }
 
 func (c *agentlandGatewayClient) GetFileTree(ctx context.Context, sessionID, path string) (result *models.GatewayFileTree, err error) {
@@ -362,10 +473,11 @@ func decodeGatewayError(status int, body []byte) error {
 		Message string `json:"message"`
 		Msg     string `json:"msg"`
 		SHA     string `json:"sha"`
+		Logs    string `json:"logs"`
 	}
 	_ = json.Unmarshal(body, &raw)
 	message := firstValue(raw.Error, raw.Message, raw.Msg, strings.TrimSpace(string(body)), http.StatusText(status))
-	return &models.GatewayResponseError{StatusCode: status, Code: raw.Code, Message: message, SHA: raw.SHA}
+	return &models.GatewayResponseError{StatusCode: status, Code: raw.Code, Message: message, SHA: raw.SHA, Logs: raw.Logs}
 }
 
 func firstValue(values ...string) string {

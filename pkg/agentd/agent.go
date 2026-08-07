@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,16 +18,23 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var ErrConversationBusy = errors.New("conversation already has an active run")
 
 type Agent struct {
-	baseModel model.ToolCallingChatModel
-	model     model.ToolCallingChatModel
-	tools     map[string]tool.InvokableTool
-	memory    *MemoryStore
-	prompt    string
+	baseModel      model.ToolCallingChatModel
+	model          model.ToolCallingChatModel
+	tools          map[string]tool.InvokableTool
+	memory         *MemoryStore
+	trajectory     *TrajectoryStore
+	prompt         string
+	modelName      string
+	toolSchemaHash string
 
 	mu              sync.Mutex
 	runs            map[string]context.CancelFunc
@@ -61,7 +69,9 @@ func NewAgent(ctx context.Context, chatModel model.ToolCallingChatModel, tools [
 		model:           boundModel,
 		tools:           toolMap,
 		memory:          memory,
+		trajectory:      NewTrajectoryStore(filepath.Dir(memory.root)),
 		prompt:          systemPrompt,
+		toolSchemaHash:  stableHash(toolInfos),
 		runs:            make(map[string]context.CancelFunc),
 		conversationRun: make(map[string]string),
 		retryDelay: func(attempt int) time.Duration {
@@ -72,6 +82,10 @@ func NewAgent(ctx context.Context, chatModel model.ToolCallingChatModel, tools [
 }
 
 func (a *Agent) Run(parent context.Context, conversationID, userMessage string, emit func(Event) error) (runID string, err error) {
+	return a.RunWithOptions(parent, conversationID, userMessage, false, emit)
+}
+
+func (a *Agent) RunWithOptions(parent context.Context, conversationID, userMessage string, captureTrajectory bool, emit func(Event) error) (runID string, err error) {
 	if !validID(conversationID) {
 		return "", fmt.Errorf("invalid conversation_id")
 	}
@@ -92,8 +106,43 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 		cancel()
 		a.unregisterRun(conversationID, runID)
 	}()
+	ctx, runSpan := otel.Tracer("agentland/agentd").Start(ctx, "agent.run", trace.WithAttributes(
+		attribute.String("gen_ai.operation.name", "invoke_agent"),
+		attribute.String("gen_ai.agent.name", "agentd"),
+		attribute.String("gen_ai.conversation.id", conversationID),
+		attribute.String("gen_ai.request.model", a.modelName),
+		attribute.String("agent.run.id", runID),
+		attribute.String("langfuse.observation.type", "agent"),
+		attribute.String("langfuse.observation.input", traceJSON(userMessage)),
+		attribute.String("langfuse.session.id", conversationID),
+		attribute.String("langfuse.trace.name", "agent-run"),
+	))
+	defer func() {
+		if err != nil {
+			runSpan.RecordError(err)
+			runSpan.SetStatus(codes.Error, err.Error())
+			runSpan.SetAttributes(attribute.String("langfuse.observation.output", traceJSON(map[string]string{"error": err.Error()})))
+		}
+		runSpan.End()
+	}()
 
 	events := &eventEmitter{runID: runID, conversationID: conversationID, emit: emit}
+	record := func(recordType string, step int, payload any) error {
+		record, err := a.trajectory.Append(runID, conversationID, recordType, step, payload)
+		if err != nil {
+			return err
+		}
+		if captureTrajectory {
+			return events.send(EventTrajectoryRecord, record)
+		}
+		return nil
+	}
+	if err := record(TrajectoryRunStarted, 0, trajectoryRunStarted{
+		Message: userMessage, Model: a.modelName, SystemPrompt: a.prompt, PromptHash: stableHash(a.prompt),
+		ToolSchemaHash: a.toolSchemaHash, CaptureVersion: "v1",
+	}); err != nil {
+		return runID, err
+	}
 	if err := events.send(EventRunStarted, map[string]any{"message": userMessage}); err != nil {
 		return runID, err
 	}
@@ -117,23 +166,34 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 	}()
 
 	if err := a.memory.Append(conversationID, schema.UserMessage(userMessage)); err != nil {
+		_ = record(TrajectoryRunFinished, 0, trajectoryRunFinished{Status: "failed", Error: err.Error()})
 		events.send(EventRunFailed, map[string]any{"error": err.Error()})
 		return runID, err
 	}
 
-	for {
+	for step := 1; ; step++ {
 		messages, err := a.memory.Context(ctx, conversationID, a.prompt, a.baseModel)
 		if err != nil {
-			return runID, a.finishError(ctx, events, err)
+			return runID, a.finishError(ctx, events, record, err)
 		}
-		response, err := a.streamModel(ctx, messages, events)
+		if err := record(TrajectoryModelInput, step, trajectoryModelInput{Messages: messages}); err != nil {
+			return runID, a.finishError(ctx, events, record, err)
+		}
+		response, err := a.streamModel(ctx, messages, events, step)
 		if err != nil {
-			return runID, a.finishError(ctx, events, err)
+			return runID, a.finishError(ctx, events, record, err)
+		}
+		if err := record(TrajectoryModelOutput, step, trajectoryModelOutput{Message: response}); err != nil {
+			return runID, a.finishError(ctx, events, record, err)
 		}
 		if err := a.memory.Append(conversationID, response); err != nil {
-			return runID, a.finishError(ctx, events, err)
+			return runID, a.finishError(ctx, events, record, err)
 		}
 		if len(response.ToolCalls) == 0 {
+			runSpan.SetAttributes(attribute.String("langfuse.observation.output", traceJSON(response.Content)))
+			if err := record(TrajectoryRunFinished, step, trajectoryRunFinished{Status: "completed", Content: response.Content}); err != nil {
+				return runID, a.finishError(ctx, events, record, err)
+			}
 			if err := events.send(EventRunCompleted, map[string]any{"content": response.Content}); err != nil {
 				return runID, err
 			}
@@ -153,6 +213,13 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 				output = "tool error: " + toolErr.Error()
 			}
 			output = boundToolOutput(output)
+			toolRecord := trajectoryToolResult{ToolCallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments, Output: output}
+			if toolErr != nil {
+				toolRecord.Error = toolErr.Error()
+			}
+			if err := record(TrajectoryToolResult, step, toolRecord); err != nil {
+				return runID, a.finishError(ctx, events, record, err)
+			}
 			if err := emitToolOutput(events, call, output); err != nil {
 				return runID, err
 			}
@@ -165,7 +232,7 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 			}
 			toolMessage := schema.ToolMessage(output, call.ID, schema.WithToolName(call.Function.Name))
 			if err := a.memory.Append(conversationID, toolMessage); err != nil {
-				return runID, a.finishError(ctx, events, err)
+				return runID, a.finishError(ctx, events, record, err)
 			}
 		}
 	}
@@ -206,7 +273,22 @@ func (a *Agent) Cancel(runID string) bool {
 	return ok
 }
 
-func (a *Agent) streamModel(ctx context.Context, messages []*schema.Message, events *eventEmitter) (*schema.Message, error) {
+func (a *Agent) streamModel(ctx context.Context, messages []*schema.Message, events *eventEmitter, step int) (response *schema.Message, resultErr error) {
+	ctx, span := otel.Tracer("agentland/agentd").Start(ctx, "model.generate", trace.WithAttributes(
+		attribute.String("gen_ai.operation.name", "chat"),
+		attribute.String("gen_ai.request.model", a.modelName),
+		attribute.String("gen_ai.input.messages", traceJSON(messages)),
+		attribute.Int("agent.step", step),
+		attribute.String("langfuse.observation.type", "generation"),
+		attribute.String("langfuse.observation.input", traceJSON(messages)),
+	))
+	defer func() {
+		if resultErr != nil {
+			span.RecordError(resultErr)
+			span.SetStatus(codes.Error, resultErr.Error())
+		}
+		span.End()
+	}()
 	for attempt := 0; attempt <= 5; attempt++ {
 		stream, err := a.model.Stream(ctx, messages)
 		if err != nil {
@@ -221,6 +303,20 @@ func (a *Agent) streamModel(ctx context.Context, messages []*schema.Message, eve
 		response, chunks, err := consumeModelStream(stream, events)
 		stream.Close()
 		if err == nil {
+			span.SetAttributes(attribute.Int("agent.model.retry_count", attempt))
+			span.SetAttributes(attribute.String("gen_ai.output.messages", traceJSON(response)))
+			span.SetAttributes(attribute.String("langfuse.observation.output", traceJSON(response)))
+			if response.ResponseMeta != nil {
+				if response.ResponseMeta.FinishReason != "" {
+					span.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{response.ResponseMeta.FinishReason}))
+				}
+				if response.ResponseMeta.Usage != nil {
+					span.SetAttributes(
+						attribute.Int("gen_ai.usage.input_tokens", response.ResponseMeta.Usage.PromptTokens),
+						attribute.Int("gen_ai.usage.output_tokens", response.ResponseMeta.Usage.CompletionTokens),
+					)
+				}
+			}
 			return response, nil
 		}
 		if chunks > 0 || attempt == 5 || ctx.Err() != nil || !retryableModelError(err) {
@@ -269,18 +365,46 @@ func consumeModelStream(stream *schema.StreamReader[*schema.Message], events *ev
 }
 
 func (a *Agent) invokeTool(ctx context.Context, call schema.ToolCall) (string, error) {
+	ctx, span := otel.Tracer("agentland/agentd").Start(ctx, "tool."+call.Function.Name, trace.WithAttributes(
+		attribute.String("gen_ai.operation.name", "execute_tool"),
+		attribute.String("gen_ai.tool.name", call.Function.Name),
+		attribute.String("gen_ai.tool.call.id", call.ID),
+		attribute.String("gen_ai.tool.call.arguments", call.Function.Arguments),
+		attribute.String("langfuse.observation.type", "tool"),
+		attribute.String("langfuse.observation.input", traceString(call.Function.Arguments)),
+	))
+	defer span.End()
 	item, ok := a.tools[call.Function.Name]
 	if !ok {
-		return "", fmt.Errorf("unknown tool %q", call.Function.Name)
+		err := fmt.Errorf("unknown tool %q", call.Function.Name)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", err
 	}
-	return item.InvokableRun(ctx, call.Function.Arguments)
+	output, err := item.InvokableRun(ctx, call.Function.Arguments)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.SetAttributes(attribute.String("gen_ai.tool.call.result", traceString(boundToolOutput(output))))
+	span.SetAttributes(attribute.String("langfuse.observation.output", traceJSON(map[string]any{"output": boundToolOutput(output), "error": errorString(err)})))
+	return output, err
 }
 
-func (a *Agent) finishError(ctx context.Context, events *eventEmitter, err error) error {
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func (a *Agent) finishError(ctx context.Context, events *eventEmitter, record func(string, int, any) error, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		_ = record(TrajectoryRunFinished, 0, trajectoryRunFinished{Status: "cancelled"})
 		events.send(EventRunCancelled, nil)
 		return context.Canceled
 	}
+	_ = record(TrajectoryRunFinished, 0, trajectoryRunFinished{Status: "failed", Error: err.Error()})
 	events.send(EventRunFailed, map[string]any{"error": err.Error()})
 	return err
 }

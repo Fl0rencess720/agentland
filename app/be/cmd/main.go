@@ -31,13 +31,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	sampleRatio := viper.GetFloat64("otel.sample_ratio")
+	tracingEnabled := viper.GetBool("otel.enabled") || viper.GetBool("langfuse.enabled")
+	if viper.GetBool("langfuse.enabled") {
+		sampleRatio = 1
+	}
 	otelShutdown, err := observability.InitTracerProvider(ctx, observability.Config{
-		Enabled:        viper.GetBool("otel.enabled"),
+		Enabled:        tracingEnabled,
 		ServiceName:    configs.GetServiceName(),
 		ServiceVersion: "v1alpha1",
 		Endpoint:       viper.GetString("otel.endpoint"),
 		Insecure:       viper.GetBool("otel.insecure"),
-		SampleRatio:    viper.GetFloat64("otel.sample_ratio"),
+		SampleRatio:    sampleRatio,
 	})
 	if err != nil {
 		zap.L().Fatal("initialize tracing failed", zap.Error(err))
@@ -58,10 +63,14 @@ func main() {
 	}
 
 	var workerWG sync.WaitGroup
-	workerWG.Add(1)
+	workerWG.Add(2)
 	go func() {
 		defer workerWG.Done()
 		app.RunWorker.Run(ctx)
+	}()
+	go func() {
+		defer workerWG.Done()
+		app.PublicationWorker.Run(ctx)
 	}()
 
 	serverErr := make(chan error, 1)

@@ -44,6 +44,7 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		require.NoError(t, err)
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `delete from project_publications where owner_id=$1`, ownerID)
 		_, _ = pool.Exec(context.Background(), `delete from project_previews where owner_id=$1`, ownerID)
 		_, _ = pool.Exec(context.Background(), `delete from project_runtimes where owner_id=$1`, ownerID)
 		_, _ = pool.Exec(context.Background(), `delete from project_messages where owner_id=$1`, ownerID)
@@ -54,6 +55,13 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		projects.pool.Close()
 		auth.pool.Close()
 	})
+
+	makePublication := func(projectID, key string) *models.CreatePublicationInput {
+		return &models.CreatePublicationInput{
+			ID: "pub-" + uuid.NewString(), OwnerID: ownerID, ProjectID: projectID, IdempotencyKey: key,
+			Context: ".", Dockerfile: "Dockerfile", Now: now,
+		}
+	}
 
 	makeInput := func(projectID, key, message string) *models.CreateRunInput {
 		id := uuid.NewString()
@@ -199,5 +207,35 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		}))
 		require.NoError(t, pool.QueryRow(ctx, `select expires_at from project_runtimes where project_id=$1`, projectTwo).Scan(&observedExpiry))
 		require.WithinDuration(t, absoluteExpiry, observedExpiry, time.Millisecond)
+	})
+
+	t.Run("publication idempotency, active constraint, and lease fencing", func(t *testing.T) {
+		first, _, createErr := runs.CreatePublication(ctx, makePublication(projectOne, "publication-same-key"))
+		require.NoError(t, createErr)
+		repeated, repeatedExisting, repeatErr := runs.CreatePublication(ctx, &models.CreatePublicationInput{
+			ID: "ignored", OwnerID: ownerID, ProjectID: projectOne, IdempotencyKey: "publication-same-key",
+			Context: ".", Dockerfile: "Dockerfile", Now: now,
+		})
+		require.NoError(t, repeatErr)
+		require.True(t, repeatedExisting)
+		require.Equal(t, first.ID, repeated.ID)
+		_, _, createErr = runs.CreatePublication(ctx, makePublication(projectOne, "publication-active-key"))
+		require.ErrorIs(t, createErr, biz.ErrActivePublication)
+
+		claimed, claimErr := runs.ClaimNextPublication(ctx, "publication-worker", now.Add(time.Second))
+		require.NoError(t, claimErr)
+		require.Equal(t, first.ID, claimed.ID)
+		acquired, heartbeatErr := runs.HeartbeatPublication(ctx, claimed.ID, "other-worker", now.Add(2*time.Second))
+		require.NoError(t, heartbeatErr)
+		require.False(t, acquired)
+		finished, finishErr := runs.FinishPublication(ctx, &models.FinishPublicationInput{
+			ID: claimed.ID, WorkerID: "publication-worker", Status: models.PublicationStatusCompleted,
+			ImageRef: "registry.example/apps/project:pub", Digest: "sha256:digest", Logs: "done", Now: now.Add(3 * time.Second),
+		})
+		require.NoError(t, finishErr)
+		require.True(t, finished)
+		stored, getErr := runs.GetPublication(ctx, ownerID, claimed.ID)
+		require.NoError(t, getErr)
+		require.Equal(t, "sha256:digest", stored.Digest)
 	})
 }

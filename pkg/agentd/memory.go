@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +15,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -27,16 +33,31 @@ const (
 	maxProjectMemoryBytes   = 64 << 10
 	maxSummaryContentBytes  = 64 << 10
 	maxSummaryFileBytes     = 128 << 10
-	minStreamBufferChars    = 64 << 10
+	minStreamBufferTokens   = 16 << 10
+
+	compressionThresholdPercent   = 50
+	compressionPreservePercent    = 30
+	compressionRetryGrowthPercent = 150
+	compressionToolTokenBudget    = 50_000
+	compressionToolTailLines      = 30
+	compressionToolTailBytes      = 8 << 10
+	compressionMaxOutputTokens    = 8 << 10
 )
 
+const compressionSystemPrompt = `Create a compact, factual state snapshot for a coding agent that will continue this session.
+Output only one <state_snapshot> block. Preserve exact user requirements and constraints, decisions and their reasons, current implementation state, changed and relevant files, commands and tool evidence, unresolved errors, and the next concrete steps.
+Merge every still-relevant fact from the previous snapshot. Prefer exact paths, identifiers, error messages, and observed results. Do not invent completed work or hide uncertainty.`
+
 type MemoryStore struct {
-	root          string
-	contextTokens int
-	mu            sync.RWMutex
+	root                string
+	contextTokens       int
+	compressionModel    string
+	compressionFailures map[string]int
+	mu                  sync.RWMutex
 }
 
 type conversationSummary struct {
+	Version   int    `json:"version,omitempty"`
 	UpTo      int    `json:"up_to"`
 	Offset    int64  `json:"offset,omitempty"`
 	Content   string `json:"content"`
@@ -46,6 +67,8 @@ type conversationSummary struct {
 type contextMessage struct {
 	message    *schema.Message
 	nextOffset int64
+	tokens     int
+	bytes      int
 }
 
 type historyLine struct {
@@ -56,13 +79,19 @@ type historyLine struct {
 	last       bool
 }
 
-func NewMemoryStore(workspaceRoot string, contextTokens int) *MemoryStore {
+func NewMemoryStore(workspaceRoot string, contextTokens int, compressionModels ...string) *MemoryStore {
 	if contextTokens <= 0 {
 		contextTokens = 128000
 	}
+	compressionModel := ""
+	if len(compressionModels) != 0 {
+		compressionModel = strings.TrimSpace(compressionModels[0])
+	}
 	return &MemoryStore{
-		root:          filepath.Join(workspaceRoot, ".agentland"),
-		contextTokens: contextTokens,
+		root:                filepath.Join(workspaceRoot, ".agentland"),
+		contextTokens:       contextTokens,
+		compressionModel:    compressionModel,
+		compressionFailures: make(map[string]int),
 	}
 }
 
@@ -148,7 +177,7 @@ func (s *MemoryStore) Context(ctx context.Context, conversationID, systemPrompt 
 		systemPrompt += "\n\nProject memory:\n" + memory
 	}
 
-	historyBudget := contextHistoryBudget(s.contextTokens, systemPrompt, summary)
+	historyBudget := contextHistoryTokenBudget(s.contextTokens, systemPrompt, summary)
 	history, updatedSummary, changed, err := s.contextHistory(ctx, conversationID, chatModel, summary, historyBudget)
 	if err != nil {
 		return nil, err
@@ -205,8 +234,9 @@ func (s *MemoryStore) contextHistory(
 
 	currentSummary := summary
 	entries := make([]contextMessage, 0)
-	historyChars := 0
-	streamLimit := min(maxContextHistoryChars, max(minStreamBufferChars, historyBudget*2))
+	historyTokens := 0
+	historyBytes := 0
+	streamTokenLimit := max(minStreamBufferTokens, historyBudget*2)
 	err = scanHistory(f, offset, startNumber, func(line historyLine) error {
 		if legacySkip > 0 {
 			legacySkip--
@@ -223,14 +253,21 @@ func (s *MemoryStore) contextHistory(
 			}
 			return fmt.Errorf("decode conversation history line %d: %w", line.number, err)
 		}
-		entries = append(entries, contextMessage{message: &message, nextOffset: line.nextOffset})
-		historyChars += messageSize(&message)
-		if historyChars <= streamLimit && len(entries) <= maxContextMessages*2 {
+		entry := contextMessage{
+			message: &message, nextOffset: line.nextOffset,
+			tokens: estimateMessageTokens(&message), bytes: messageSize(&message),
+		}
+		entries = append(entries, entry)
+		historyTokens += entry.tokens
+		historyBytes += entry.bytes
+		if historyTokens <= streamTokenLimit && historyBytes <= maxContextHistoryChars && len(entries) <= maxContextMessages*2 {
 			return nil
 		}
 
 		var compacted bool
-		currentSummary, entries, historyChars, compacted, err = compactContext(ctx, chatModel, currentSummary, entries, historyChars, historyBudget)
+		currentSummary, entries, historyTokens, historyBytes, compacted, err = s.compactContext(
+			ctx, conversationID, chatModel, currentSummary, entries, historyTokens, historyBytes, historyBudget,
+		)
 		changed = changed || compacted
 		return err
 	})
@@ -242,7 +279,9 @@ func (s *MemoryStore) contextHistory(
 	}
 
 	var compacted bool
-	currentSummary, entries, historyChars, compacted, err = compactContext(ctx, chatModel, currentSummary, entries, historyChars, historyBudget)
+	currentSummary, entries, historyTokens, historyBytes, compacted, err = s.compactContext(
+		ctx, conversationID, chatModel, currentSummary, entries, historyTokens, historyBytes, historyBudget,
+	)
 	if err != nil {
 		return nil, summary, false, err
 	}
@@ -254,138 +293,370 @@ func (s *MemoryStore) contextHistory(
 	return history, currentSummary, changed, nil
 }
 
-func compactContext(
+func (s *MemoryStore) compactContext(
 	ctx context.Context,
+	conversationID string,
 	chatModel model.BaseChatModel,
 	summary *conversationSummary,
 	entries []contextMessage,
-	historyChars int,
+	historyTokens int,
+	historyBytes int,
 	historyBudget int,
-) (*conversationSummary, []contextMessage, int, bool, error) {
-	if historyChars <= historyBudget && len(entries) <= maxContextMessages {
-		return summary, entries, historyChars, false, nil
-	}
-	messages := make([]*schema.Message, 0, len(entries))
-	for _, entry := range entries {
-		messages = append(messages, entry.message)
-	}
-	keepStart := recentStart(messages, 0, historyBudget)
-	if len(messages)-keepStart > maxContextMessages {
-		keepStart = len(messages) - maxContextMessages
-		keepStart = safeContextStart(messages, keepStart)
-	}
-	if keepStart <= 0 {
-		return summary, entries, historyChars, false, nil
+) (*conversationSummary, []contextMessage, int, int, bool, error) {
+	if historyTokens <= historyBudget && historyBytes <= maxContextHistoryChars && len(entries) <= maxContextMessages {
+		return summary, entries, historyTokens, historyBytes, false, nil
 	}
 
-	nextSummary, err := summarize(ctx, chatModel, summary, messages[:keepStart])
-	if err != nil {
-		return summary, entries, historyChars, false, err
+	ctx, span := otel.Tracer("agentland/agentd").Start(ctx, "memory.compact")
+	defer span.End()
+	span.SetAttributes(
+		attribute.Int("agent.memory.tokens_before", historyTokens),
+		attribute.Int("agent.memory.messages_before", len(entries)),
+		attribute.Int("agent.memory.threshold_tokens", historyBudget),
+	)
+
+	original := make([]*schema.Message, 0, len(entries))
+	for _, entry := range entries {
+		original = append(original, entry.message)
 	}
+	degraded, err := s.degradeToolOutputs(conversationID, original)
+	if err != nil {
+		return summary, entries, historyTokens, historyBytes, false, err
+	}
+	degradedEntries, degradedTokens, degradedBytes := replaceContextMessages(entries, degraded)
+
+	if s.skipFailedCompression(conversationID, historyTokens) {
+		span.SetAttributes(attribute.String("agent.memory.compression_status", "tool_outputs_only"))
+		return summary, degradedEntries, degradedTokens, degradedBytes, false, nil
+	}
+
+	keepStart := compressionSplitPoint(degraded, compressionPreservePercent)
+	if len(degraded)-keepStart > maxContextMessages {
+		keepStart = safeCompressionStart(degraded, len(degraded)-maxContextMessages)
+	}
+	if keepStart <= 0 {
+		span.SetAttributes(attribute.String("agent.memory.compression_status", "no_safe_boundary"))
+		return summary, degradedEntries, degradedTokens, degradedBytes, false, nil
+	}
+
+	historyForSummary := original[:keepStart]
+	if estimateTokens(historyForSummary) >= s.contextTokens*9/10 {
+		historyForSummary = degraded[:keepStart]
+	}
+	nextSummary, err := summarize(ctx, chatModel, s.compressionModel, summary, historyForSummary)
+	if err != nil {
+		s.recordCompressionFailure(conversationID, historyTokens)
+		span.RecordError(err)
+		span.SetAttributes(attribute.String("agent.memory.compression_status", "summary_failed"))
+		return summary, degradedEntries, degradedTokens, degradedBytes, false, nil
+	}
+	nextSummary.Version = 2
 	nextSummary.UpTo = keepStart
 	if summary != nil {
 		nextSummary.UpTo += summary.UpTo
 	}
 	nextSummary.Offset = entries[keepStart-1].nextOffset
-	entries = entries[keepStart:]
-	historyChars = 0
-	for _, entry := range entries {
-		historyChars += messageSize(entry.message)
+	keptEntries := degradedEntries[keepStart:]
+	keptTokens, keptBytes := contextMessageTotals(keptEntries)
+	oldTotal := historyTokens + summaryTokenCount(summary)
+	newTotal := keptTokens + summaryTokenCount(nextSummary)
+	if newTotal >= oldTotal {
+		s.recordCompressionFailure(conversationID, historyTokens)
+		span.SetAttributes(attribute.String("agent.memory.compression_status", "summary_inflated"))
+		return summary, degradedEntries, degradedTokens, degradedBytes, false, nil
 	}
-	return nextSummary, entries, historyChars, true, nil
+	s.clearCompressionFailure(conversationID)
+	span.SetAttributes(
+		attribute.String("agent.memory.compression_status", "completed"),
+		attribute.Int("agent.memory.tokens_after", newTotal),
+		attribute.Int("agent.memory.messages_after", len(keptEntries)),
+	)
+	return nextSummary, keptEntries, keptTokens, keptBytes, true, nil
 }
 
 func buildContext(systemPrompt string, summary *conversationSummary, history []*schema.Message) []*schema.Message {
-	result := make([]*schema.Message, 0, len(history)+2)
+	result := make([]*schema.Message, 0, len(history)+3)
 	result = append(result, schema.SystemMessage(systemPrompt))
 	if summary != nil && strings.TrimSpace(summary.Content) != "" {
-		result = append(result, schema.SystemMessage("Conversation summary:\n"+summary.Content))
+		result = append(result,
+			schema.UserMessage("Conversation state snapshot:\n"+summary.Content),
+			schema.AssistantMessage("Understood. I will continue from this state.", nil),
+		)
 	}
 	return append(result, history...)
 }
 
-func recentStart(history []*schema.Message, floor, budgetChars int) int {
-	chars := 0
-	start := len(history)
-	for start > floor {
-		next := chars + messageSize(history[start-1])
-		if next > budgetChars && start < len(history) {
-			break
-		}
-		chars = next
-		start--
+func compressionSplitPoint(history []*schema.Message, preservePercent int) int {
+	if len(history) == 0 {
+		return 0
 	}
-	return safeContextStart(history, start)
+	total := estimateTokens(history)
+	target := total * (100 - preservePercent) / 100
+	consumed, lastSafe := 0, 0
+	for index, message := range history {
+		if index > 0 && isCompressionBoundary(message) {
+			if consumed >= target {
+				return index
+			}
+			lastSafe = index
+		}
+		consumed += estimateMessageTokens(message)
+	}
+	last := history[len(history)-1]
+	if last.Role == schema.Assistant && len(last.ToolCalls) == 0 {
+		return len(history)
+	}
+	return lastSafe
 }
 
-func safeContextStart(history []*schema.Message, start int) int {
+func safeCompressionStart(history []*schema.Message, start int) int {
 	if start <= 0 || start >= len(history) {
 		return start
 	}
-	original := start
-	for start > 0 && history[start].Role == schema.Tool {
-		start--
-	}
-	if len(history)-start <= maxContextMessages {
-		return start
-	}
-	start = original
-	for start < len(history) && history[start].Role == schema.Tool {
-		start++
-	}
-	return start
-}
-
-func summarize(ctx context.Context, chatModel model.BaseChatModel, previous *conversationSummary, messages []*schema.Message) (*conversationSummary, error) {
-	var transcript strings.Builder
-	if previous != nil && previous.Content != "" {
-		transcript.WriteString("Previous summary:\n")
-		transcript.WriteString(previous.Content)
-		transcript.WriteString("\n\nNew messages:\n")
-	}
-	for _, message := range messages {
-		fmt.Fprintf(&transcript, "%s: %s\n", message.Role, message.Content)
-		for _, call := range message.ToolCalls {
-			fmt.Fprintf(&transcript, "tool_call %s(%s)\n", call.Function.Name, call.Function.Arguments)
+	for index := start; index < len(history); index++ {
+		if isCompressionBoundary(history[index]) {
+			return index
 		}
 	}
-	response, err := chatModel.Generate(ctx, []*schema.Message{
-		schema.SystemMessage("Summarize the coding session. Preserve requirements, decisions, changed files, command results, unresolved errors, and next steps. Be concise and factual."),
-		schema.UserMessage(transcript.String()),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("summarize conversation: %w", err)
-	}
-	content := strings.ToValidUTF8(response.Content, "\uFFFD")
-	content = utf8Prefix(content, maxSummaryContentBytes)
-	return &conversationSummary{Content: content, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}, nil
+	return compressionSplitPoint(history, compressionPreservePercent)
 }
 
-func contextHistoryBudget(contextTokens int, systemPrompt string, summary *conversationSummary) int {
-	tokens := int64(contextTokens)
-	if tokens < 1 {
-		tokens = 1
+func isCompressionBoundary(message *schema.Message) bool {
+	if message == nil {
+		return false
 	}
-	budget := int64(maxContextHistoryChars)
-	if tokens < int64(maxContextHistoryChars)*10/(4*7) {
-		budget = tokens * 4 * 7 / 10
+	return message.Role == schema.User || message.Role == schema.Assistant && len(message.ToolCalls) != 0
+}
+
+func summarize(
+	ctx context.Context,
+	chatModel model.BaseChatModel,
+	compressionModel string,
+	previous *conversationSummary,
+	messages []*schema.Message,
+) (*conversationSummary, error) {
+	prompt := "Generate a new <state_snapshot> from the session history."
+	if previous != nil && strings.TrimSpace(previous.Content) != "" {
+		prompt = "Update this previous snapshot with the session history. Preserve all still-relevant facts:\n\n" + previous.Content
 	}
-	budget -= int64(len(systemPrompt))
-	if summary != nil {
-		budget -= int64(len(summary.Content))
+	input := make([]*schema.Message, 0, len(messages)+2)
+	input = append(input, schema.SystemMessage(compressionSystemPrompt))
+	input = append(input, cloneMessages(messages)...)
+	input = append(input, schema.UserMessage(prompt))
+
+	options := []model.Option{model.WithTemperature(0), model.WithMaxTokens(compressionMaxOutputTokens)}
+	if compressionModel != "" {
+		options = append(options, model.WithModel(compressionModel))
 	}
-	if budget < 1 {
-		return 1
+	response, err := chatModel.Generate(ctx, input, options...)
+	if err != nil {
+		return nil, fmt.Errorf("generate conversation state snapshot: %w", err)
 	}
-	return int(budget)
+	draft := normalizeStateSnapshot(response.Content)
+	if draft == "" {
+		return nil, errors.New("generate conversation state snapshot: empty response")
+	}
+
+	verification := append(cloneMessages(input), schema.AssistantMessage(draft, nil), schema.UserMessage(
+		"Check the state snapshot against the history for missing user constraints, file paths, technical details, tool evidence, unresolved errors, or next steps. Return only the final corrected <state_snapshot> block.",
+	))
+	verified, verifyErr := chatModel.Generate(ctx, verification, options...)
+	if verifyErr == nil && strings.TrimSpace(verified.Content) != "" {
+		draft = normalizeStateSnapshot(verified.Content)
+	}
+	return &conversationSummary{
+		Content:   utf8Prefix(draft, maxSummaryContentBytes),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func normalizeStateSnapshot(content string) string {
+	content = strings.TrimSpace(strings.ToValidUTF8(content, "\uFFFD"))
+	if content == "" {
+		return ""
+	}
+	if start := strings.Index(content, "<state_snapshot>"); start >= 0 {
+		if end := strings.Index(content[start:], "</state_snapshot>"); end >= 0 {
+			end += start + len("</state_snapshot>")
+			return content[start:end]
+		}
+	}
+	return "<state_snapshot>\n" + content + "\n</state_snapshot>"
+}
+
+func contextHistoryTokenBudget(contextTokens int, systemPrompt string, summary *conversationSummary) int {
+	threshold := max(1, contextTokens*compressionThresholdPercent/100)
+	budget := threshold - estimateTextTokens(systemPrompt) - summaryTokenCount(summary)
+	return max(1, budget)
 }
 
 func estimateTokens(messages []*schema.Message) int {
-	chars := 0
+	tokens := 0
 	for _, message := range messages {
-		chars += messageSize(message)
+		tokens += estimateMessageTokens(message)
 	}
-	return chars/4 + 1
+	return max(1, tokens)
+}
+
+func estimateMessageTokens(message *schema.Message) int {
+	if message == nil {
+		return 0
+	}
+	tokens := 4 + estimateTextTokens(message.Content) + estimateTextTokens(message.ReasoningContent)
+	tokens += estimateTextTokens(message.Name) + estimateTextTokens(message.ToolCallID) + estimateTextTokens(message.ToolName)
+	for _, call := range message.ToolCalls {
+		tokens += 4 + estimateTextTokens(call.ID) + estimateTextTokens(call.Function.Name) + estimateTextTokens(call.Function.Arguments)
+	}
+	return max(1, tokens)
+}
+
+func estimateTextTokens(value string) int {
+	ascii, other := 0, 0
+	for _, r := range value {
+		if r <= unicode.MaxASCII {
+			ascii++
+		} else {
+			other++
+		}
+	}
+	return (ascii+3)/4 + other
+}
+
+func summaryTokenCount(summary *conversationSummary) int {
+	if summary == nil {
+		return 0
+	}
+	return estimateTextTokens(summary.Content)
+}
+
+func (s *MemoryStore) degradeToolOutputs(conversationID string, messages []*schema.Message) ([]*schema.Message, error) {
+	result := cloneMessages(messages)
+	used := 0
+	for index := len(result) - 1; index >= 0; index-- {
+		message := result[index]
+		if message.Role != schema.Tool || message.Content == "" {
+			continue
+		}
+		tokens := estimateTextTokens(message.Content)
+		if used+tokens <= compressionToolTokenBudget {
+			used += tokens
+			continue
+		}
+		path, err := s.saveCompressionArtifact(conversationID, message.Content)
+		if err != nil {
+			return nil, err
+		}
+		tail := lastLines(message.Content, compressionToolTailLines, compressionToolTailBytes)
+		message.Content = fmt.Sprintf(
+			"[Older tool output truncated during context compression. Full output: %s; original size: %d bytes; showing the last %d lines.]\n\n%s",
+			path, len(message.Content), compressionToolTailLines, tail,
+		)
+		used += estimateTextTokens(message.Content)
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) saveCompressionArtifact(conversationID, content string) (string, error) {
+	digest := sha256.Sum256([]byte(content))
+	name := hex.EncodeToString(digest[:]) + ".log"
+	relative := filepath.Join(".agentland", "logs", "compression", conversationID, name)
+	dir := filepath.Join(s.root, "logs", "compression", conversationID)
+	path := filepath.Join(dir, name)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create compression artifact directory: %w", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		return filepath.ToSlash(relative), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect compression artifact: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".tool-output-*.log")
+	if err != nil {
+		return "", fmt.Errorf("create compression artifact: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("protect compression artifact: %w", err)
+	}
+	if _, err := io.WriteString(tmp, content); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("write compression artifact: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("sync compression artifact: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close compression artifact: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return "", fmt.Errorf("install compression artifact: %w", err)
+	}
+	return filepath.ToSlash(relative), nil
+}
+
+func lastLines(content string, count, byteLimit int) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) > count {
+		lines = lines[len(lines)-count:]
+	}
+	return utf8Suffix(strings.Join(lines, "\n"), byteLimit)
+}
+
+func utf8Suffix(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	start := len(value) - limit
+	for start < len(value) && !utf8.RuneStart(value[start]) {
+		start++
+	}
+	return value[start:]
+}
+
+func replaceContextMessages(entries []contextMessage, messages []*schema.Message) ([]contextMessage, int, int) {
+	result := make([]contextMessage, len(entries))
+	for index, entry := range entries {
+		entry.message = messages[index]
+		entry.tokens = estimateMessageTokens(messages[index])
+		entry.bytes = messageSize(messages[index])
+		result[index] = entry
+	}
+	tokens, bytes := contextMessageTotals(result)
+	return result, tokens, bytes
+}
+
+func contextMessageTotals(entries []contextMessage) (int, int) {
+	tokens, bytes := 0, 0
+	for _, entry := range entries {
+		tokens += entry.tokens
+		bytes += entry.bytes
+	}
+	return tokens, bytes
+}
+
+func (s *MemoryStore) skipFailedCompression(conversationID string, currentTokens int) bool {
+	s.mu.RLock()
+	failedAt := s.compressionFailures[conversationID]
+	s.mu.RUnlock()
+	return failedAt > 0 && currentTokens*100 < failedAt*compressionRetryGrowthPercent
+}
+
+func (s *MemoryStore) recordCompressionFailure(conversationID string, tokens int) {
+	s.mu.Lock()
+	s.compressionFailures[conversationID] = tokens
+	s.mu.Unlock()
+}
+
+func (s *MemoryStore) clearCompressionFailure(conversationID string) {
+	s.mu.Lock()
+	delete(s.compressionFailures, conversationID)
+	s.mu.Unlock()
 }
 
 func messageSize(message *schema.Message) int {

@@ -124,6 +124,28 @@ gateway:
       AL_SANDBOX_JWT_TTL: 5m
       AL_SANDBOX_JWT_KID: default
 
+    resources:
+      limits:
+        cpu: "1"
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+  publisher:
+    enabled: false
+    buildkitAddress: ""
+    allowInsecureBuildkit: false
+    platform: linux/amd64
+    timeout: 20m
+    repositoryPrefix: ""
+    serviceTokenSecret: ""
+    serviceTokenSecretKey: token
+    # Existing kubernetes.io/dockerconfigjson Secret containing .dockerconfigjson.
+    registryCredentialsSecret: ""
+    # Existing Secret containing ca.pem, cert.pem and key.pem for BuildKit mTLS.
+    buildkitTLSSecret: ""
+
   service:
     enabled: true
     name: gateway

@@ -7,5 +7,6 @@ export const queryKeys = {
   fileContents: (projectId: string) => ['project', projectId, 'files', 'content'] as const,
   file: (projectId: string, path: string) => [...queryKeys.fileContents(projectId), path] as const,
   preview: (projectId: string) => ['project', projectId, 'preview'] as const,
+  publications: (projectId: string) => ['project', projectId, 'publications'] as const,
   run: (runId: string) => ['run', runId] as const,
 };

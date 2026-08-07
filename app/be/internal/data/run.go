@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -413,6 +414,83 @@ func (r *runRepo) TouchRuntime(ctx context.Context, projectID string, now time.T
 	return err
 }
 
+func (r *runRepo) SaveWorkspaceSnapshot(ctx context.Context, runID, workerID string, data []byte, sha, captureError string, now time.Time) (bool, error) {
+	pool, err := r.ready(ctx)
+	if err != nil {
+		return false, err
+	}
+	tag, err := pool.Exec(ctx, `insert into run_workspace_snapshots(run_id,content,sha256,capture_error,created_at)
+		select $1,$4,$5,$6,$7 where exists(select 1 from agent_runs where id=$1 and worker_id=$2 and status=$3)
+		on conflict(run_id) do update set content=excluded.content,sha256=excluded.sha256,capture_error=excluded.capture_error,created_at=excluded.created_at`,
+		runID, workerID, models.RunStatusRunning, data, sha, captureError, now)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (r *runRepo) AppendTrajectoryRecord(ctx context.Context, runID, workerID, recordHash string, sequence int64, record json.RawMessage, now time.Time) (bool, error) {
+	pool, err := r.ready(ctx)
+	if err != nil {
+		return false, err
+	}
+	tag, err := pool.Exec(ctx, `insert into run_trajectory_records(run_id,sequence,record_hash,record,created_at)
+		select $1,$4,$5,$6,$7 where exists(select 1 from agent_runs where id=$1 and worker_id=$2 and status=$3)
+		on conflict(run_id,sequence) do nothing`, runID, workerID, models.RunStatusRunning, sequence, recordHash, []byte(record), now)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 1 {
+		return true, nil
+	}
+	var storedHash string
+	var acquired bool
+	err = pool.QueryRow(ctx, `select coalesce((select record_hash from run_trajectory_records where run_id=$1 and sequence=$2),''),
+		exists(select 1 from agent_runs where id=$1 and worker_id=$3 and status=$4)`, runID, sequence, workerID, models.RunStatusRunning).Scan(&storedHash, &acquired)
+	if err != nil || !acquired {
+		return false, err
+	}
+	if storedHash != recordHash {
+		return false, errors.New("trajectory sequence conflicts with an existing record")
+	}
+	return true, nil
+}
+
+func (r *runRepo) LoadWorkspaceSnapshot(ctx context.Context, runID string) (*models.WorkspaceSnapshot, error) {
+	pool, err := r.ready(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &models.WorkspaceSnapshot{}
+	err = pool.QueryRow(ctx, `select content,sha256,capture_error,created_at from run_workspace_snapshots where run_id=$1`, runID).Scan(&snapshot.Data, &snapshot.SHA, &snapshot.Error, &snapshot.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return snapshot, err
+}
+
+func (r *runRepo) LoadTrajectoryRecords(ctx context.Context, runID string) ([]models.RunTrajectoryRecord, error) {
+	pool, err := r.ready(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx, `select record from run_trajectory_records where run_id=$1 order by sequence`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]models.RunTrajectoryRecord, 0)
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var record models.RunTrajectoryRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (r *runRepo) TouchRuntimeByPreviewToken(ctx context.Context, previewToken string, now time.Time) error {
 	pool, err := r.ready(ctx)
 	if err != nil {
@@ -489,6 +567,20 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`create table if not exists project_previews (
 				id text not null,project_id text primary key references projects(id),owner_id text not null references users(id),status text not null,preview_url text not null,preview_token text not null,
 				port integer not null,created_at timestamptz not null,last_active_at timestamptz not null,expires_at timestamptz not null,updated_at timestamptz not null)`,
+			`create table if not exists run_workspace_snapshots (
+				run_id text primary key references agent_runs(id) on delete cascade,content bytea not null,sha256 text not null,capture_error text not null default '',created_at timestamptz not null)`,
+			`create table if not exists run_trajectory_records (
+				run_id text not null references agent_runs(id) on delete cascade,sequence bigint not null,record_hash text not null,record bytea not null,created_at timestamptz not null,primary key(run_id,sequence))`,
+			`create unique index if not exists uq_run_trajectory_hash on run_trajectory_records(run_id,record_hash)`,
+			`create table if not exists project_publications (
+				id text primary key,owner_id text not null references users(id),project_id text not null references projects(id),idempotency_key text not null,
+				build_context text not null,dockerfile text not null,status text not null,worker_id text not null default '',image_ref text not null default '',image_digest text not null default '',
+				build_logs text not null default '',error_code text not null default '',error_message text not null default '',trace_parent text not null default '',trace_state text not null default '',
+				created_at timestamptz not null,updated_at timestamptz not null,started_at timestamptz,heartbeat_at timestamptz,completed_at timestamptz,cancel_requested_at timestamptz)`,
+			`create unique index if not exists uq_project_publications_idempotency on project_publications(owner_id,project_id,idempotency_key)`,
+			`create unique index if not exists uq_project_publications_active on project_publications(project_id) where status in ('queued','running')`,
+			`create index if not exists idx_project_publications_queue on project_publications(status,created_at)`,
+			`create index if not exists idx_project_publications_project_created on project_publications(project_id,created_at desc)`,
 		}
 		for _, statement := range statements {
 			if _, err := r.pool.Exec(ctx, statement); err != nil {

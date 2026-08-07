@@ -50,6 +50,20 @@ func TestRuntimeMaxSessionDurationDefaultsToOneHour(t *testing.T) {
 	require.Equal(t, time.Hour, viper.GetDuration("runtime.max_session_duration"))
 }
 
+func TestLangfuseEnvironmentKeys(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("LANGFUSE_ENABLED", "true")
+	t.Setenv("LANGFUSE_BASE_URL", "https://langfuse.example")
+	t.Setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+	t.Setenv("LANGFUSE_SECRET_KEY", "sk-test")
+	require.NoError(t, Init())
+	require.True(t, viper.GetBool("langfuse.enabled"))
+	require.Equal(t, "https://langfuse.example", viper.GetString("langfuse.base_url"))
+	require.Equal(t, "pk-test", viper.GetString("langfuse.public_key"))
+	require.Equal(t, "sk-test", viper.GetString("langfuse.secret_key"))
+}
+
 func TestPreviewPublicURLTemplate(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)

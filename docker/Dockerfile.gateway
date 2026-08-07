@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w" -o gateway ./cmd/gateway
 
+FROM moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8 AS buildkit
+
 FROM alpine:3.19
 
 RUN apk --no-cache add ca-certificates
@@ -31,9 +33,11 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 
 COPY --from=builder /workspace/gateway .
-RUN mkdir -p /app/playground && touch /app/playground/config.yaml
-
-RUN adduser -D -u 1000 apiserver
+COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
+RUN adduser -D -u 1000 apiserver && \
+    mkdir -p /app/playground /home/apiserver/.docker && \
+    touch /app/playground/config.yaml && \
+    chown -R apiserver:apiserver /app/playground /home/apiserver/.docker
 USER apiserver
 
 EXPOSE 8080
