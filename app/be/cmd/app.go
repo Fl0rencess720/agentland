@@ -16,6 +16,7 @@ type App struct {
 	HTTPServer        *service.HTTPServer
 	RunWorker         *biz.RunWorker
 	PublicationWorker *biz.PublicationWorker
+	Kafka             *data.KafkaPipeline
 }
 
 func newApp(ctx context.Context) (*App, error) {
@@ -32,10 +33,15 @@ func newApp(ctx context.Context) (*App, error) {
 	projectRepo := data.NewProjectRepo()
 	runRepo := data.NewRunRepo()
 	publicationRepo := data.NewPublicationRepo()
-	runEvents := data.NewRunEventStore()
+	kafka, err := data.NewKafkaPipeline(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("initialize kafka pipeline: %w", err)
+	}
+	runEvents := kafka.EventStore()
 	gateway := data.NewAgentlandGatewayClient()
 	publisher, ok := gateway.(biz.PublicationGateway)
 	if !ok {
+		kafka.Close()
 		return nil, fmt.Errorf("gateway does not support image publication")
 	}
 	projectUseCase := biz.NewProjectUsecaseWithPublishing(projectRepo, runRepo, runEvents, gateway, publicationRepo, publisher, data.NewLangfuseScoreClient())
@@ -48,7 +54,8 @@ func newApp(ctx context.Context) (*App, error) {
 	)
 	return &App{
 		HTTPServer:        httpServer,
-		RunWorker:         biz.NewRunWorker(runRepo, runEvents, gateway),
-		PublicationWorker: biz.NewPublicationWorker(publicationRepo, publisher),
+		RunWorker:         biz.NewRunWorker(runRepo, gateway, kafka.RunQueue()),
+		PublicationWorker: biz.NewPublicationWorker(publicationRepo, publisher, kafka.PublicationQueue()),
+		Kafka:             kafka,
 	}, nil
 }

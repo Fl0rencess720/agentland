@@ -22,19 +22,14 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	terminalEventTTL              = 24 * time.Hour
-	terminalEventOperationTimeout = 2 * time.Second
-	assistantDeltaFlushInterval   = 250 * time.Millisecond
-)
+const assistantDeltaFlushInterval = 250 * time.Millisecond
 
 type RunWorker struct {
 	repo       RunWorkerRepo
-	events     RunEventStore
 	gateway    AgentlandGateway
+	queue      TaskQueue
 	workerID   string
 	now        func() time.Time
-	poll       time.Duration
 	heartbeat  time.Duration
 	cancelPoll time.Duration
 	orphanAge  time.Duration
@@ -42,56 +37,88 @@ type RunWorker struct {
 	parallel   int
 }
 
-func NewRunWorker(repo RunWorkerRepo, events RunEventStore, gateway AgentlandGateway) *RunWorker {
-	return &RunWorker{
-		repo: repo, events: events, gateway: gateway, workerID: token.NewID("worker"), now: time.Now,
-		poll:       configDuration("worker.poll_interval", 500*time.Millisecond),
+func NewRunWorker(repo RunWorkerRepo, gateway AgentlandGateway, queues ...TaskQueue) *RunWorker {
+	worker := &RunWorker{
+		repo: repo, gateway: gateway, workerID: token.NewID("worker"), now: time.Now,
 		heartbeat:  configDuration("worker.heartbeat_interval", 5*time.Second),
 		cancelPoll: configDuration("worker.cancel_poll_interval", 250*time.Millisecond),
 		orphanAge:  configDuration("worker.orphan_timeout", 30*time.Second),
 		runtimeMax: configDuration("runtime.max_session_duration", time.Hour),
 		parallel:   configInt("worker.parallelism", 4),
 	}
+	if len(queues) != 0 {
+		worker.queue = queues[0]
+	}
+	return worker
 }
 
 func (w *RunWorker) Run(ctx context.Context) {
+	if w.queue == nil {
+		zap.L().Error("run task queue is not configured")
+		return
+	}
 	w.recoverOrphans(ctx)
-	poll := time.NewTicker(w.poll)
-	sweep := time.NewTicker(w.orphanAge)
-	defer poll.Stop()
-	defer sweep.Stop()
+	go func() {
+		sweep := time.NewTicker(w.orphanAge)
+		defer sweep.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sweep.C:
+				w.recoverOrphans(ctx)
+			}
+		}
+	}()
 	semaphore := make(chan struct{}, w.parallel)
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	for {
 		select {
+		case semaphore <- struct{}{}:
 		case <-ctx.Done():
 			return
-		case <-sweep.C:
-			w.recoverOrphans(ctx)
-		case <-poll.C:
-			select {
-			case semaphore <- struct{}{}:
-			default:
-				continue
-			}
-			run, err := w.repo.ClaimNextRun(ctx, w.workerID, w.now().UTC())
-			if err != nil {
-				<-semaphore
-				zap.L().Warn("claim queued app run failed", zap.Error(err))
-				continue
-			}
-			if run == nil {
-				<-semaphore
-				continue
-			}
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				defer func() { <-semaphore }()
-				w.execute(ctx, run)
-			}()
 		}
+		delivery, err := w.queue.Receive(ctx)
+		if err != nil {
+			<-semaphore
+			if ctx.Err() == nil {
+				zap.L().Warn("receive queued app run failed", zap.Error(err))
+				waitWorkerRetry(ctx, time.Second)
+			}
+			continue
+		}
+		var run *models.Run
+		for ctx.Err() == nil {
+			run, err = w.repo.ClaimRun(ctx, delivery.ID(), w.workerID, w.now().UTC())
+			if err != nil {
+				zap.L().Warn("claim queued app run failed", zap.String("run_id", delivery.ID()), zap.Error(err))
+				waitWorkerRetry(ctx, 250*time.Millisecond)
+				continue
+			}
+			break
+		}
+		for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
+			if err = delivery.Ack(ctx); err == nil {
+				break
+			}
+			zap.L().Warn("commit app run delivery failed", zap.String("run_id", delivery.ID()), zap.Error(err))
+			waitWorkerRetry(ctx, 250*time.Millisecond)
+		}
+		if ctx.Err() != nil {
+			<-semaphore
+			return
+		}
+		if run == nil {
+			<-semaphore
+			continue
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer func() { <-semaphore }()
+			w.execute(ctx, run)
+		}()
 	}
 }
 
@@ -201,7 +228,7 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 		}
 		if pendingDelta.Len() != 0 {
 			delta := pendingDelta.String()
-			acquired, err := w.repo.AppendAssistantDelta(ctx, run.ID, w.workerID, delta, pendingSequence, w.now().UTC())
+			acquired, err := w.repo.AppendAssistantDelta(ctx, run.ID, w.workerID, delta, pendingSequence, w.now().UTC(), pendingEvents)
 			if err != nil {
 				return err
 			}
@@ -210,12 +237,7 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 			}
 			pendingDelta.Reset()
 		}
-		for len(pendingEvents) != 0 {
-			if _, err := w.events.Publish(ctx, run.ID, pendingEvents[0]); err != nil {
-				return err
-			}
-			pendingEvents = pendingEvents[1:]
-		}
+		pendingEvents = pendingEvents[:0]
 		return nil
 	}
 	flushLoopCtx, stopFlushLoop := context.WithCancel(runCtx)
@@ -270,12 +292,18 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 			if err := flushDelta(runCtx); err != nil {
 				return err
 			}
-			acquired, err := w.repo.SetAgentRun(runCtx, run.ID, w.workerID, upstreamRunID, event.Sequence, w.now().UTC())
-			if err != nil {
-				return err
-			}
-			if !acquired {
-				return ErrRunLeaseLost
+			if !isTerminalEvent(event.Type) {
+				persistedEvent := event
+				if event.Type == "trajectory.record" {
+					persistedEvent = nil
+				}
+				acquired, err := w.repo.SetAgentRun(runCtx, run.ID, w.workerID, upstreamRunID, event.Sequence, w.now().UTC(), persistedEvent)
+				if err != nil {
+					return err
+				}
+				if !acquired {
+					return ErrRunLeaseLost
+				}
 			}
 		}
 		if event.Type == "trajectory.record" {
@@ -302,26 +330,22 @@ func (w *RunWorker) execute(parent context.Context, run *models.Run) {
 		}
 		switch event.Type {
 		case "run.completed":
-			if err := w.finish(runCtx, run.ID, models.RunStatusCompleted, "", "", event.Sequence); err != nil {
+			if err := w.finish(runCtx, run.ID, models.RunStatusCompleted, "", "", event.Sequence, event); err != nil {
 				return err
 			}
 			terminal.Store(true)
 		case "run.failed":
-			if err := w.finish(runCtx, run.ID, models.RunStatusFailed, "AGENT_RUN_FAILED", eventError(event), event.Sequence); err != nil {
+			if err := w.finish(runCtx, run.ID, models.RunStatusFailed, "AGENT_RUN_FAILED", eventError(event), event.Sequence, event); err != nil {
 				return err
 			}
 			terminal.Store(true)
 		case "run.cancelled":
-			if err := w.finish(runCtx, run.ID, models.RunStatusCancelled, "", "", event.Sequence); err != nil {
+			if err := w.finish(runCtx, run.ID, models.RunStatusCancelled, "", "", event.Sequence, event); err != nil {
 				return err
 			}
 			terminal.Store(true)
 		}
-		if terminal.Load() {
-			return publishTerminalEvent(runCtx, w.events, run.ID, event)
-		}
-		_, err := w.events.Publish(runCtx, run.ID, event)
-		return err
+		return nil
 	})
 	stopFlushLoop()
 	<-flushLoopDone
@@ -505,8 +529,8 @@ func (w *RunWorker) confirmLease(ctx context.Context, run *models.Run) bool {
 	return acquired
 }
 
-func (w *RunWorker) finish(ctx context.Context, runID, status, code, message string, sequence int64) error {
-	acquired, err := w.repo.FinishRun(ctx, runID, w.workerID, status, code, message, sequence, w.now().UTC())
+func (w *RunWorker) finish(ctx context.Context, runID, status, code, message string, sequence int64, event *models.AgentEvent) error {
+	acquired, err := w.repo.FinishRun(ctx, runID, w.workerID, status, code, message, sequence, w.now().UTC(), event)
 	if err != nil {
 		return err
 	}
@@ -537,23 +561,23 @@ func (w *RunWorker) fail(ctx context.Context, run *models.Run, code string, caus
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String("app.run.status", models.RunStatusFailed), attribute.String("app.run.error_code", code))
 	now := w.now().UTC()
 	sequence := run.LastSequence + 1
-	acquired, err := w.repo.FinishRun(ctx, run.ID, w.workerID, models.RunStatusFailed, code, message, sequence, now)
+	payload, _ := json.Marshal(map[string]string{"code": code, "error": message})
+	event := &models.AgentEvent{Type: "run.failed", RunID: run.ID, Sequence: sequence, Timestamp: now, Payload: payload}
+	acquired, err := w.repo.FinishRun(ctx, run.ID, w.workerID, models.RunStatusFailed, code, message, sequence, now, event)
 	if err != nil || !acquired {
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{"code": code, "error": message})
-	_ = publishTerminalEvent(ctx, w.events, run.ID, &models.AgentEvent{Type: "run.failed", RunID: run.ID, Sequence: sequence, Timestamp: now, Payload: payload})
 }
 
 func (w *RunWorker) cancelled(ctx context.Context, run *models.Run) {
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String("app.run.status", models.RunStatusCancelled))
 	now := w.now().UTC()
 	sequence := run.LastSequence + 1
-	acquired, err := w.repo.FinishRun(ctx, run.ID, w.workerID, models.RunStatusCancelled, "", "", sequence, now)
+	event := &models.AgentEvent{Type: "run.cancelled", RunID: run.ID, Sequence: sequence, Timestamp: now, Payload: json.RawMessage(`{}`)}
+	acquired, err := w.repo.FinishRun(ctx, run.ID, w.workerID, models.RunStatusCancelled, "", "", sequence, now, event)
 	if err != nil || !acquired {
 		return
 	}
-	_ = publishTerminalEvent(ctx, w.events, run.ID, &models.AgentEvent{Type: "run.cancelled", RunID: run.ID, Sequence: sequence, Timestamp: now, Payload: json.RawMessage(`{}`)})
 }
 
 func (w *RunWorker) recoverOrphans(ctx context.Context) {
@@ -563,22 +587,9 @@ func (w *RunWorker) recoverOrphans(ctx context.Context) {
 		zap.L().Warn("recover orphaned app runs failed", zap.Error(err))
 		return
 	}
-	for _, run := range ids {
-		payload, _ := json.Marshal(map[string]string{"code": "WORKER_HEARTBEAT_LOST", "error": "run worker heartbeat expired"})
-		_ = publishTerminalEvent(ctx, w.events, run.RunID, &models.AgentEvent{Type: "run.failed", RunID: run.RunID, Sequence: run.Sequence, Timestamp: now, Payload: payload})
+	if len(ids) != 0 {
+		zap.L().Warn("failed orphaned app runs", zap.Int("count", len(ids)))
 	}
-}
-
-func publishTerminalEvent(ctx context.Context, events RunEventStore, runID string, event *models.AgentEvent) error {
-	detached := context.WithoutCancel(ctx)
-	publishCtx, cancelPublish := context.WithTimeout(detached, terminalEventOperationTimeout)
-	_, publishErr := events.Publish(publishCtx, runID, event)
-	cancelPublish()
-
-	expireCtx, cancelExpire := context.WithTimeout(detached, terminalEventOperationTimeout)
-	expireErr := events.Expire(expireCtx, runID, terminalEventTTL)
-	cancelExpire()
-	return errors.Join(publishErr, expireErr)
 }
 
 func eventError(event *models.AgentEvent) string {
@@ -611,4 +622,13 @@ func configInt(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func waitWorkerRetry(ctx context.Context, duration time.Duration) {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }

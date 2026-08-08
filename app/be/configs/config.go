@@ -33,6 +33,29 @@ func Init() error {
 	viper.SetDefault("redis.addr", "127.0.0.1:6379")
 	viper.SetDefault("redis.password", "")
 	viper.SetDefault("redis.db", 0)
+	viper.SetDefault("kafka.brokers", []string{"127.0.0.1:9092"})
+	viper.SetDefault("kafka.client_id", "agentland-app-be")
+	viper.SetDefault("kafka.run_topic", "agentland.app.run-tasks")
+	viper.SetDefault("kafka.publication_topic", "agentland.app.publication-tasks")
+	viper.SetDefault("kafka.event_topic", "agentland.app.run-events")
+	viper.SetDefault("kafka.run_consumer_group", "agentland.app.run-workers")
+	viper.SetDefault("kafka.publication_consumer_group", "agentland.app.publication-workers")
+	viper.SetDefault("kafka.event_projector_group", "agentland.app.run-event-projectors")
+	viper.SetDefault("kafka.task_partitions", 16)
+	viper.SetDefault("kafka.event_partitions", 32)
+	viper.SetDefault("kafka.replication_factor", 1)
+	viper.SetDefault("kafka.event_retention", 7*24*time.Hour)
+	viper.SetDefault("kafka.relay_poll_interval", 100*time.Millisecond)
+	viper.SetDefault("kafka.relay_batch_size", 100)
+	viper.SetDefault("kafka.outbox_retention", 7*24*time.Hour)
+	viper.SetDefault("kafka.security_protocol", "plaintext")
+	viper.SetDefault("kafka.sasl.mechanism", "plain")
+	viper.SetDefault("kafka.sasl.username", "")
+	viper.SetDefault("kafka.sasl.password", "")
+	viper.SetDefault("kafka.tls.ca_file", "")
+	viper.SetDefault("kafka.tls.cert_file", "")
+	viper.SetDefault("kafka.tls.key_file", "")
+	viper.SetDefault("kafka.tls.server_name", "")
 	viper.SetDefault("database.url", "")
 	viper.SetDefault("storage.s3.endpoint", "")
 	viper.SetDefault("storage.s3.region", "us-east-1")
@@ -49,12 +72,10 @@ func Init() error {
 	viper.SetDefault("preview.public_url_template", DefaultPreviewPublicURLTemplate)
 	viper.SetDefault("runtime.idle_timeout", 15*time.Minute)
 	viper.SetDefault("runtime.max_session_duration", time.Hour)
-	viper.SetDefault("worker.poll_interval", 500*time.Millisecond)
 	viper.SetDefault("worker.heartbeat_interval", 5*time.Second)
 	viper.SetDefault("worker.cancel_poll_interval", 250*time.Millisecond)
 	viper.SetDefault("worker.orphan_timeout", 30*time.Second)
 	viper.SetDefault("worker.parallelism", 4)
-	viper.SetDefault("publication.worker.poll_interval", time.Second)
 	viper.SetDefault("publication.worker.heartbeat_interval", 5*time.Second)
 	viper.SetDefault("publication.worker.cancel_poll_interval", 250*time.Millisecond)
 	viper.SetDefault("publication.worker.orphan_timeout", 30*time.Second)
@@ -91,10 +112,34 @@ func Init() error {
 	if err := ValidatePreviewPublicURLTemplate(viper.GetString("preview.public_url_template")); err != nil {
 		return err
 	}
+	if err := validateKafka(); err != nil {
+		return err
+	}
 	if err := validateWorkerLease("worker", viper.GetDuration("worker.heartbeat_interval"), viper.GetDuration("worker.orphan_timeout")); err != nil {
 		return err
 	}
 	return validateWorkerLease("publication.worker", viper.GetDuration("publication.worker.heartbeat_interval"), viper.GetDuration("publication.worker.orphan_timeout"))
+}
+
+func validateKafka() error {
+	if len(viper.GetStringSlice("kafka.brokers")) == 0 {
+		return fmt.Errorf("kafka.brokers is required")
+	}
+	for _, key := range []string{"run_topic", "publication_topic", "event_topic", "run_consumer_group", "publication_consumer_group", "event_projector_group"} {
+		if strings.TrimSpace(viper.GetString("kafka."+key)) == "" {
+			return fmt.Errorf("kafka.%s is required", key)
+		}
+	}
+	if viper.GetInt("kafka.task_partitions") <= 0 || viper.GetInt("kafka.event_partitions") <= 0 || viper.GetInt("kafka.replication_factor") <= 0 {
+		return fmt.Errorf("kafka partition and replication settings must be positive")
+	}
+	if viper.GetDuration("kafka.event_retention") < 24*time.Hour {
+		return fmt.Errorf("kafka.event_retention must be at least 24h")
+	}
+	if viper.GetDuration("kafka.relay_poll_interval") <= 0 || viper.GetInt("kafka.relay_batch_size") <= 0 {
+		return fmt.Errorf("kafka relay settings must be positive")
+	}
+	return nil
 }
 
 func GetServiceName() string {

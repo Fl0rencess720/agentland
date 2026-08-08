@@ -78,7 +78,7 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		queued, _, createErr := runs.CreateRun(ctx, makeInput(projectOne, "lease-failure", "message"))
 		require.NoError(t, createErr)
 		leaseStore.acquireErr = errors.New("redis unavailable")
-		claimed, claimErr := runs.ClaimNextRun(ctx, "worker-failed", now.Add(4*time.Minute))
+		claimed, claimErr := runs.ClaimRun(ctx, queued.ID, "worker-failed", now.Add(4*time.Minute))
 		leaseStore.acquireErr = nil
 		require.ErrorContains(t, claimErr, "redis unavailable")
 		require.Nil(t, claimed)
@@ -86,6 +86,24 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		require.NoError(t, getErr)
 		require.Equal(t, models.RunStatusQueued, stored.Status)
 		require.Empty(t, stored.WorkerID)
+		_, _, cancelErr := runs.RequestCancel(ctx, ownerID, queued.ID, now.Add(5*time.Minute))
+		require.NoError(t, cancelErr)
+	})
+
+	t.Run("run delivery remains queued while a ghost Redis lease exists", func(t *testing.T) {
+		queued, _, createErr := runs.CreateRun(ctx, makeInput(projectOne, "ghost-lease", "message"))
+		require.NoError(t, createErr)
+		acquired, acquireErr := leaseStore.Acquire(ctx, runLeaseKind, queued.ID, "ghost-worker", time.Minute)
+		require.NoError(t, acquireErr)
+		require.True(t, acquired)
+		claimed, claimErr := runs.ClaimRun(ctx, queued.ID, "worker-new", now.Add(4*time.Minute))
+		require.ErrorIs(t, claimErr, biz.ErrWorkerLeaseBusy)
+		require.Nil(t, claimed)
+		stored, getErr := runs.GetRun(ctx, ownerID, queued.ID)
+		require.NoError(t, getErr)
+		require.Equal(t, models.RunStatusQueued, stored.Status)
+		require.Empty(t, stored.WorkerID)
+		_, _ = leaseStore.Release(ctx, runLeaseKind, queued.ID, "ghost-worker")
 		_, _, cancelErr := runs.RequestCancel(ctx, ownerID, queued.ID, now.Add(5*time.Minute))
 		require.NoError(t, cancelErr)
 	})
@@ -151,19 +169,21 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		require.Equal(t, 1, successes)
 		require.Equal(t, 1, conflicts)
 
-		_, _, err = runs.CreateRun(ctx, makeInput(projectTwo, "project-two", "message"))
+		projectTwoRun, _, err := runs.CreateRun(ctx, makeInput(projectTwo, "project-two", "message"))
 		require.NoError(t, err)
+		var projectOneRunID string
+		require.NoError(t, pool.QueryRow(ctx, `select id from agent_runs where project_id=$1 and status=$2`, projectOne, models.RunStatusQueued).Scan(&projectOneRunID))
 		claimTime := now.Add(2 * time.Minute)
 		type claimResult struct {
 			run *models.Run
 			err error
 		}
 		claimed := make(chan claimResult, 2)
-		for _, workerID := range []string{"worker-a", "worker-b"} {
-			go func(workerID string) {
-				run, claimErr := runs.ClaimNextRun(ctx, workerID, claimTime)
+		for index, workerID := range []string{"worker-a", "worker-b"} {
+			go func(runID, workerID string) {
+				run, claimErr := runs.ClaimRun(ctx, runID, workerID, claimTime)
 				claimed <- claimResult{run: run, err: claimErr}
-			}(workerID)
+			}([]string{projectOneRunID, projectTwoRun.ID}[index], workerID)
 		}
 		firstResult, secondResult := <-claimed, <-claimed
 		require.NoError(t, firstResult.err)
@@ -190,7 +210,7 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		fenced, fenceErr := leaseStore.AcquireRecovery(ctx, runLeaseKind, []leaseCandidate{{ID: first.ID, OwnerID: first.WorkerID}}, "recovery:test", time.Minute)
 		require.NoError(t, fenceErr)
 		require.True(t, fenced[first.ID])
-		finished, finishErr := runs.FinishRun(ctx, first.ID, first.WorkerID, models.RunStatusCompleted, "", "", first.LastSequence+1, claimTime.Add(time.Second))
+		finished, finishErr := runs.FinishRun(ctx, first.ID, first.WorkerID, models.RunStatusCompleted, "", "", first.LastSequence+1, claimTime.Add(time.Second), nil)
 		require.NoError(t, finishErr)
 		require.False(t, finished)
 		_, _ = leaseStore.Release(ctx, runLeaseKind, first.ID, "recovery:test")
@@ -290,7 +310,7 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		_, _, createErr = runs.CreatePublication(ctx, makePublication(projectOne, "publication-active-key"))
 		require.ErrorIs(t, createErr, biz.ErrActivePublication)
 
-		claimed, claimErr := runs.ClaimNextPublication(ctx, "publication-worker", now.Add(time.Second))
+		claimed, claimErr := runs.ClaimPublication(ctx, first.ID, "publication-worker", now.Add(time.Second))
 		require.NoError(t, claimErr)
 		require.Equal(t, first.ID, claimed.ID)
 		acquired, heartbeatErr := runs.HeartbeatPublication(ctx, claimed.ID, "other-worker", now.Add(2*time.Second))
@@ -319,7 +339,7 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 	t.Run("publication recovery requires an expired Redis lease", func(t *testing.T) {
 		queued, _, createErr := runs.CreatePublication(ctx, makePublication(projectOne, "publication-recovery"))
 		require.NoError(t, createErr)
-		claimed, claimErr := runs.ClaimNextPublication(ctx, "publication-recovery-worker", now.Add(4*time.Minute))
+		claimed, claimErr := runs.ClaimPublication(ctx, queued.ID, "publication-recovery-worker", now.Add(4*time.Minute))
 		require.NoError(t, claimErr)
 		require.Equal(t, queued.ID, claimed.ID)
 		recovered, recoveryErr := runs.FailOrphanedPublications(ctx, now.Add(4*time.Minute+time.Second), now.Add(4*time.Minute+2*time.Second))
@@ -369,7 +389,7 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		queued, _, createErr := runs.CreatePublication(ctx, makePublication(projectOne, "publication-lease-failure"))
 		require.NoError(t, createErr)
 		leaseStore.acquireErr = errors.New("redis unavailable")
-		claimed, claimErr := runs.ClaimNextPublication(ctx, "publication-worker-failed", now.Add(5*time.Minute))
+		claimed, claimErr := runs.ClaimPublication(ctx, queued.ID, "publication-worker-failed", now.Add(5*time.Minute))
 		leaseStore.acquireErr = nil
 		require.ErrorContains(t, claimErr, "redis unavailable")
 		require.Nil(t, claimed)

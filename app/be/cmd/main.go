@@ -63,7 +63,7 @@ func main() {
 	}
 
 	var workerWG sync.WaitGroup
-	workerWG.Add(2)
+	workerWG.Add(5)
 	go func() {
 		defer workerWG.Done()
 		app.RunWorker.Run(ctx)
@@ -71,6 +71,18 @@ func main() {
 	go func() {
 		defer workerWG.Done()
 		app.PublicationWorker.Run(ctx)
+	}()
+	go func() {
+		defer workerWG.Done()
+		app.Kafka.RunRelay(ctx)
+	}()
+	go func() {
+		defer workerWG.Done()
+		app.Kafka.RunEventProjector(ctx)
+	}()
+	go func() {
+		defer workerWG.Done()
+		app.Kafka.RunEventNotifier(ctx)
 	}()
 
 	serverErr := make(chan error, 1)
@@ -92,6 +104,7 @@ func main() {
 	}
 	closeServers(app.HTTPServer.Server)
 	workerWG.Wait()
+	app.Kafka.Close()
 }
 
 func closeServers(servers ...*http.Server) {

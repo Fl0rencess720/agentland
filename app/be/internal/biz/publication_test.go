@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Fl0rencess720/agentland/app/be/internal/models"
+	"github.com/stretchr/testify/require"
 )
 
 type publicationRepoStub struct {
@@ -19,6 +20,7 @@ type publicationRepoStub struct {
 	digest    string
 	cancelled bool
 	heartbeat func() (bool, error)
+	claim     func(context.Context, string, string, time.Time) (*models.Publication, error)
 }
 
 func (r *publicationRepoStub) CreatePublication(_ context.Context, input *models.CreatePublicationInput) (*models.Publication, bool, error) {
@@ -46,7 +48,10 @@ func (r *publicationRepoStub) RequestPublicationCancel(context.Context, string, 
 	r.cancelled = true
 	return r.item, nil
 }
-func (r *publicationRepoStub) ClaimNextPublication(context.Context, string, time.Time) (*models.Publication, error) {
+func (r *publicationRepoStub) ClaimPublication(ctx context.Context, id, workerID string, now time.Time) (*models.Publication, error) {
+	if r.claim != nil {
+		return r.claim(ctx, id, workerID, now)
+	}
 	return nil, nil
 }
 func (r *publicationRepoStub) HeartbeatPublication(context.Context, string, string, time.Time) (bool, error) {
@@ -159,4 +164,41 @@ func TestPublicationWorkerContinuesDuringTemporaryRedisLeaseFailure(t *testing.T
 	if repo.finished != models.PublicationStatusCompleted {
 		t.Fatalf("expected completed publication, got %s", repo.finished)
 	}
+}
+
+func TestPublicationWorkerRetriesClaimAndAckWithoutLosingExecution(t *testing.T) {
+	now := time.Now().UTC()
+	item := &models.Publication{ID: "publication-queue", OwnerID: "user-1", ProjectID: "project-1", Context: ".", Dockerfile: "Dockerfile", Status: models.PublicationStatusQueued, CreatedAt: now}
+	repo := &publicationRepoStub{item: item, runtime: &models.ProjectRuntime{ProjectID: item.ProjectID, OwnerID: item.OwnerID, GatewaySessionID: "session-1", Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour)}}
+	var claimCalls int
+	repo.claim = func(_ context.Context, id, workerID string, _ time.Time) (*models.Publication, error) {
+		claimCalls++
+		if claimCalls == 1 {
+			return nil, errors.New("redis unavailable")
+		}
+		item.Status, item.WorkerID = models.PublicationStatusRunning, workerID
+		return item, nil
+	}
+	delivery := &taskDeliveryStub{id: item.ID, failAck: 1}
+	queue := &taskQueueStub{delivery: delivery}
+	gateway := &publicationGatewayStub{publish: func(context.Context) (*models.GatewayPublication, error) {
+		return &models.GatewayPublication{ImageRef: "registry/app:latest", Digest: "sha256:digest"}, nil
+	}}
+	worker := NewPublicationWorker(repo, gateway, queue)
+	worker.workerID = "publisher-1"
+	worker.orphanAge = time.Hour
+	worker.heartbeat = time.Hour
+	worker.cancelPoll = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { worker.Run(ctx); close(done) }()
+	require.Eventually(t, func() bool {
+		repo.mu.Lock()
+		defer repo.mu.Unlock()
+		return repo.finished == models.PublicationStatusCompleted
+	}, 3*time.Second, 10*time.Millisecond)
+	cancel()
+	<-done
+	require.Equal(t, 2, claimCalls)
+	require.Equal(t, int64(2), delivery.ackCalls.Load())
 }

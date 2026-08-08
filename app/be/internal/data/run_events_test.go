@@ -2,46 +2,45 @@ package data
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/Fl0rencess720/agentland/app/be/internal/models"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
-type captureRedisHook struct{ args []any }
-
-func (h *captureRedisHook) DialHook(next redis.DialHook) redis.DialHook { return next }
-
-func (h *captureRedisHook) ProcessHook(_ redis.ProcessHook) redis.ProcessHook {
-	return func(_ context.Context, cmd redis.Cmder) error {
-		h.args = append([]any(nil), cmd.Args()...)
-		if result, ok := cmd.(*redis.StringCmd); ok {
-			result.SetVal("1-0")
-		}
-		return nil
-	}
-}
-
-func (h *captureRedisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
-	return next
-}
-
-func TestRunEventPublishKeepsTheCompleteActiveStream(t *testing.T) {
-	client := redis.NewClient(&redis.Options{Addr: "unused"})
-	t.Cleanup(func() { _ = client.Close() })
-	hook := &captureRedisHook{}
-	client.AddHook(hook)
-	store := &redisRunEventStore{client: client}
-
-	_, err := store.Publish(context.Background(), "run-1", &models.AgentEvent{Type: "run.started"})
+func TestParseEventCursor(t *testing.T) {
+	sequence, err := parseEventCursor("42")
 	require.NoError(t, err)
-	arguments := make([]string, 0, len(hook.args))
-	for _, argument := range hook.args {
-		arguments = append(arguments, strings.ToLower(fmt.Sprint(argument)))
+	require.Equal(t, int64(42), sequence)
+
+	sequence, err = parseEventCursor("1730000000000-0")
+	require.NoError(t, err)
+	require.Zero(t, sequence)
+
+	_, err = parseEventCursor("invalid")
+	require.Error(t, err)
+}
+
+func TestRunEventNotifierWakesOnlyMatchingRun(t *testing.T) {
+	store := newKafkaRunEventStore()
+	matching, unsubscribeMatching := store.subscribe("run-1")
+	defer unsubscribeMatching()
+	other, unsubscribeOther := store.subscribe("run-2")
+	defer unsubscribeOther()
+
+	store.notify("run-1")
+	select {
+	case <-matching:
+	case <-time.After(time.Second):
+		t.Fatal("matching waiter was not notified")
 	}
-	require.Equal(t, []string{"xadd", runEventKey("run-1")}, arguments[:2])
-	require.NotContains(t, arguments, "maxlen")
+	select {
+	case <-other:
+		t.Fatal("unrelated waiter was notified")
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	waitContext(ctx, time.Second)
 }

@@ -29,7 +29,7 @@ type PublicationRepo interface {
 
 type PublicationWorkerRepo interface {
 	PublicationRepo
-	ClaimNextPublication(context.Context, string, time.Time) (*models.Publication, error)
+	ClaimPublication(context.Context, string, string, time.Time) (*models.Publication, error)
 	HeartbeatPublication(context.Context, string, string, time.Time) (bool, error)
 	FinishPublication(context.Context, *models.FinishPublicationInput) (bool, error)
 	FailOrphanedPublications(context.Context, time.Time, time.Time) (int64, error)
@@ -178,64 +178,96 @@ func publicationResponse(item *models.Publication) *models.PublicationResp {
 type PublicationWorker struct {
 	repo       PublicationWorkerRepo
 	gateway    PublicationGateway
+	queue      TaskQueue
 	workerID   string
 	now        func() time.Time
-	poll       time.Duration
 	heartbeat  time.Duration
 	cancelPoll time.Duration
 	orphanAge  time.Duration
 	parallel   int
 }
 
-func NewPublicationWorker(repo PublicationWorkerRepo, gateway PublicationGateway) *PublicationWorker {
-	return &PublicationWorker{
+func NewPublicationWorker(repo PublicationWorkerRepo, gateway PublicationGateway, queues ...TaskQueue) *PublicationWorker {
+	worker := &PublicationWorker{
 		repo: repo, gateway: gateway, workerID: token.NewID("publisher"), now: time.Now,
-		poll:       configDuration("publication.worker.poll_interval", time.Second),
 		heartbeat:  configDuration("publication.worker.heartbeat_interval", 5*time.Second),
 		cancelPoll: configDuration("publication.worker.cancel_poll_interval", 250*time.Millisecond),
 		orphanAge:  configDuration("publication.worker.orphan_timeout", 30*time.Second),
 		parallel:   configInt("publication.worker.parallelism", 2),
 	}
+	if len(queues) != 0 {
+		worker.queue = queues[0]
+	}
+	return worker
 }
 
 func (w *PublicationWorker) Run(ctx context.Context) {
+	if w.queue == nil {
+		zap.L().Error("publication task queue is not configured")
+		return
+	}
 	w.recoverOrphans(ctx)
-	poll := time.NewTicker(w.poll)
-	sweep := time.NewTicker(w.orphanAge)
-	defer poll.Stop()
-	defer sweep.Stop()
+	go func() {
+		sweep := time.NewTicker(w.orphanAge)
+		defer sweep.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sweep.C:
+				w.recoverOrphans(ctx)
+			}
+		}
+	}()
 	semaphore := make(chan struct{}, w.parallel)
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	for {
 		select {
+		case semaphore <- struct{}{}:
 		case <-ctx.Done():
 			return
-		case <-sweep.C:
-			w.recoverOrphans(ctx)
-		case <-poll.C:
-			select {
-			case semaphore <- struct{}{}:
-			default:
-				continue
-			}
-			publication, err := w.repo.ClaimNextPublication(ctx, w.workerID, w.now().UTC())
-			if err != nil {
-				<-semaphore
-				zap.L().Warn("claim publication failed", zap.Error(err))
-				continue
-			}
-			if publication == nil {
-				<-semaphore
-				continue
-			}
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				defer func() { <-semaphore }()
-				w.execute(ctx, publication)
-			}()
 		}
+		delivery, err := w.queue.Receive(ctx)
+		if err != nil {
+			<-semaphore
+			if ctx.Err() == nil {
+				zap.L().Warn("receive publication failed", zap.Error(err))
+				waitWorkerRetry(ctx, time.Second)
+			}
+			continue
+		}
+		var publication *models.Publication
+		for ctx.Err() == nil {
+			publication, err = w.repo.ClaimPublication(ctx, delivery.ID(), w.workerID, w.now().UTC())
+			if err != nil {
+				zap.L().Warn("claim publication failed", zap.String("publication_id", delivery.ID()), zap.Error(err))
+				waitWorkerRetry(ctx, 250*time.Millisecond)
+				continue
+			}
+			break
+		}
+		for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
+			if err = delivery.Ack(ctx); err == nil {
+				break
+			}
+			zap.L().Warn("commit publication delivery failed", zap.String("publication_id", delivery.ID()), zap.Error(err))
+			waitWorkerRetry(ctx, 250*time.Millisecond)
+		}
+		if ctx.Err() != nil {
+			<-semaphore
+			return
+		}
+		if publication == nil {
+			<-semaphore
+			continue
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer func() { <-semaphore }()
+			w.execute(ctx, publication)
+		}()
 	}
 }
 

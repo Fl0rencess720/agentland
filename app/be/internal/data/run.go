@@ -96,6 +96,9 @@ values($1,$2,$3,$4,$5,$6,$7,'',0,'','','',$8,$9,$10,$10,null,null,null,null)`, i
 	if err != nil {
 		return nil, false, err
 	}
+	if err = enqueueTask(ctx, tx, kafkaRunTopic(), outboxKindRunTask, input.ID, input.ProjectID); err != nil {
+		return nil, false, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, false, err
 	}
@@ -211,6 +214,10 @@ func (r *runRepo) RequestCancel(ctx context.Context, ownerID, runID string, now 
 		if err == nil {
 			_, err = tx.Exec(ctx, `update project_messages set status='cancelled',updated_at=$2 where id=$1`, run.AssistantMessageID, now)
 		}
+		if err == nil {
+			event := &models.AgentEvent{Type: "run.cancelled", RunID: run.ID, ConversationID: run.ProjectID, Sequence: run.LastSequence, Timestamp: now, Payload: json.RawMessage(`{}`)}
+			err = enqueueRunEvent(ctx, tx, event)
+		}
 	} else if run.Status == models.RunStatusRunning {
 		transitioned = run.CancelRequestedAt == nil
 		if transitioned {
@@ -260,7 +267,7 @@ func (r *runRepo) UpsertRuntime(ctx context.Context, runtime *models.ProjectRunt
 	return err
 }
 
-func (r *runRepo) ClaimNextRun(ctx context.Context, workerID string, now time.Time) (*models.Run, error) {
+func (r *runRepo) ClaimRun(ctx context.Context, runID, workerID string, now time.Time) (*models.Run, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return nil, err
@@ -282,11 +289,10 @@ func (r *runRepo) ClaimNextRun(ctx context.Context, workerID string, now time.Ti
 			releaseLeaseBestEffort(ctx, leases, runLeaseKind, claimedID, workerID)
 		}
 	}()
-	run, err := scanRun(tx.QueryRow(ctx, `with candidate as (
-	select id from agent_runs where status=$1 order by created_at for update skip locked limit 1
-) update agent_runs r set status=$2,worker_id=$3,started_at=$4,heartbeat_at=$4,updated_at=$4
-from candidate where r.id=candidate.id
-returning r.id,r.owner_id,r.project_id,r.idempotency_key,r.input_message_id,r.assistant_message_id,r.status,r.agent_run_id,r.last_sequence,r.worker_id,r.error_code,r.error_message,r.trace_parent,r.trace_state,r.created_at,r.updated_at,r.started_at,r.heartbeat_at,r.completed_at,r.cancel_requested_at`, models.RunStatusQueued, models.RunStatusRunning, workerID, now))
+	run, err := scanRun(tx.QueryRow(ctx, `update agent_runs r set status=$2,worker_id=$3,started_at=$4,heartbeat_at=$4,updated_at=$4
+where r.id=$5 and r.status=$1
+returning r.id,r.owner_id,r.project_id,r.idempotency_key,r.input_message_id,r.assistant_message_id,r.status,r.agent_run_id,r.last_sequence,r.worker_id,r.error_code,r.error_message,r.trace_parent,r.trace_state,r.created_at,r.updated_at,r.started_at,r.heartbeat_at,r.completed_at,r.cancel_requested_at`,
+		models.RunStatusQueued, models.RunStatusRunning, workerID, now, runID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -299,7 +305,7 @@ returning r.id,r.owner_id,r.project_id,r.idempotency_key,r.input_message_id,r.as
 		return nil, err
 	}
 	if !leaseAcquired {
-		return nil, nil
+		return nil, biz.ErrWorkerLeaseBusy
 	}
 	if err = tx.QueryRow(ctx, `select content from project_messages where id=$1`, run.InputMessageID).Scan(&run.InputMessage); err != nil {
 		return nil, err
@@ -322,27 +328,51 @@ func (r *runRepo) Heartbeat(ctx context.Context, runID, workerID string, now tim
 	return leases.Renew(ctx, runLeaseKind, runID, workerID, workerLeaseTTL(runLeaseKind))
 }
 
-func (r *runRepo) SetAgentRun(ctx context.Context, runID, workerID, agentRunID string, sequence int64, now time.Time) (bool, error) {
+func (r *runRepo) SetAgentRun(ctx context.Context, runID, workerID, agentRunID string, sequence int64, now time.Time, event *models.AgentEvent) (bool, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return false, err
 	}
-	tag, err := pool.Exec(ctx, `update agent_runs set agent_run_id=case when $3='' then agent_run_id else $3 end,last_sequence=greatest(last_sequence,$4),updated_at=$5 where id=$1 and worker_id=$2 and status=$6`, runID, workerID, agentRunID, sequence, now, models.RunStatusRunning)
-	return err == nil && tag.RowsAffected() == 1, err
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `update agent_runs set agent_run_id=case when $3='' then agent_run_id else $3 end,last_sequence=greatest(last_sequence,$4),updated_at=$5 where id=$1 and worker_id=$2 and status=$6`, runID, workerID, agentRunID, sequence, now, models.RunStatusRunning)
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, err
+	}
+	if err = enqueueRunEvent(ctx, tx, event); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
-func (r *runRepo) AppendAssistantDelta(ctx context.Context, runID, workerID, delta string, sequence int64, now time.Time) (bool, error) {
+func (r *runRepo) AppendAssistantDelta(ctx context.Context, runID, workerID, delta string, sequence int64, now time.Time, events []*models.AgentEvent) (bool, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return false, err
 	}
-	tag, err := pool.Exec(ctx, `with updated as (
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `with updated as (
 	update agent_runs set last_sequence=greatest(last_sequence,$3),updated_at=$4 where id=$1 and worker_id=$2 and status=$6 returning assistant_message_id
 ) update project_messages m set content=m.content||$5,status='pending',updated_at=$4 from updated where m.id=updated.assistant_message_id`, runID, workerID, sequence, now, delta, models.RunStatusRunning)
-	return err == nil && tag.RowsAffected() == 1, err
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, err
+	}
+	for _, event := range events {
+		if err = enqueueRunEvent(ctx, tx, event); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit(ctx)
 }
 
-func (r *runRepo) FinishRun(ctx context.Context, runID, workerID, status, errorCode, errorMessage string, sequence int64, now time.Time) (bool, error) {
+func (r *runRepo) FinishRun(ctx context.Context, runID, workerID, status, errorCode, errorMessage string, sequence int64, now time.Time, event *models.AgentEvent) (bool, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return false, err
@@ -379,6 +409,9 @@ func (r *runRepo) FinishRun(ctx context.Context, runID, workerID, status, errorC
 		messageStatus = "cancelled"
 	}
 	if _, err = tx.Exec(ctx, `update project_messages set status=$2,updated_at=$3 where id=$1`, assistantID, messageStatus, now); err != nil {
+		return false, err
+	}
+	if err = enqueueRunEvent(ctx, tx, event); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -451,6 +484,11 @@ func (r *runRepo) FailOrphanedRuns(ctx context.Context, heartbeatBefore, now tim
 				return result, err
 			}
 			if _, err = tx.Exec(ctx, `update project_messages set status='failed',updated_at=$2 where id=$1`, messageID, now); err != nil {
+				_ = tx.Rollback(ctx)
+				return result, err
+			}
+			payload, _ := json.Marshal(map[string]string{"code": "WORKER_HEARTBEAT_LOST", "error": "run worker lease expired"})
+			if err = enqueueRunEvent(ctx, tx, &models.AgentEvent{Type: "run.failed", RunID: candidate.ID, Sequence: sequence, Timestamp: now, Payload: payload}); err != nil {
 				_ = tx.Rollback(ctx)
 				return result, err
 			}
@@ -631,6 +669,15 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`create index if not exists idx_project_publications_queue on project_publications(status,created_at)`,
 			`create index if not exists idx_project_publications_recovery on project_publications(status,id)`,
 			`create index if not exists idx_project_publications_project_created on project_publications(project_id,created_at desc)`,
+			`create table if not exists kafka_outbox (
+				id bigserial primary key,topic text not null,message_key text not null,message_kind text not null,payload bytea not null,dedupe_key text not null unique,
+				created_at timestamptz not null,published_at timestamptz,attempts integer not null default 0,last_error text not null default '')`,
+			`create index if not exists idx_kafka_outbox_pending on kafka_outbox(id) where published_at is null`,
+			`create index if not exists idx_kafka_outbox_key_pending on kafka_outbox(topic,message_key,id) where published_at is null`,
+			`create table if not exists run_events (
+				run_id text not null references agent_runs(id) on delete cascade,sequence bigint not null,event_type text not null,data bytea not null,
+				created_at timestamptz not null,expires_at timestamptz,primary key(run_id,sequence))`,
+			`create index if not exists idx_run_events_expiry on run_events(expires_at) where expires_at is not null`,
 		}
 		for _, statement := range statements {
 			if _, err := r.pool.Exec(ctx, statement); err != nil {
@@ -638,11 +685,34 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 				break
 			}
 		}
+		if r.schemaErr == nil {
+			r.schemaErr = r.backfillKafkaTasks(ctx)
+		}
 	}
 	if r.schemaErr == nil {
 		r.schemaReady = true
 	}
 	return r.pool, r.schemaErr
+}
+
+func (r *runRepo) backfillKafkaTasks(ctx context.Context) error {
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`insert into kafka_outbox(topic,message_key,message_kind,payload,dedupe_key,created_at)
+			select $1,project_id,$2,json_build_object('id',id)::text::bytea,$2||':'||id,created_at from agent_runs where status='queued'
+			on conflict(dedupe_key) do nothing`, []any{kafkaRunTopic(), outboxKindRunTask}},
+		{`insert into kafka_outbox(topic,message_key,message_kind,payload,dedupe_key,created_at)
+			select $1,project_id,$2,json_build_object('id',id)::text::bytea,$2||':'||id,created_at from project_publications where status='queued'
+			on conflict(dedupe_key) do nothing`, []any{kafkaPublicationTopic(), outboxKindPublicationTask}},
+	}
+	for _, statement := range statements {
+		if _, err := r.pool.Exec(ctx, statement.query, statement.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const runSelect = `select id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,agent_run_id,last_sequence,worker_id,error_code,error_message,trace_parent,trace_state,created_at,updated_at,started_at,heartbeat_at,completed_at,cancel_requested_at from agent_runs`

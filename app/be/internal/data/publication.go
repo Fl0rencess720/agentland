@@ -59,6 +59,9 @@ func (r *runRepo) CreatePublication(ctx context.Context, input *models.CreatePub
 		}
 		return nil, false, err
 	}
+	if err = enqueueTask(ctx, tx, kafkaPublicationTopic(), outboxKindPublicationTask, input.ID, input.ProjectID); err != nil {
+		return nil, false, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, false, err
 	}
@@ -153,7 +156,7 @@ func (r *runRepo) RequestPublicationCancel(ctx context.Context, ownerID, publica
 	return item, nil
 }
 
-func (r *runRepo) ClaimNextPublication(ctx context.Context, workerID string, now time.Time) (*models.Publication, error) {
+func (r *runRepo) ClaimPublication(ctx context.Context, publicationID, workerID string, now time.Time) (*models.Publication, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return nil, err
@@ -174,12 +177,10 @@ func (r *runRepo) ClaimNextPublication(ctx context.Context, workerID string, now
 			releaseLeaseBestEffort(ctx, leases, publicationLeaseKind, claimedID, workerID)
 		}
 	}()
-	item, err := scanPublication(tx.QueryRow(ctx, `with candidate as (
-		select id from project_publications where status=$1 order by created_at for update skip locked limit 1
-	) update project_publications p set status=$2,worker_id=$3,started_at=$4,heartbeat_at=$4,updated_at=$4
-	from candidate where p.id=candidate.id
+	item, err := scanPublication(tx.QueryRow(ctx, `update project_publications p set status=$2,worker_id=$3,started_at=$4,heartbeat_at=$4,updated_at=$4
+	where p.id=$5 and p.status=$1
 	returning p.id,p.owner_id,p.project_id,p.idempotency_key,p.build_context,p.dockerfile,p.status,p.worker_id,p.image_ref,p.image_digest,p.build_logs,p.error_code,p.error_message,p.trace_parent,p.trace_state,p.created_at,p.updated_at,p.started_at,p.heartbeat_at,p.completed_at,p.cancel_requested_at`,
-		models.PublicationStatusQueued, models.PublicationStatusRunning, workerID, now))
+		models.PublicationStatusQueued, models.PublicationStatusRunning, workerID, now, publicationID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -192,7 +193,7 @@ func (r *runRepo) ClaimNextPublication(ctx context.Context, workerID string, now
 		return nil, err
 	}
 	if !leaseAcquired {
-		return nil, nil
+		return nil, biz.ErrWorkerLeaseBusy
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err

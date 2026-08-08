@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ var (
 	ErrRuntimeUnavailable  = errors.New("project runtime unavailable")
 	ErrPreviewNotFound     = errors.New("preview not found")
 	ErrRunLeaseLost        = errors.New("run worker lease lost")
+	ErrWorkerLeaseBusy     = errors.New("worker lease is already owned")
 	ErrPublicationNotFound = errors.New("publication not found")
 	ErrActivePublication   = errors.New("project already has an active publication")
 )
@@ -72,21 +74,28 @@ type RunRepo interface {
 
 type RunWorkerRepo interface {
 	RunRepo
-	ClaimNextRun(context.Context, string, time.Time) (*models.Run, error)
+	ClaimRun(context.Context, string, string, time.Time) (*models.Run, error)
 	UpsertRuntime(context.Context, *models.ProjectRuntime) error
 	Heartbeat(context.Context, string, string, time.Time) (bool, error)
-	SetAgentRun(context.Context, string, string, string, int64, time.Time) (bool, error)
-	AppendAssistantDelta(context.Context, string, string, string, int64, time.Time) (bool, error)
-	FinishRun(context.Context, string, string, string, string, string, int64, time.Time) (bool, error)
+	SetAgentRun(context.Context, string, string, string, int64, time.Time, *models.AgentEvent) (bool, error)
+	AppendAssistantDelta(context.Context, string, string, string, int64, time.Time, []*models.AgentEvent) (bool, error)
+	FinishRun(context.Context, string, string, string, string, string, int64, time.Time, *models.AgentEvent) (bool, error)
 	FailOrphanedRuns(context.Context, time.Time, time.Time) ([]models.RunSequence, error)
 	IsCancelRequested(context.Context, string) (bool, error)
 	TouchRuntime(context.Context, string, time.Time) error
 }
 
+type TaskDelivery interface {
+	ID() string
+	Ack(context.Context) error
+}
+
+type TaskQueue interface {
+	Receive(context.Context) (TaskDelivery, error)
+}
+
 type RunEventStore interface {
-	Publish(context.Context, string, *models.AgentEvent) (string, error)
 	Read(context.Context, string, string, time.Duration) ([]*models.StoredRunEvent, error)
-	Expire(context.Context, string, time.Duration) error
 }
 
 type AgentlandGateway interface {
@@ -379,13 +388,11 @@ func (u *projectUseCase) CancelRun(ctx context.Context, principal models.AuthPri
 	if !authorized(principal) {
 		return nil, response.UnauthorizedError()
 	}
-	run, transitioned, err := u.runs.RequestCancel(ctx, principal.UserID, strings.TrimSpace(runID), u.now().UTC())
+	run, _, err := u.runs.RequestCancel(ctx, principal.UserID, strings.TrimSpace(runID), u.now().UTC())
 	if err != nil {
 		return nil, mapAPIError(err)
 	}
-	if run.Status == models.RunStatusCancelled && transitioned {
-		u.publishTerminal(ctx, run.ID, "run.cancelled", run.LastSequence, nil)
-	} else if run.AgentRunID != "" {
+	if run.Status != models.RunStatusCancelled && run.AgentRunID != "" {
 		if runtime, runtimeErr := u.runs.GetRuntime(ctx, principal.UserID, run.ProjectID); runtimeErr == nil && runtime != nil {
 			_ = u.gateway.CancelRun(ctx, runtime.GatewaySessionID, run.AgentRunID)
 		}
@@ -676,10 +683,6 @@ func (u *projectUseCase) workspaceGatewayError(ctx context.Context, runtime *mod
 	return gatewayAPIError(err)
 }
 
-func (u *projectUseCase) publishTerminal(ctx context.Context, runID, eventType string, sequence int64, payload []byte) {
-	_ = publishTerminalEvent(ctx, u.events, runID, &models.AgentEvent{Type: eventType, RunID: runID, Sequence: sequence, Timestamp: u.now().UTC(), Payload: payload})
-}
-
 func authorized(principal models.AuthPrincipal) bool {
 	return strings.TrimSpace(principal.UserID) != ""
 }
@@ -763,7 +766,7 @@ func syntheticTerminalEvent(run *models.Run) *models.StoredRunEvent {
 		timestamp = *run.CompletedAt
 	}
 	data, _ := json.Marshal(&models.AgentEvent{Type: eventType, RunID: run.ID, ConversationID: run.ProjectID, Sequence: run.LastSequence, Timestamp: timestamp, Payload: payload})
-	return &models.StoredRunEvent{Type: eventType, Data: data}
+	return &models.StoredRunEvent{ID: strconv.FormatInt(run.LastSequence, 10), Type: eventType, Data: data}
 }
 
 func mapAPIError(err error) *response.APIError {
