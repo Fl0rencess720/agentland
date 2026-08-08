@@ -864,6 +864,35 @@ func TestRunWorkerCancelsRuntimePreparationWhenLeaseIsLost(t *testing.T) {
 	require.Zero(t, gateway.streamCalls)
 }
 
+func TestRunWorkerContinuesDuringTemporaryRedisLeaseFailure(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
+		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
+		Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour),
+	}}
+	runs.heartbeat = func(context.Context, string, string, time.Time) (bool, error) {
+		return false, errors.New("redis unavailable")
+	}
+	gateway := &gatewayStub{stream: func(ctx context.Context, _, _, _ string, callback func(*models.AgentEvent) error) error {
+		select {
+		case <-time.After(15 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return callback(&models.AgentEvent{Type: "run.completed", RunID: "agent-run-1", Sequence: 1, Timestamp: now, Payload: json.RawMessage(`{}`)})
+	}}
+	worker := NewRunWorker(runs, &eventStoreStub{}, gateway)
+	worker.workerID = "worker-1"
+	worker.heartbeat = time.Millisecond
+	worker.cancelPoll = time.Hour
+
+	worker.execute(context.Background(), run)
+
+	require.Equal(t, models.RunStatusCompleted, runs.finishedStatus)
+	require.Greater(t, runs.heartbeatCalls.Load(), int64(1))
+}
+
 func TestRunWorkerRechecksLeaseAfterPersistingRuntime(t *testing.T) {
 	now := time.Now().UTC()
 	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}

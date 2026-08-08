@@ -5,8 +5,7 @@ import (
 	"fmt"
 )
 
-// Bootstrap creates application tables in foreign-key order and verifies Redis
-// before the HTTP server or Run worker starts accepting work.
+// Bootstrap creates application tables and verifies external stores before work starts.
 func Bootstrap(ctx context.Context) error {
 	auth := sharedStore()
 	if err := auth.ensureSchema(ctx); err != nil {
@@ -19,6 +18,9 @@ func Bootstrap(ctx context.Context) error {
 	runs := NewRunRepo().(*runRepo)
 	if _, err := runs.ready(ctx); err != nil {
 		return fmt.Errorf("initialize run schema: %w", err)
+	}
+	if err := runs.VerifySnapshotStore(ctx); err != nil {
+		return fmt.Errorf("initialize workspace snapshot storage: %w", err)
 	}
 	redisClient, err := auth.ensureRedis()
 	if err != nil {

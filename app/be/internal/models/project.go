@@ -224,7 +224,9 @@ type ReplayRunResp struct {
 
 type WorkspaceSnapshot struct {
 	Data      []byte
+	ObjectKey string
 	SHA       string
+	SizeBytes int64
 	Error     string
 	CreatedAt time.Time
 }

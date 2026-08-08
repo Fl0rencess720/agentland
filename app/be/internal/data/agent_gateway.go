@@ -39,6 +39,7 @@ type agentlandGatewayClient struct {
 	baseURL                       string
 	httpClient                    *http.Client
 	streamClient                  *http.Client
+	maxSnapshotBytes              int64
 	runtimeName, runtimeNamespace string
 	previewPublicURLTemplate      string
 	publisherToken                string
@@ -50,6 +51,7 @@ func NewAgentlandGatewayClient() biz.AgentlandGateway {
 		baseURL:                  strings.TrimRight(strings.TrimSpace(viper.GetString("agentland-gateway.url")), "/"),
 		httpClient:               &http.Client{Transport: transport, Timeout: 65 * time.Second},
 		streamClient:             &http.Client{Transport: transport},
+		maxSnapshotBytes:         viper.GetInt64("storage.s3.max_snapshot_bytes"),
 		runtimeName:              strings.TrimSpace(viper.GetString("agentland-gateway.runtime.name")),
 		runtimeNamespace:         strings.TrimSpace(viper.GetString("agentland-gateway.runtime.namespace")),
 		previewPublicURLTemplate: strings.TrimSpace(viper.GetString("preview.public_url_template")),
@@ -140,20 +142,24 @@ func (c *agentlandGatewayClient) GetWorkspaceSnapshot(ctx context.Context, sessi
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20+1))
+	limit := c.snapshotLimit()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, decodeGatewayError(resp.StatusCode, data)
 	}
-	if len(data) > 8<<20 {
-		return nil, errors.New("workspace snapshot exceeds 8 MiB")
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("workspace snapshot exceeds %d bytes", limit)
 	}
 	return data, nil
 }
 
 func (c *agentlandGatewayClient) RestoreWorkspaceSnapshot(ctx context.Context, sessionID string, snapshot []byte) (err error) {
+	if int64(len(snapshot)) > c.snapshotLimit() {
+		return fmt.Errorf("workspace snapshot exceeds %d bytes", c.snapshotLimit())
+	}
 	ctx, span := startGatewaySpan(ctx, "gateway.workspace_restore", attribute.String("gateway.session_id", sessionID), attribute.Int("workspace.snapshot_bytes", len(snapshot)))
 	defer finishGatewaySpan(span, &err)
 	resp, err := c.do(ctx, http.MethodPost, "/api/agent-sessions/invocations/api/workspace/snapshot", sessionID, bytes.NewReader(snapshot))
@@ -169,6 +175,13 @@ func (c *agentlandGatewayClient) RestoreWorkspaceSnapshot(ctx context.Context, s
 		return decodeGatewayError(resp.StatusCode, body)
 	}
 	return nil
+}
+
+func (c *agentlandGatewayClient) snapshotLimit() int64 {
+	if c.maxSnapshotBytes > 0 {
+		return c.maxSnapshotBytes
+	}
+	return 8 << 20
 }
 
 func (c *agentlandGatewayClient) ReplayDecisions(ctx context.Context, sessionID string, records []models.RunTrajectoryRecord) (result *models.ReplayRunResp, err error) {

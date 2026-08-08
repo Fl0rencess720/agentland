@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ type publicationRepoStub struct {
 	imageRef  string
 	digest    string
 	cancelled bool
+	heartbeat func() (bool, error)
 }
 
 func (r *publicationRepoStub) CreatePublication(_ context.Context, input *models.CreatePublicationInput) (*models.Publication, bool, error) {
@@ -48,6 +50,9 @@ func (r *publicationRepoStub) ClaimNextPublication(context.Context, string, time
 	return nil, nil
 }
 func (r *publicationRepoStub) HeartbeatPublication(context.Context, string, string, time.Time) (bool, error) {
+	if r.heartbeat != nil {
+		return r.heartbeat()
+	}
 	return true, nil
 }
 func (r *publicationRepoStub) FinishPublication(_ context.Context, input *models.FinishPublicationInput) (bool, error) {
@@ -127,5 +132,31 @@ func TestPublicationWorkerCancelsBuild(t *testing.T) {
 	worker.execute(context.Background(), item)
 	if repo.finished != models.PublicationStatusCancelled {
 		t.Fatalf("expected cancelled publication, got %s", repo.finished)
+	}
+}
+
+func TestPublicationWorkerContinuesDuringTemporaryRedisLeaseFailure(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &publicationRepoStub{
+		runtime:   &models.ProjectRuntime{Status: models.RuntimeStatusActive, LastActiveAt: now, ExpiresAt: now.Add(time.Hour)},
+		heartbeat: func() (bool, error) { return false, errors.New("redis unavailable") },
+	}
+	item := &models.Publication{ID: "pub_1", OwnerID: "user_1", ProjectID: "project_1", Status: models.PublicationStatusRunning, CreatedAt: now}
+	gateway := &publicationGatewayStub{publish: func(ctx context.Context) (*models.GatewayPublication, error) {
+		select {
+		case <-time.After(15 * time.Millisecond):
+			return &models.GatewayPublication{ImageRef: "registry.example/app:pub", Digest: "sha256:digest"}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	worker := NewPublicationWorker(repo, gateway)
+	worker.heartbeat = time.Millisecond
+	worker.cancelPoll = time.Hour
+
+	worker.execute(context.Background(), item)
+
+	if repo.finished != models.PublicationStatusCompleted {
+		t.Fatalf("expected completed publication, got %s", repo.finished)
 	}
 }

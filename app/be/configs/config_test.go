@@ -50,6 +50,22 @@ func TestRuntimeMaxSessionDurationDefaultsToOneHour(t *testing.T) {
 	require.Equal(t, time.Hour, viper.GetDuration("runtime.max_session_duration"))
 }
 
+func TestInitRejectsWorkerLeaseTTLTooCloseToHeartbeat(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("WORKER_HEARTBEAT_INTERVAL", "5s")
+	t.Setenv("WORKER_ORPHAN_TIMEOUT", "10s")
+	require.ErrorContains(t, Init(), "worker.orphan_timeout must be at least three times heartbeat_interval")
+}
+
+func TestInitRejectsPublicationLeaseTTLTooCloseToHeartbeat(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("PUBLICATION_WORKER_HEARTBEAT_INTERVAL", "5s")
+	t.Setenv("PUBLICATION_WORKER_ORPHAN_TIMEOUT", "10s")
+	require.ErrorContains(t, Init(), "publication.worker.orphan_timeout must be at least three times heartbeat_interval")
+}
+
 func TestLangfuseEnvironmentKeys(t *testing.T) {
 	viper.Reset()
 	t.Cleanup(viper.Reset)
@@ -62,6 +78,20 @@ func TestLangfuseEnvironmentKeys(t *testing.T) {
 	require.Equal(t, "https://langfuse.example", viper.GetString("langfuse.base_url"))
 	require.Equal(t, "pk-test", viper.GetString("langfuse.public_key"))
 	require.Equal(t, "sk-test", viper.GetString("langfuse.secret_key"))
+}
+
+func TestS3EnvironmentKeys(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("STORAGE_S3_ENDPOINT", "http://minio:9000")
+	t.Setenv("STORAGE_S3_BUCKET", "workspace-snapshots")
+	t.Setenv("STORAGE_S3_PATH_STYLE", "true")
+	t.Setenv("STORAGE_S3_MAX_SNAPSHOT_BYTES", "4194304")
+	require.NoError(t, Init())
+	require.Equal(t, "http://minio:9000", viper.GetString("storage.s3.endpoint"))
+	require.Equal(t, "workspace-snapshots", viper.GetString("storage.s3.bucket"))
+	require.True(t, viper.GetBool("storage.s3.path_style"))
+	require.Equal(t, int64(4194304), viper.GetInt64("storage.s3.max_snapshot_bytes"))
 }
 
 func TestPreviewPublicURLTemplate(t *testing.T) {

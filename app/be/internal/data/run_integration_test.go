@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -28,7 +29,8 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 	projects := &projectRepo{}
 	_, err := projects.ready(ctx)
 	require.NoError(t, err)
-	runs := &runRepo{}
+	leaseStore := newMemoryWorkerLeaseStore()
+	runs := &runRepo{leaseStore: leaseStore}
 	pool, err := runs.ready(ctx)
 	require.NoError(t, err)
 
@@ -71,6 +73,22 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 			Message: message, TraceParent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", TraceState: "vendor=value", Now: now,
 		}
 	}
+
+	t.Run("run claim rolls back when Redis lease creation fails", func(t *testing.T) {
+		queued, _, createErr := runs.CreateRun(ctx, makeInput(projectOne, "lease-failure", "message"))
+		require.NoError(t, createErr)
+		leaseStore.acquireErr = errors.New("redis unavailable")
+		claimed, claimErr := runs.ClaimNextRun(ctx, "worker-failed", now.Add(4*time.Minute))
+		leaseStore.acquireErr = nil
+		require.ErrorContains(t, claimErr, "redis unavailable")
+		require.Nil(t, claimed)
+		stored, getErr := runs.GetRun(ctx, ownerID, queued.ID)
+		require.NoError(t, getErr)
+		require.Equal(t, models.RunStatusQueued, stored.Status)
+		require.Empty(t, stored.WorkerID)
+		_, _, cancelErr := runs.RequestCancel(ctx, ownerID, queued.ID, now.Add(5*time.Minute))
+		require.NoError(t, cancelErr)
+	})
 
 	t.Run("concurrent idempotency returns one run", func(t *testing.T) {
 		start := make(chan struct{})
@@ -158,14 +176,64 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		require.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", first.TraceParent)
 		require.Equal(t, "vendor=value", first.TraceState)
 
+		acquired, heartbeatErr := runs.Heartbeat(ctx, first.ID, first.WorkerID, claimTime.Add(time.Second))
+		require.NoError(t, heartbeatErr)
+		require.True(t, acquired)
+		var storedHeartbeat time.Time
+		require.NoError(t, pool.QueryRow(ctx, `select heartbeat_at from agent_runs where id=$1`, first.ID).Scan(&storedHeartbeat))
+		require.WithinDuration(t, claimTime, storedHeartbeat, time.Millisecond)
+		acquired, heartbeatErr = runs.Heartbeat(ctx, first.ID, "another-worker", claimTime.Add(time.Second))
+		require.NoError(t, heartbeatErr)
+		require.False(t, acquired)
+		_, _ = leaseStore.Release(ctx, runLeaseKind, first.ID, first.WorkerID)
+		_, _ = leaseStore.Release(ctx, runLeaseKind, second.ID, second.WorkerID)
+		fenced, fenceErr := leaseStore.AcquireRecovery(ctx, runLeaseKind, []leaseCandidate{{ID: first.ID, OwnerID: first.WorkerID}}, "recovery:test", time.Minute)
+		require.NoError(t, fenceErr)
+		require.True(t, fenced[first.ID])
+		finished, finishErr := runs.FinishRun(ctx, first.ID, first.WorkerID, models.RunStatusCompleted, "", "", first.LastSequence+1, claimTime.Add(time.Second))
+		require.NoError(t, finishErr)
+		require.False(t, finished)
+		_, _ = leaseStore.Release(ctx, runLeaseKind, first.ID, "recovery:test")
+		leaseStore.recoveryErr = errors.New("redis unavailable")
 		orphaned, orphanErr := runs.FailOrphanedRuns(ctx, claimTime.Add(time.Second), claimTime.Add(2*time.Second))
+		require.ErrorContains(t, orphanErr, "redis unavailable")
+		require.Empty(t, orphaned)
+		stillRunning, getErr := runs.GetRun(ctx, ownerID, first.ID)
+		require.NoError(t, getErr)
+		require.Equal(t, models.RunStatusRunning, stillRunning.Status)
+		leaseStore.recoveryErr = nil
+		orphaned, orphanErr = runs.FailOrphanedRuns(ctx, claimTime.Add(time.Second), claimTime.Add(2*time.Second))
 		require.NoError(t, orphanErr)
 		require.Len(t, orphaned, 2)
-		acquired, heartbeatErr := runs.Heartbeat(ctx, first.ID, first.WorkerID, claimTime.Add(3*time.Second))
+		acquired, heartbeatErr = runs.Heartbeat(ctx, first.ID, first.WorkerID, claimTime.Add(3*time.Second))
 		require.NoError(t, heartbeatErr)
 		require.False(t, acquired)
 		_, ownerErr := runs.GetRun(ctx, "another-owner", first.ID)
 		require.ErrorIs(t, ownerErr, biz.ErrRunNotFound)
+	})
+
+	t.Run("run recovery scans beyond a full page of live leases", func(t *testing.T) {
+		startedAt := now.Add(-time.Hour)
+		for index := range 101 {
+			projectID := fmt.Sprintf("page-project-%s-%03d", suffix, index)
+			runID := fmt.Sprintf("page-run-%s-%03d", suffix, index)
+			assistantID := "assistant-" + runID
+			_, err = pool.Exec(ctx, `insert into projects(id,owner_id,name,template,status,thumbnail_url,metadata,created_at,updated_at) values($1,$2,'page','blank','DRAFT','','{}',$3,$3)`, projectID, ownerID, startedAt)
+			require.NoError(t, err)
+			_, err = pool.Exec(ctx, `insert into agent_runs(id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,worker_id,created_at,updated_at,started_at,heartbeat_at)
+				values($1,$2,$3,$1,'input-'||$1,$4,$5,$6,$7,$7,$7,$7)`, runID, ownerID, projectID, assistantID, models.RunStatusRunning, "page-worker", startedAt)
+			require.NoError(t, err)
+			_, err = pool.Exec(ctx, `insert into project_messages(id,project_id,owner_id,run_id,role,content,status,created_at,updated_at) values($1,$2,$3,$4,'assistant','','pending',$5,$5)`, assistantID, projectID, ownerID, runID, startedAt)
+			require.NoError(t, err)
+			if index < 100 {
+				acquired, acquireErr := leaseStore.Acquire(ctx, runLeaseKind, runID, "page-worker", time.Minute)
+				require.NoError(t, acquireErr)
+				require.True(t, acquired)
+			}
+		}
+		orphaned, orphanErr := runs.FailOrphanedRuns(ctx, now.Add(-time.Minute), now)
+		require.NoError(t, orphanErr)
+		require.Equal(t, []models.RunSequence{{RunID: fmt.Sprintf("page-run-%s-100", suffix), Sequence: 1}}, orphaned)
 	})
 
 	t.Run("preview activity only renews an unexpired preview", func(t *testing.T) {
@@ -228,14 +296,88 @@ func TestRunRepositoryPostgresConcurrency(t *testing.T) {
 		acquired, heartbeatErr := runs.HeartbeatPublication(ctx, claimed.ID, "other-worker", now.Add(2*time.Second))
 		require.NoError(t, heartbeatErr)
 		require.False(t, acquired)
+		acquired, heartbeatErr = runs.HeartbeatPublication(ctx, claimed.ID, "publication-worker", now.Add(2*time.Second))
+		require.NoError(t, heartbeatErr)
+		require.True(t, acquired)
+		var storedHeartbeat time.Time
+		require.NoError(t, pool.QueryRow(ctx, `select heartbeat_at from project_publications where id=$1`, claimed.ID).Scan(&storedHeartbeat))
+		require.WithinDuration(t, now.Add(time.Second), storedHeartbeat, time.Millisecond)
 		finished, finishErr := runs.FinishPublication(ctx, &models.FinishPublicationInput{
 			ID: claimed.ID, WorkerID: "publication-worker", Status: models.PublicationStatusCompleted,
 			ImageRef: "registry.example/apps/project:pub", Digest: "sha256:digest", Logs: "done", Now: now.Add(3 * time.Second),
 		})
 		require.NoError(t, finishErr)
 		require.True(t, finished)
+		renewed, renewErr := runs.HeartbeatPublication(ctx, claimed.ID, "publication-worker", now.Add(4*time.Second))
+		require.NoError(t, renewErr)
+		require.False(t, renewed)
 		stored, getErr := runs.GetPublication(ctx, ownerID, claimed.ID)
 		require.NoError(t, getErr)
 		require.Equal(t, "sha256:digest", stored.Digest)
+	})
+
+	t.Run("publication recovery requires an expired Redis lease", func(t *testing.T) {
+		queued, _, createErr := runs.CreatePublication(ctx, makePublication(projectOne, "publication-recovery"))
+		require.NoError(t, createErr)
+		claimed, claimErr := runs.ClaimNextPublication(ctx, "publication-recovery-worker", now.Add(4*time.Minute))
+		require.NoError(t, claimErr)
+		require.Equal(t, queued.ID, claimed.ID)
+		recovered, recoveryErr := runs.FailOrphanedPublications(ctx, now.Add(4*time.Minute+time.Second), now.Add(4*time.Minute+2*time.Second))
+		require.NoError(t, recoveryErr)
+		require.Zero(t, recovered)
+		_, _ = leaseStore.Release(ctx, publicationLeaseKind, claimed.ID, claimed.WorkerID)
+		fenced, fenceErr := leaseStore.AcquireRecovery(ctx, publicationLeaseKind, []leaseCandidate{{ID: claimed.ID, OwnerID: claimed.WorkerID}}, "recovery:publication-test", time.Minute)
+		require.NoError(t, fenceErr)
+		require.True(t, fenced[claimed.ID])
+		finished, finishErr := runs.FinishPublication(ctx, &models.FinishPublicationInput{ID: claimed.ID, WorkerID: claimed.WorkerID, Status: models.PublicationStatusCompleted, Now: now.Add(4*time.Minute + time.Second)})
+		require.NoError(t, finishErr)
+		require.False(t, finished)
+		_, _ = leaseStore.Release(ctx, publicationLeaseKind, claimed.ID, "recovery:publication-test")
+		recovered, recoveryErr = runs.FailOrphanedPublications(ctx, now.Add(4*time.Minute+time.Second), now.Add(4*time.Minute+2*time.Second))
+		require.NoError(t, recoveryErr)
+		require.Equal(t, int64(1), recovered)
+		stored, getErr := runs.GetPublication(ctx, ownerID, claimed.ID)
+		require.NoError(t, getErr)
+		require.Equal(t, models.PublicationStatusFailed, stored.Status)
+	})
+
+	t.Run("publication recovery scans beyond a full page of live leases", func(t *testing.T) {
+		startedAt := now.Add(-time.Hour)
+		for index := range 101 {
+			projectID := fmt.Sprintf("publication-page-project-%s-%03d", suffix, index)
+			publicationID := fmt.Sprintf("publication-page-%s-%03d", suffix, index)
+			_, err = pool.Exec(ctx, `insert into projects(id,owner_id,name,template,status,thumbnail_url,metadata,created_at,updated_at) values($1,$2,'page','blank','DRAFT','','{}',$3,$3)`, projectID, ownerID, startedAt)
+			require.NoError(t, err)
+			_, err = pool.Exec(ctx, `insert into project_publications(id,owner_id,project_id,idempotency_key,build_context,dockerfile,status,worker_id,created_at,updated_at,started_at,heartbeat_at)
+				values($1,$2,$3,$1,'.','Dockerfile',$4,$5,$6,$6,$6,$6)`, publicationID, ownerID, projectID, models.PublicationStatusRunning, "publication-page-worker", startedAt)
+			require.NoError(t, err)
+			if index < 100 {
+				acquired, acquireErr := leaseStore.Acquire(ctx, publicationLeaseKind, publicationID, "publication-page-worker", time.Minute)
+				require.NoError(t, acquireErr)
+				require.True(t, acquired)
+			}
+		}
+		recovered, recoveryErr := runs.FailOrphanedPublications(ctx, now.Add(-time.Minute), now)
+		require.NoError(t, recoveryErr)
+		require.Equal(t, int64(1), recovered)
+		stored, getErr := runs.GetPublication(ctx, ownerID, fmt.Sprintf("publication-page-%s-100", suffix))
+		require.NoError(t, getErr)
+		require.Equal(t, models.PublicationStatusFailed, stored.Status)
+	})
+
+	t.Run("publication claim rolls back when Redis lease creation fails", func(t *testing.T) {
+		queued, _, createErr := runs.CreatePublication(ctx, makePublication(projectOne, "publication-lease-failure"))
+		require.NoError(t, createErr)
+		leaseStore.acquireErr = errors.New("redis unavailable")
+		claimed, claimErr := runs.ClaimNextPublication(ctx, "publication-worker-failed", now.Add(5*time.Minute))
+		leaseStore.acquireErr = nil
+		require.ErrorContains(t, claimErr, "redis unavailable")
+		require.Nil(t, claimed)
+		stored, getErr := runs.GetPublication(ctx, ownerID, queued.ID)
+		require.NoError(t, getErr)
+		require.Equal(t, models.PublicationStatusQueued, stored.Status)
+		require.Empty(t, stored.WorkerID)
+		_, cancelErr := runs.RequestPublicationCancel(ctx, ownerID, queued.ID, now.Add(6*time.Minute))
+		require.NoError(t, cancelErr)
 	})
 }

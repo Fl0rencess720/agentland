@@ -158,7 +158,23 @@ func (r *runRepo) ClaimNextPublication(ctx context.Context, workerID string, now
 	if err != nil {
 		return nil, err
 	}
-	item, err := scanPublication(pool.QueryRow(ctx, `with candidate as (
+	leases, err := r.leases()
+	if err != nil {
+		return nil, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	leaseAcquired, committed := false, false
+	var claimedID string
+	defer func() {
+		if leaseAcquired && !committed {
+			releaseLeaseBestEffort(ctx, leases, publicationLeaseKind, claimedID, workerID)
+		}
+	}()
+	item, err := scanPublication(tx.QueryRow(ctx, `with candidate as (
 		select id from project_publications where status=$1 order by created_at for update skip locked limit 1
 	) update project_publications p set status=$2,worker_id=$3,started_at=$4,heartbeat_at=$4,updated_at=$4
 	from candidate where p.id=candidate.id
@@ -167,16 +183,30 @@ func (r *runRepo) ClaimNextPublication(ctx context.Context, workerID string, now
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return item, err
+	if err != nil {
+		return nil, err
+	}
+	claimedID = item.ID
+	leaseAcquired, err = leases.Acquire(ctx, publicationLeaseKind, item.ID, workerID, workerLeaseTTL(publicationLeaseKind))
+	if err != nil {
+		return nil, err
+	}
+	if !leaseAcquired {
+		return nil, nil
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	committed = true
+	return item, nil
 }
 
 func (r *runRepo) HeartbeatPublication(ctx context.Context, publicationID, workerID string, now time.Time) (bool, error) {
-	pool, err := r.ready(ctx)
+	leases, err := r.leases()
 	if err != nil {
 		return false, err
 	}
-	tag, err := pool.Exec(ctx, `update project_publications set heartbeat_at=$3,updated_at=$3 where id=$1 and worker_id=$2 and status=$4`, publicationID, workerID, now, models.PublicationStatusRunning)
-	return err == nil && tag.RowsAffected() == 1, err
+	return leases.Renew(ctx, publicationLeaseKind, publicationID, workerID, workerLeaseTTL(publicationLeaseKind))
 }
 
 func (r *runRepo) FinishPublication(ctx context.Context, input *models.FinishPublicationInput) (bool, error) {
@@ -184,9 +214,21 @@ func (r *runRepo) FinishPublication(ctx context.Context, input *models.FinishPub
 	if err != nil {
 		return false, err
 	}
+	leases, err := r.leases()
+	if err != nil {
+		return false, err
+	}
+	owned, leaseErr := leases.Renew(ctx, publicationLeaseKind, input.ID, input.WorkerID, workerLeaseTTL(publicationLeaseKind))
+	if leaseErr == nil && !owned {
+		return false, nil
+	}
 	tag, err := pool.Exec(ctx, `update project_publications set status=$3,image_ref=$4,image_digest=$5,build_logs=$6,error_code=$7,error_message=$8,completed_at=$9,heartbeat_at=$9,updated_at=$9
 		where id=$1 and worker_id=$2 and status=$10`, input.ID, input.WorkerID, input.Status, input.ImageRef, input.Digest, input.Logs, input.ErrorCode, input.ErrorMessage, input.Now, models.PublicationStatusRunning)
-	return err == nil && tag.RowsAffected() == 1, err
+	if err != nil || tag.RowsAffected() == 0 {
+		return false, err
+	}
+	releaseLeaseBestEffort(ctx, leases, publicationLeaseKind, input.ID, input.WorkerID)
+	return true, nil
 }
 
 func (r *runRepo) FailOrphanedPublications(ctx context.Context, heartbeatBefore, now time.Time) (int64, error) {
@@ -194,12 +236,60 @@ func (r *runRepo) FailOrphanedPublications(ctx context.Context, heartbeatBefore,
 	if err != nil {
 		return 0, err
 	}
-	tag, err := pool.Exec(ctx, `update project_publications set status=$1,error_code='WORKER_LOST',error_message='publication worker heartbeat expired; build was not replayed',completed_at=$3,updated_at=$3
-		where status=$2 and heartbeat_at<$4`, models.PublicationStatusFailed, models.PublicationStatusRunning, now, heartbeatBefore)
+	leases, err := r.leases()
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	recoveryOwner := recoveryLeaseOwner(publicationLeaseKind)
+	var recovered int64
+	for cursor := ""; ; {
+		rows, queryErr := pool.Query(ctx, `select id,worker_id from project_publications
+			where status=$1 and coalesce(heartbeat_at,started_at,updated_at)<$2 and id>$3
+			order by id limit 100`, models.PublicationStatusRunning, heartbeatBefore, cursor)
+		if queryErr != nil {
+			return recovered, queryErr
+		}
+		candidates := make([]leaseCandidate, 0, 100)
+		for rows.Next() {
+			var candidate leaseCandidate
+			if err = rows.Scan(&candidate.ID, &candidate.OwnerID); err != nil {
+				rows.Close()
+				return recovered, err
+			}
+			candidates = append(candidates, candidate)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return recovered, err
+		}
+		rows.Close()
+		if len(candidates) == 0 {
+			return recovered, nil
+		}
+		cursor = candidates[len(candidates)-1].ID
+		claimed, claimErr := leases.AcquireRecovery(ctx, publicationLeaseKind, candidates, recoveryOwner, workerLeaseTTL(publicationLeaseKind))
+		if claimErr != nil {
+			return recovered, claimErr
+		}
+		for _, candidate := range candidates {
+			if !claimed[candidate.ID] {
+				continue
+			}
+			tag, updateErr := pool.Exec(ctx, `update project_publications set status=$1,error_code='WORKER_LOST',error_message='publication worker lease expired; build was not replayed',completed_at=$2,updated_at=$2
+			where id=$3 and worker_id=$4 and status=$5`, models.PublicationStatusFailed, now, candidate.ID, candidate.OwnerID, models.PublicationStatusRunning)
+			if updateErr != nil {
+				return recovered, updateErr
+			}
+			if tag.RowsAffected() == 0 {
+				releaseLeaseBestEffort(ctx, leases, publicationLeaseKind, candidate.ID, recoveryOwner)
+				continue
+			}
+			recovered++
+		}
+		if len(candidates) < 100 {
+			return recovered, nil
+		}
+	}
 }
 
 func (r *runRepo) IsPublicationCancelRequested(ctx context.Context, publicationID string) (bool, error) {

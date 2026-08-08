@@ -422,11 +422,12 @@ func (w *RunWorker) keepAlive(ctx context.Context, cancelRun context.CancelFunc,
 		case <-heartbeat.C:
 			now := w.now().UTC()
 			acquired, heartbeatErr := w.repo.Heartbeat(ctx, run.ID, w.workerID, now)
-			if heartbeatErr == nil && !acquired {
+			if heartbeatErr != nil {
+				zap.L().Warn("renew run worker lease failed", zap.String("run_id", run.ID), zap.Error(heartbeatErr))
+			} else if !acquired {
 				cancelRun()
 				return
 			}
-			_ = w.repo.TouchRuntime(ctx, run.ProjectID, now)
 		case <-cancelPoll.C:
 			requested, err := w.repo.IsCancelRequested(ctx, run.ID)
 			if err == nil && requested {
@@ -441,6 +442,9 @@ func (w *RunWorker) keepAlive(ctx context.Context, cancelRun context.CancelFunc,
 		case <-keepAlive.C:
 			keepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, keepErr := w.gateway.EnsureRuntime(keepCtx, runtime.GatewaySessionID)
+			if keepErr == nil {
+				_ = w.repo.TouchRuntime(keepCtx, run.ProjectID, w.now().UTC())
+			}
 			cancel()
 			if keepErr != nil {
 				if gatewayRuntimeExpired(keepErr) {
@@ -475,7 +479,9 @@ func (w *RunWorker) keepRuntimePreparationAlive(ctx context.Context, cancel cont
 			return
 		case <-heartbeat.C:
 			acquired, err := w.repo.Heartbeat(ctx, run.ID, w.workerID, w.now().UTC())
-			if err == nil && !acquired {
+			if err != nil {
+				zap.L().Warn("renew run worker lease during runtime preparation failed", zap.String("run_id", run.ID), zap.Error(err))
+			} else if !acquired {
 				leaseLost.Store(true)
 				cancel()
 				return
@@ -493,8 +499,8 @@ func (w *RunWorker) keepRuntimePreparationAlive(ctx context.Context, cancel cont
 func (w *RunWorker) confirmLease(ctx context.Context, run *models.Run) bool {
 	acquired, err := w.repo.Heartbeat(ctx, run.ID, w.workerID, w.now().UTC())
 	if err != nil {
-		w.fail(ctx, run, "WORKER_HEARTBEAT_FAILED", err)
-		return false
+		zap.L().Warn("confirm run worker lease failed", zap.String("run_id", run.ID), zap.Error(err))
+		return true
 	}
 	return acquired
 }

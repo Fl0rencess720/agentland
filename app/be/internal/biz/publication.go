@@ -305,7 +305,9 @@ func (w *PublicationWorker) keepAlive(ctx context.Context, cancel context.Cancel
 			return
 		case <-heartbeat.C:
 			ok, err := w.repo.HeartbeatPublication(ctx, item.ID, w.workerID, w.now().UTC())
-			if err != nil || !ok {
+			if err != nil {
+				zap.L().Warn("renew publication worker lease failed", zap.String("publication_id", item.ID), zap.Error(err))
+			} else if !ok {
 				cancel()
 				return
 			}

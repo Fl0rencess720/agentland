@@ -32,5 +32,9 @@ go.work
 # playground
 playground/
 
+# Local verification and benchmark artifacts
+/test/feature/
+/test/queuebench/
+
 # local agent instructions
 AGENTS.md

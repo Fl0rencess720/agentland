@@ -22,12 +22,19 @@ var (
 )
 
 type runRepo struct {
-	poolOnce    sync.Once
-	pool        *pgxpool.Pool
-	poolErr     error
-	schemaMu    sync.Mutex
-	schemaReady bool
-	schemaErr   error
+	poolOnce               sync.Once
+	pool                   *pgxpool.Pool
+	poolErr                error
+	leaseOnce              sync.Once
+	leaseStore             workerLeaseStore
+	leaseErr               error
+	snapshotOnce           sync.Once
+	snapshotStore          SnapshotObjectStore
+	snapshotArtifactsStore *workspaceSnapshotArtifacts
+	snapshotErr            error
+	schemaMu               sync.Mutex
+	schemaReady            bool
+	schemaErr              error
 }
 
 func NewRunRepo() biz.RunWorkerRepo {
@@ -258,11 +265,23 @@ func (r *runRepo) ClaimNextRun(ctx context.Context, workerID string, now time.Ti
 	if err != nil {
 		return nil, err
 	}
+	leases, err := r.leases()
+	if err != nil {
+		return nil, err
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	leaseAcquired := false
+	committed := false
+	var claimedID string
+	defer func() {
+		if leaseAcquired && !committed {
+			releaseLeaseBestEffort(ctx, leases, runLeaseKind, claimedID, workerID)
+		}
+	}()
 	run, err := scanRun(tx.QueryRow(ctx, `with candidate as (
 	select id from agent_runs where status=$1 order by created_at for update skip locked limit 1
 ) update agent_runs r set status=$2,worker_id=$3,started_at=$4,heartbeat_at=$4,updated_at=$4
@@ -274,6 +293,14 @@ returning r.id,r.owner_id,r.project_id,r.idempotency_key,r.input_message_id,r.as
 	if err != nil {
 		return nil, err
 	}
+	claimedID = run.ID
+	leaseAcquired, err = leases.Acquire(ctx, runLeaseKind, run.ID, workerID, workerLeaseTTL(runLeaseKind))
+	if err != nil {
+		return nil, err
+	}
+	if !leaseAcquired {
+		return nil, nil
+	}
 	if err = tx.QueryRow(ctx, `select content from project_messages where id=$1`, run.InputMessageID).Scan(&run.InputMessage); err != nil {
 		return nil, err
 	}
@@ -283,16 +310,16 @@ returning r.id,r.owner_id,r.project_id,r.idempotency_key,r.input_message_id,r.as
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	committed = true
 	return run, nil
 }
 
 func (r *runRepo) Heartbeat(ctx context.Context, runID, workerID string, now time.Time) (bool, error) {
-	pool, err := r.ready(ctx)
+	leases, err := r.leases()
 	if err != nil {
 		return false, err
 	}
-	tag, err := pool.Exec(ctx, `update agent_runs set heartbeat_at=$3,updated_at=$3 where id=$1 and worker_id=$2 and status=$4`, runID, workerID, now, models.RunStatusRunning)
-	return err == nil && tag.RowsAffected() == 1, err
+	return leases.Renew(ctx, runLeaseKind, runID, workerID, workerLeaseTTL(runLeaseKind))
 }
 
 func (r *runRepo) SetAgentRun(ctx context.Context, runID, workerID, agentRunID string, sequence int64, now time.Time) (bool, error) {
@@ -319,6 +346,14 @@ func (r *runRepo) FinishRun(ctx context.Context, runID, workerID, status, errorC
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return false, err
+	}
+	leases, err := r.leases()
+	if err != nil {
+		return false, err
+	}
+	owned, leaseErr := leases.Renew(ctx, runLeaseKind, runID, workerID, workerLeaseTTL(runLeaseKind))
+	if leaseErr == nil && !owned {
+		return false, nil
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -349,6 +384,7 @@ func (r *runRepo) FinishRun(ctx context.Context, runID, workerID, status, errorC
 	if err = tx.Commit(ctx); err != nil {
 		return false, err
 	}
+	releaseLeaseBestEffort(ctx, leases, runLeaseKind, runID, workerID)
 	return true, nil
 }
 
@@ -357,42 +393,76 @@ func (r *runRepo) FailOrphanedRuns(ctx context.Context, heartbeatBefore, now tim
 	if err != nil {
 		return nil, err
 	}
-	tx, err := pool.Begin(ctx)
+	leases, err := r.leases()
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `update agent_runs set status=$1,error_code='WORKER_HEARTBEAT_LOST',error_message='run worker heartbeat expired',last_sequence=last_sequence+1,completed_at=$2,updated_at=$2
-	where status=$3 and heartbeat_at<$4 returning id,assistant_message_id,last_sequence`, models.RunStatusFailed, now, models.RunStatusRunning, heartbeatBefore)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]models.RunSequence, 0)
-	messageIDs := make([]string, 0)
-	for rows.Next() {
-		var id, messageID string
-		var sequence int64
-		if err = rows.Scan(&id, &messageID, &sequence); err != nil {
+	recoveryOwner := recoveryLeaseOwner(runLeaseKind)
+	result := make([]models.RunSequence, 0)
+	for cursor := ""; ; {
+		rows, queryErr := pool.Query(ctx, `select id,worker_id from agent_runs
+			where status=$1 and coalesce(heartbeat_at,started_at,updated_at)<$2 and id>$3
+			order by id limit 100`, models.RunStatusRunning, heartbeatBefore, cursor)
+		if queryErr != nil {
+			return result, queryErr
+		}
+		candidates := make([]leaseCandidate, 0, 100)
+		for rows.Next() {
+			var candidate leaseCandidate
+			if err = rows.Scan(&candidate.ID, &candidate.OwnerID); err != nil {
+				rows.Close()
+				return result, err
+			}
+			candidates = append(candidates, candidate)
+		}
+		if err = rows.Err(); err != nil {
 			rows.Close()
-			return nil, err
+			return result, err
 		}
-		ids = append(ids, models.RunSequence{RunID: id, Sequence: sequence})
-		messageIDs = append(messageIDs, messageID)
-	}
-	if err = rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-	for _, id := range messageIDs {
-		if _, err = tx.Exec(ctx, `update project_messages set status='failed',updated_at=$2 where id=$1`, id, now); err != nil {
-			return nil, err
+		if len(candidates) == 0 {
+			return result, nil
+		}
+		cursor = candidates[len(candidates)-1].ID
+		claimed, claimErr := leases.AcquireRecovery(ctx, runLeaseKind, candidates, recoveryOwner, workerLeaseTTL(runLeaseKind))
+		if claimErr != nil {
+			return result, claimErr
+		}
+		for _, candidate := range candidates {
+			if !claimed[candidate.ID] {
+				continue
+			}
+			tx, beginErr := pool.Begin(ctx)
+			if beginErr != nil {
+				return result, beginErr
+			}
+			var messageID string
+			var sequence int64
+			err = tx.QueryRow(ctx, `update agent_runs set status=$1,error_code='WORKER_HEARTBEAT_LOST',error_message='run worker lease expired',last_sequence=last_sequence+1,completed_at=$2,updated_at=$2
+			where id=$3 and worker_id=$4 and status=$5 returning assistant_message_id,last_sequence`,
+				models.RunStatusFailed, now, candidate.ID, candidate.OwnerID, models.RunStatusRunning).Scan(&messageID, &sequence)
+			if errors.Is(err, pgx.ErrNoRows) {
+				_ = tx.Rollback(ctx)
+				releaseLeaseBestEffort(ctx, leases, runLeaseKind, candidate.ID, recoveryOwner)
+				continue
+			}
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return result, err
+			}
+			if _, err = tx.Exec(ctx, `update project_messages set status='failed',updated_at=$2 where id=$1`, messageID, now); err != nil {
+				_ = tx.Rollback(ctx)
+				return result, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return result, err
+			}
+			result = append(result, models.RunSequence{RunID: candidate.ID, Sequence: sequence})
+		}
+		if len(candidates) < 100 {
+			return result, nil
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return ids, nil
 }
 
 func (r *runRepo) IsCancelRequested(ctx context.Context, runID string) (bool, error) {
@@ -412,18 +482,6 @@ func (r *runRepo) TouchRuntime(ctx context.Context, projectID string, now time.T
 	}
 	_, err = pool.Exec(ctx, `update project_runtimes set last_active_at=$2,updated_at=$2 where project_id=$1 and status=$3`, projectID, now, models.RuntimeStatusActive)
 	return err
-}
-
-func (r *runRepo) SaveWorkspaceSnapshot(ctx context.Context, runID, workerID string, data []byte, sha, captureError string, now time.Time) (bool, error) {
-	pool, err := r.ready(ctx)
-	if err != nil {
-		return false, err
-	}
-	tag, err := pool.Exec(ctx, `insert into run_workspace_snapshots(run_id,content,sha256,capture_error,created_at)
-		select $1,$4,$5,$6,$7 where exists(select 1 from agent_runs where id=$1 and worker_id=$2 and status=$3)
-		on conflict(run_id) do update set content=excluded.content,sha256=excluded.sha256,capture_error=excluded.capture_error,created_at=excluded.created_at`,
-		runID, workerID, models.RunStatusRunning, data, sha, captureError, now)
-	return err == nil && tag.RowsAffected() == 1, err
 }
 
 func (r *runRepo) AppendTrajectoryRecord(ctx context.Context, runID, workerID, recordHash string, sequence int64, record json.RawMessage, now time.Time) (bool, error) {
@@ -451,19 +509,6 @@ func (r *runRepo) AppendTrajectoryRecord(ctx context.Context, runID, workerID, r
 		return false, errors.New("trajectory sequence conflicts with an existing record")
 	}
 	return true, nil
-}
-
-func (r *runRepo) LoadWorkspaceSnapshot(ctx context.Context, runID string) (*models.WorkspaceSnapshot, error) {
-	pool, err := r.ready(ctx)
-	if err != nil {
-		return nil, err
-	}
-	snapshot := &models.WorkspaceSnapshot{}
-	err = pool.QueryRow(ctx, `select content,sha256,capture_error,created_at from run_workspace_snapshots where run_id=$1`, runID).Scan(&snapshot.Data, &snapshot.SHA, &snapshot.Error, &snapshot.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	return snapshot, err
 }
 
 func (r *runRepo) LoadTrajectoryRecords(ctx context.Context, runID string) ([]models.RunTrajectoryRecord, error) {
@@ -557,6 +602,7 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`create unique index if not exists uq_agent_runs_idempotency on agent_runs(owner_id,project_id,idempotency_key)`,
 			`create unique index if not exists uq_agent_runs_project_active on agent_runs(project_id) where status in ('queued','running')`,
 			`create index if not exists idx_agent_runs_queue on agent_runs(status,created_at)`,
+			`create index if not exists idx_agent_runs_recovery on agent_runs(status,id)`,
 			`create table if not exists project_messages (
 				id text primary key,project_id text not null references projects(id),owner_id text not null references users(id),run_id text references agent_runs(id),role text not null,
 				content text not null,status text not null,created_at timestamptz not null,updated_at timestamptz not null)`,
@@ -568,7 +614,10 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 				id text not null,project_id text primary key references projects(id),owner_id text not null references users(id),status text not null,preview_url text not null,preview_token text not null,
 				port integer not null,created_at timestamptz not null,last_active_at timestamptz not null,expires_at timestamptz not null,updated_at timestamptz not null)`,
 			`create table if not exists run_workspace_snapshots (
-				run_id text primary key references agent_runs(id) on delete cascade,content bytea not null,sha256 text not null,capture_error text not null default '',created_at timestamptz not null)`,
+				run_id text primary key references agent_runs(id) on delete cascade,content bytea,object_key text not null default '',sha256 text not null,size_bytes bigint not null default 0,capture_error text not null default '',created_at timestamptz not null)`,
+			`alter table run_workspace_snapshots add column if not exists object_key text not null default ''`,
+			`alter table run_workspace_snapshots add column if not exists size_bytes bigint not null default 0`,
+			`alter table run_workspace_snapshots alter column content drop not null`,
 			`create table if not exists run_trajectory_records (
 				run_id text not null references agent_runs(id) on delete cascade,sequence bigint not null,record_hash text not null,record bytea not null,created_at timestamptz not null,primary key(run_id,sequence))`,
 			`create unique index if not exists uq_run_trajectory_hash on run_trajectory_records(run_id,record_hash)`,
@@ -580,6 +629,7 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`create unique index if not exists uq_project_publications_idempotency on project_publications(owner_id,project_id,idempotency_key)`,
 			`create unique index if not exists uq_project_publications_active on project_publications(project_id) where status in ('queued','running')`,
 			`create index if not exists idx_project_publications_queue on project_publications(status,created_at)`,
+			`create index if not exists idx_project_publications_recovery on project_publications(status,id)`,
 			`create index if not exists idx_project_publications_project_created on project_publications(project_id,created_at desc)`,
 		}
 		for _, statement := range statements {

@@ -34,6 +34,14 @@ func Init() error {
 	viper.SetDefault("redis.password", "")
 	viper.SetDefault("redis.db", 0)
 	viper.SetDefault("database.url", "")
+	viper.SetDefault("storage.s3.endpoint", "")
+	viper.SetDefault("storage.s3.region", "us-east-1")
+	viper.SetDefault("storage.s3.bucket", "")
+	viper.SetDefault("storage.s3.access_key", "")
+	viper.SetDefault("storage.s3.secret_key", "")
+	viper.SetDefault("storage.s3.path_style", false)
+	viper.SetDefault("storage.s3.key_prefix", "agentland")
+	viper.SetDefault("storage.s3.max_snapshot_bytes", int64(8<<20))
 	viper.SetDefault("agentland-gateway.url", "http://127.0.0.1:18080")
 	viper.SetDefault("agentland-gateway.runtime.name", "default-runtime")
 	viper.SetDefault("agentland-gateway.runtime.namespace", "agentland-sandboxes")
@@ -80,11 +88,27 @@ func Init() error {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	_ = viper.ReadInConfig()
 
-	return ValidatePreviewPublicURLTemplate(viper.GetString("preview.public_url_template"))
+	if err := ValidatePreviewPublicURLTemplate(viper.GetString("preview.public_url_template")); err != nil {
+		return err
+	}
+	if err := validateWorkerLease("worker", viper.GetDuration("worker.heartbeat_interval"), viper.GetDuration("worker.orphan_timeout")); err != nil {
+		return err
+	}
+	return validateWorkerLease("publication.worker", viper.GetDuration("publication.worker.heartbeat_interval"), viper.GetDuration("publication.worker.orphan_timeout"))
 }
 
 func GetServiceName() string {
 	return viper.GetString("server.http.name")
+}
+
+func validateWorkerLease(name string, heartbeat, ttl time.Duration) error {
+	if heartbeat <= 0 {
+		return fmt.Errorf("%s.heartbeat_interval must be positive", name)
+	}
+	if ttl < 3*heartbeat {
+		return fmt.Errorf("%s.orphan_timeout must be at least three times heartbeat_interval", name)
+	}
+	return nil
 }
 
 func ValidatePreviewPublicURLTemplate(raw string) error {

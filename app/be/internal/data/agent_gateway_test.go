@@ -127,6 +127,17 @@ func TestGatewaySnapshotAndReplayContracts(t *testing.T) {
 	require.Equal(t, "live", live.Mode)
 }
 
+func TestGatewaySnapshotLimitIsConfigurable(t *testing.T) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("12345")), Request: request}, nil
+	})
+	client := &agentlandGatewayClient{baseURL: "http://gateway", httpClient: &http.Client{Transport: transport}, maxSnapshotBytes: 4}
+
+	_, err := client.GetWorkspaceSnapshot(context.Background(), "session-1")
+	require.ErrorContains(t, err, "exceeds 4 bytes")
+	require.ErrorContains(t, client.RestoreWorkspaceSnapshot(context.Background(), "session-1", []byte("12345")), "exceeds 4 bytes")
+}
+
 func TestGatewayPublicationUsesServiceAuthentication(t *testing.T) {
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		require.Equal(t, "/api/publications", request.URL.Path)
