@@ -43,7 +43,7 @@ describe('ChatPanel', () => {
       http.get('/api/v1/projects/project-1/messages', () => envelope({ items: [], next_cursor: null })),
       http.post('/api/v1/projects/project-1/runs', ({ request }) => {
         idempotencyKey = request.headers.get('Idempotency-Key') ?? '';
-        return envelope({ run_id: 'run-1', user_message_id: 'message-1', status: 'queued' }, 202);
+        return envelope({ run_id: 'run-1', user_message_id: 'message-1', status: 'running' }, 202);
       }),
       http.get('/api/v1/runs/run-1/events', () => {
         const body = [

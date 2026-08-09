@@ -70,12 +70,12 @@ func TestWorkspaceSnapshotMetadataPostgresIntegration(t *testing.T) {
 	}
 
 	run := createRun(projectID, "object")
-	_, err = pool.Exec(ctx, `update agent_runs set status=$2,worker_id='worker-1' where id=$1`, run.ID, models.RunStatusRunning)
+	_, err = pool.Exec(ctx, `update agent_runs set status=$2 where id=$1`, run.ID, models.RunStatusRunning)
 	require.NoError(t, err)
 	data := []byte("compressed workspace")
 	digest := sha256.Sum256(data)
 	sha := hex.EncodeToString(digest[:])
-	saved, err := runs.SaveWorkspaceSnapshot(ctx, run.ID, "worker-1", data, sha, "", now)
+	saved, err := runs.SaveWorkspaceSnapshot(ctx, run.ID, data, sha, "", now)
 	require.NoError(t, err)
 	require.True(t, saved)
 	var contentIsNull bool

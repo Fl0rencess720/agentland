@@ -9,7 +9,6 @@ const (
 	MaxRunMessageBytes  = 256 << 10
 	MaxFileContentBytes = 1 << 20
 
-	RunStatusQueued    = "queued"
 	RunStatusRunning   = "running"
 	RunStatusCompleted = "completed"
 	RunStatusFailed    = "failed"
@@ -235,12 +234,12 @@ type Run struct {
 	ID, OwnerID, ProjectID, IdempotencyKey string
 	InputMessageID, AssistantMessageID     string
 	InputMessage                           string
-	Status, AgentRunID, WorkerID           string
+	Status, AgentRunID                     string
 	TraceParent, TraceState                string
 	LastSequence                           int64
 	ErrorCode, ErrorMessage                string
 	CreatedAt, UpdatedAt                   time.Time
-	StartedAt, HeartbeatAt, CompletedAt    *time.Time
+	StartedAt, CompletedAt                 *time.Time
 	CancelRequestedAt                      *time.Time
 }
 
@@ -423,7 +422,7 @@ type StoredRunEvent struct {
 	Data     json.RawMessage
 }
 
-type RunSequence struct {
-	RunID    string
-	Sequence int64
+type WorkerOwnership struct {
+	ID      string
+	OwnerID string
 }

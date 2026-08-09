@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 type memoryWorkerLeaseStore struct {
 	mu              sync.Mutex
 	owners          map[string]string
+	deadlines       map[string]time.Time
 	acquireErr      error
 	renewErr        error
 	recoveryErr     error
@@ -22,7 +24,7 @@ type memoryWorkerLeaseStore struct {
 }
 
 func newMemoryWorkerLeaseStore() *memoryWorkerLeaseStore {
-	return &memoryWorkerLeaseStore{owners: make(map[string]string)}
+	return &memoryWorkerLeaseStore{owners: make(map[string]string), deadlines: make(map[string]time.Time)}
 }
 
 func testRedisClient(t *testing.T) *redis.Client {
@@ -44,7 +46,7 @@ func unavailableRedisClient(t *testing.T) *redis.Client {
 	return client
 }
 
-func (s *memoryWorkerLeaseStore) Acquire(_ context.Context, kind, id, owner string, _ time.Duration) (bool, error) {
+func (s *memoryWorkerLeaseStore) Acquire(_ context.Context, kind, id, owner string, ttl time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.acquireErr != nil {
@@ -55,16 +57,22 @@ func (s *memoryWorkerLeaseStore) Acquire(_ context.Context, kind, id, owner stri
 		return false, nil
 	}
 	s.owners[key] = owner
+	s.deadlines[key] = time.Now().Add(ttl)
 	return true, nil
 }
 
-func (s *memoryWorkerLeaseStore) Renew(_ context.Context, kind, id, owner string, _ time.Duration) (bool, error) {
+func (s *memoryWorkerLeaseStore) Renew(_ context.Context, kind, id, owner string, ttl time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.renewErr != nil {
 		return false, s.renewErr
 	}
-	return s.owners[workerLeaseKey(kind, id)] == owner, nil
+	key := workerLeaseKey(kind, id)
+	if s.owners[key] != owner {
+		return false, nil
+	}
+	s.deadlines[key] = time.Now().Add(ttl)
+	return true, nil
 }
 
 func (s *memoryWorkerLeaseStore) Release(_ context.Context, kind, id, owner string) (bool, error) {
@@ -76,10 +84,11 @@ func (s *memoryWorkerLeaseStore) Release(_ context.Context, kind, id, owner stri
 		return false, nil
 	}
 	delete(s.owners, key)
+	delete(s.deadlines, key)
 	return true, nil
 }
 
-func (s *memoryWorkerLeaseStore) AcquireRecovery(_ context.Context, kind string, candidates []leaseCandidate, owner string, _ time.Duration) (map[string]bool, error) {
+func (s *memoryWorkerLeaseStore) AcquireRecovery(_ context.Context, kind string, candidates []leaseCandidate, owner string, ttl time.Duration) (map[string]bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.recoveryErr != nil {
@@ -88,11 +97,30 @@ func (s *memoryWorkerLeaseStore) AcquireRecovery(_ context.Context, kind string,
 	result := make(map[string]bool, len(candidates))
 	for _, candidate := range candidates {
 		key := workerLeaseKey(kind, candidate.ID)
-		if _, exists := s.owners[key]; exists {
+		current, exists := s.owners[key]
+		if exists && (current != candidate.OwnerID || time.Now().Before(s.deadlines[key])) {
 			continue
 		}
 		s.owners[key] = owner
+		s.deadlines[key] = time.Now().Add(ttl)
 		result[candidate.ID] = true
+	}
+	return result, nil
+}
+
+func (s *memoryWorkerLeaseStore) Expired(_ context.Context, kind string, before time.Time, limit int64) ([]leaseCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]leaseCandidate, 0)
+	prefix := "app:worker:{" + kind + "}:owner:"
+	for key, owner := range s.owners {
+		if !strings.HasPrefix(key, prefix) || s.deadlines[key].After(before) {
+			continue
+		}
+		result = append(result, leaseCandidate{ID: strings.TrimPrefix(key, prefix), OwnerID: owner})
+		if int64(len(result)) >= limit {
+			break
+		}
 	}
 	return result, nil
 }
@@ -103,7 +131,10 @@ func TestRedisWorkerLeaseLuaOwnershipAndRecoveryRace(t *testing.T) {
 	ctx := context.Background()
 	runID := "lease-lua-" + time.Now().UTC().Format("20060102150405.000000000")
 	key := workerLeaseKey(runLeaseKind, runID)
-	t.Cleanup(func() { _ = client.Del(context.Background(), key).Err() })
+	t.Cleanup(func() {
+		_ = client.Del(context.Background(), key).Err()
+		_ = client.ZRem(context.Background(), workerDeadlineKey(runLeaseKind), runID).Err()
+	})
 
 	acquired, err := store.Acquire(ctx, runLeaseKind, runID, "worker-a", time.Second)
 	require.NoError(t, err)
@@ -143,20 +174,21 @@ func TestRedisWorkerLeaseLuaOwnershipAndRecoveryRace(t *testing.T) {
 	released, err = store.Release(ctx, runLeaseKind, runID, "worker-a")
 	require.NoError(t, err)
 	require.True(t, released)
-	recovery, err = store.AcquireRecovery(ctx, runLeaseKind, []leaseCandidate{{ID: runID, OwnerID: "worker-a"}}, "recovery:test", time.Second)
+	recovery, err = store.AcquireRecovery(ctx, runLeaseKind, []leaseCandidate{{ID: runID, OwnerID: "worker-a"}}, "recovery:missing", time.Second)
 	require.NoError(t, err)
 	require.True(t, recovery[runID])
-	renewed, err = store.Renew(ctx, runLeaseKind, runID, "worker-a", time.Second)
-	require.NoError(t, err)
-	require.False(t, renewed)
-	released, err = store.Release(ctx, runLeaseKind, runID, "recovery:test")
+	released, err = store.Release(ctx, runLeaseKind, runID, "recovery:missing")
 	require.NoError(t, err)
 	require.True(t, released)
 	acquired, err = store.Acquire(ctx, runLeaseKind, runID, "worker-a", 30*time.Millisecond)
 	require.NoError(t, err)
 	require.True(t, acquired)
 	require.Eventually(t, func() bool {
-		recovery, err = store.AcquireRecovery(ctx, runLeaseKind, []leaseCandidate{{ID: runID, OwnerID: "worker-a"}}, "recovery:expired", time.Second)
+		expired, listErr := store.Expired(ctx, runLeaseKind, time.Now(), 10)
+		if listErr != nil || len(expired) != 1 || expired[0].ID != runID {
+			return false
+		}
+		recovery, err = store.AcquireRecovery(ctx, runLeaseKind, expired, "recovery:expired", time.Second)
 		return err == nil && recovery[runID]
 	}, time.Second, 10*time.Millisecond)
 	renewed, err = store.Renew(ctx, runLeaseKind, runID, "worker-a", time.Second)
@@ -176,5 +208,5 @@ func TestWorkerLeaseValidation(t *testing.T) {
 	store.acquireErr = errors.New("redis unavailable")
 	_, err := store.Acquire(context.Background(), runLeaseKind, "run-1", "worker-1", time.Second)
 	require.ErrorContains(t, err, "redis unavailable")
-	require.Equal(t, "app:worker:lease:publication:pub-1", workerLeaseKey(publicationLeaseKind, "pub-1"))
+	require.Equal(t, "app:worker:{publication}:owner:pub-1", workerLeaseKey(publicationLeaseKind, "pub-1"))
 }

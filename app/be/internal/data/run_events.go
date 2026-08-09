@@ -3,9 +3,10 @@ package data
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,7 +81,7 @@ func (s *kafkaRunEventStore) readAvailable(ctx context.Context, runID string, af
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, `select sequence,event_type,data from run_events where run_id=$1 and sequence>$2 order by sequence limit 200`, runID, after)
+	rows, err := pool.Query(ctx, `select sequence,event_type,data from run_events where run_id=$1 and sequence>$2 and event_type<>'trajectory.record' order by sequence limit 200`, runID, after)
 	if err != nil {
 		return nil, err
 	}
@@ -147,8 +148,12 @@ func (s *kafkaRunEventStore) project(ctx context.Context, payload []byte) error 
 			return err
 		}
 		if storedType != envelope.Event.Type || !bytes.Equal(storedData, data) {
-			return fmt.Errorf("run event conflict at %s sequence %d", envelope.RunID, envelope.Event.Sequence)
+			zap.L().Warn("ignored conflicting duplicate run event", zap.String("run_id", envelope.RunID), zap.Int64("sequence", envelope.Event.Sequence), zap.String("stored_type", storedType), zap.String("duplicate_type", envelope.Event.Type))
 		}
+		return tx.Commit(ctx)
+	}
+	if err = s.projectRunState(ctx, tx, envelope.Event); err != nil {
+		return err
 	}
 	if isTerminalKafkaEvent(envelope.Event.Type) {
 		if _, err = tx.Exec(ctx, `update run_events set expires_at=coalesce(expires_at,now()+interval '24 hours') where run_id=$1`, envelope.RunID); err != nil {
@@ -159,6 +164,97 @@ func (s *kafkaRunEventStore) project(ctx context.Context, payload []byte) error 
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *kafkaRunEventStore) projectRunState(ctx context.Context, tx pgx.Tx, event *models.AgentEvent) error {
+	now := event.Timestamp
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if _, err := tx.Exec(ctx, `update agent_runs set agent_run_id=$2,last_sequence=greatest(last_sequence,$3),updated_at=$4 where id=$1`, event.RunID, event.RunID, event.Sequence, now); err != nil {
+		return err
+	}
+	switch event.Type {
+	case "message.delta":
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `update project_messages message set content=message.content||$2,status='pending',updated_at=$3
+			from agent_runs run where run.id=$1 and message.id=run.assistant_message_id`, event.RunID, payload.Content, now)
+		return err
+	case "trajectory.record":
+		var record models.RunTrajectoryRecord
+		if err := json.Unmarshal(event.Payload, &record); err != nil {
+			return err
+		}
+		if err := validateProjectedTrajectory(ctx, tx, event.RunID, &record); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `insert into run_trajectory_records(run_id,sequence,record_hash,record,created_at)
+			values($1,$2,$3,$4,$5) on conflict(run_id,sequence) do nothing`, event.RunID, record.Sequence, record.Hash, []byte(event.Payload), now)
+		return err
+	case "run.completed", "run.failed", "run.cancelled":
+		status, messageStatus, code, message := models.RunStatusCompleted, "completed", "", ""
+		if event.Type == "run.failed" {
+			status, messageStatus, code = models.RunStatusFailed, "failed", "AGENT_RUN_FAILED"
+			var payload struct {
+				Code    string `json:"code"`
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				if strings.TrimSpace(payload.Code) != "" {
+					code = strings.TrimSpace(payload.Code)
+				}
+				message = strings.TrimSpace(payload.Error)
+				if message == "" {
+					message = strings.TrimSpace(payload.Message)
+				}
+			}
+		} else if event.Type == "run.cancelled" {
+			status, messageStatus = models.RunStatusCancelled, "cancelled"
+		}
+		if _, err := tx.Exec(ctx, `update agent_runs set status=$2,error_code=$3,error_message=$4,last_sequence=greatest(last_sequence,$5),completed_at=$6,updated_at=$6
+			where id=$1 and status=$7`, event.RunID, status, code, message, event.Sequence, now, models.RunStatusRunning); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `update project_messages message set status=$2,updated_at=$3
+			from agent_runs run where run.id=$1 and message.id=run.assistant_message_id`, event.RunID, messageStatus, now)
+		return err
+	}
+	return nil
+}
+
+func validateProjectedTrajectory(ctx context.Context, tx pgx.Tx, runID string, record *models.RunTrajectoryRecord) error {
+	if record.Version != 1 || record.RunID != runID || record.Hash == "" || record.Sequence <= 0 {
+		return errors.New("trajectory record identity is invalid")
+	}
+	var previousSequence int64
+	var previousHash string
+	err := tx.QueryRow(ctx, `select sequence,record_hash from run_trajectory_records where run_id=$1 order by sequence desc limit 1`, runID).Scan(&previousSequence, &previousHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		previousSequence, previousHash, err = 0, "", nil
+	}
+	if err != nil {
+		return err
+	}
+	if record.Sequence != previousSequence+1 || record.PreviousHash != previousHash {
+		return errors.New("trajectory hash chain is not contiguous")
+	}
+	copy := *record
+	copy.Hash = ""
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(data)
+	if !strings.EqualFold(record.Hash, hex.EncodeToString(digest[:])) {
+		return errors.New("trajectory record hash is invalid")
+	}
+	return nil
 }
 
 func (s *kafkaRunEventStore) deleteExpired(ctx context.Context) {

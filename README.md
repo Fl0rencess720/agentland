@@ -6,7 +6,7 @@
 
 项目同时提供运行在 `AgentSession` Sandbox 内的轻量 Eino Agent `agentd`。它直接操作容器工作区，支持本地工具、MCP、Skills、流式事件和文件 Memory，设计与实现见 [docs/agentd.md](docs/agentd.md)。
 
-`app/fe` 与 `app/be` 提供面向用户的 AI 应用生成界面和应用后端，支持项目会话、Run、代码编辑与实时预览。
+`app/fe` 与 `app/be` 提供面向用户的 AI 应用生成界面和应用后端，支持项目会话、Run、代码编辑、实时预览与 OCI 镜像发布。发布任务使用远程 BuildKit 构建并推送到指定 Registry，设计与部署见 [docs/application-publishing.md](docs/application-publishing.md)。
 
 应用后端默认以 `http://{token}.localhost:18081` 为每个预览分配独立来源；生产环境使用 `PREVIEW_PUBLIC_URL_TEMPLATE=https://{token}.preview.example.com` 配合通配 DNS 和 TLS。
 

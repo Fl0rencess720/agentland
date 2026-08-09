@@ -26,6 +26,11 @@ import (
 
 var ErrConversationBusy = errors.New("conversation already has an active run")
 
+const (
+	messageDeltaFlushInterval = 75 * time.Millisecond
+	messageDeltaFlushBytes    = 512
+)
+
 type Agent struct {
 	baseModel      model.ToolCallingChatModel
 	model          model.ToolCallingChatModel
@@ -86,8 +91,15 @@ func (a *Agent) Run(parent context.Context, conversationID, userMessage string, 
 }
 
 func (a *Agent) RunWithOptions(parent context.Context, conversationID, userMessage string, captureTrajectory bool, emit func(Event) error) (runID string, err error) {
+	return a.RunWithID(parent, uuid.NewString(), conversationID, userMessage, captureTrajectory, emit)
+}
+
+func (a *Agent) RunWithID(parent context.Context, runID, conversationID, userMessage string, captureTrajectory bool, emit func(Event) error) (_ string, err error) {
 	if !validID(conversationID) {
 		return "", fmt.Errorf("invalid conversation_id")
+	}
+	if !validID(runID) {
+		return "", fmt.Errorf("invalid run_id")
 	}
 	if strings.TrimSpace(userMessage) == "" {
 		return "", fmt.Errorf("message is required")
@@ -96,7 +108,6 @@ func (a *Agent) RunWithOptions(parent context.Context, conversationID, userMessa
 		return "", fmt.Errorf("message exceeds %d bytes", maxChatMessageBytes)
 	}
 
-	runID = uuid.NewString()
 	ctx, cancel := context.WithCancel(parent)
 	if err := a.registerRun(conversationID, runID, cancel); err != nil {
 		cancel()
@@ -341,27 +352,88 @@ func retryableModelError(err error) bool {
 }
 
 func consumeModelStream(stream *schema.StreamReader[*schema.Message], events *eventEmitter) (*schema.Message, int, error) {
+	type result struct {
+		message *schema.Message
+		err     error
+	}
+	results := make(chan result, 1)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			message, err := stream.Recv()
+			select {
+			case results <- result{message: message, err: err}:
+			case <-done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	var chunks []*schema.Message
+	var pending strings.Builder
+	flushTimer := time.NewTimer(messageDeltaFlushInterval)
+	if !flushTimer.Stop() {
+		<-flushTimer.C
+	}
+	defer flushTimer.Stop()
+	flushScheduled := false
+	flush := func() error {
+		if pending.Len() == 0 {
+			return nil
+		}
+		content := pending.String()
+		pending.Reset()
+		flushScheduled = false
+		return events.send(EventMessageDelta, map[string]any{"content": content})
+	}
 	for {
-		chunk, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, len(chunks), err
-		}
-		chunks = append(chunks, chunk)
-		if chunk.Content != "" {
-			if err := events.send(EventMessageDelta, map[string]any{"content": chunk.Content}); err != nil {
+		select {
+		case item := <-results:
+			if errors.Is(item.err, io.EOF) {
+				if err := flush(); err != nil {
+					return nil, len(chunks), err
+				}
+				if len(chunks) == 0 {
+					return nil, 0, fmt.Errorf("model returned an empty stream")
+				}
+				message, err := schema.ConcatMessages(chunks)
+				return message, len(chunks), err
+			}
+			if item.err != nil {
+				return nil, len(chunks), item.err
+			}
+			chunks = append(chunks, item.message)
+			if item.message.Content == "" {
+				continue
+			}
+			pending.WriteString(item.message.Content)
+			if pending.Len() >= messageDeltaFlushBytes {
+				if flushScheduled && !flushTimer.Stop() {
+					select {
+					case <-flushTimer.C:
+					default:
+					}
+				}
+				flushScheduled = false
+				if err := flush(); err != nil {
+					return nil, len(chunks), err
+				}
+				continue
+			}
+			if !flushScheduled {
+				flushTimer.Reset(messageDeltaFlushInterval)
+				flushScheduled = true
+			}
+		case <-flushTimer.C:
+			if err := flush(); err != nil {
 				return nil, len(chunks), err
 			}
 		}
 	}
-	if len(chunks) == 0 {
-		return nil, 0, fmt.Errorf("model returned an empty stream")
-	}
-	message, err := schema.ConcatMessages(chunks)
-	return message, len(chunks), err
 }
 
 func (a *Agent) invokeTool(ctx context.Context, call schema.ToolCall) (string, error) {

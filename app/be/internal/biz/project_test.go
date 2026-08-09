@@ -62,6 +62,7 @@ func (r *projectRepoStub) GetUserPlan(context.Context, string) (string, error) {
 type runRepoStub struct {
 	runtime          *models.ProjectRuntime
 	run              *models.Run
+	runs             map[string]*models.Run
 	preview          *models.ProjectPreview
 	created          int
 	touched          int
@@ -69,20 +70,24 @@ type runRepoStub struct {
 	finishedStatus   string
 	finishedSequence int64
 	cancelRequested  atomic.Bool
-	heartbeatCalls   atomic.Int64
+	renewCalls       atomic.Int64
 	upserts          atomic.Int64
 	finished         atomic.Bool
 	finishedCount    atomic.Int64
 	eventsMu         sync.Mutex
 	persistedEvents  []*models.AgentEvent
-	heartbeat        func(context.Context, string, string, time.Time) (bool, error)
-	claim            func(context.Context, string, string, time.Time) (*models.Run, error)
+	renew            func(context.Context, string, string) (bool, error)
+	acquire          func(string) (bool, error)
 	appendDelta      func(string, int64)
+	expired          []models.WorkerOwnership
+	takeover         func(string, string, string) (bool, error)
+	releases         atomic.Int64
+	dispatchFailures atomic.Int64
 }
 
 func (r *runRepoStub) CreateRun(_ context.Context, in *models.CreateRunInput) (*models.Run, bool, error) {
 	r.created++
-	r.run = &models.Run{ID: in.ID, OwnerID: in.OwnerID, ProjectID: in.ProjectID, InputMessageID: in.InputMessageID, AssistantMessageID: in.AssistantMessageID, InputMessage: in.Message, Status: models.RunStatusQueued, TraceParent: in.TraceParent, TraceState: in.TraceState, CreatedAt: in.Now, UpdatedAt: in.Now}
+	r.run = &models.Run{ID: in.ID, OwnerID: in.OwnerID, ProjectID: in.ProjectID, InputMessageID: in.InputMessageID, AssistantMessageID: in.AssistantMessageID, InputMessage: in.Message, Status: models.RunStatusRunning, AgentRunID: in.ID, TraceParent: in.TraceParent, TraceState: in.TraceState, CreatedAt: in.Now, UpdatedAt: in.Now}
 	return r.run, false, nil
 }
 func (r *runRepoStub) FindRunByIdempotency(context.Context, string, string, string, string) (*models.Run, error) {
@@ -102,6 +107,10 @@ func (r *runRepoStub) ListMessages(context.Context, string, string, string, int)
 }
 func (r *runRepoStub) RequestCancel(context.Context, string, string, time.Time) (*models.Run, bool, error) {
 	return r.run, false, nil
+}
+func (r *runRepoStub) FailRunDispatch(context.Context, string, time.Time, error) error {
+	r.dispatchFailures.Add(1)
+	return nil
 }
 func (r *runRepoStub) GetRuntime(context.Context, string, string) (*models.ProjectRuntime, error) {
 	return r.runtime, nil
@@ -126,92 +135,113 @@ func (r *runRepoStub) GetPreview(context.Context, string, string) (*models.Proje
 	}
 	return r.preview, nil
 }
-func (r *runRepoStub) ClaimRun(ctx context.Context, runID, workerID string, now time.Time) (*models.Run, error) {
-	if r.claim != nil {
-		return r.claim(ctx, runID, workerID, now)
+func (r *runRepoStub) GetRunForExecution(_ context.Context, runID string) (*models.Run, error) {
+	if r.runs != nil {
+		r.run = r.runs[runID]
 	}
-	return nil, nil
+	return r.run, nil
+}
+func (r *runRepoStub) AcquireRunOwnership(_ context.Context, runID, _ string) (bool, error) {
+	if r.acquire != nil {
+		return r.acquire(runID)
+	}
+	return true, nil
+}
+func (r *runRepoStub) RenewRunOwnership(ctx context.Context, runID, workerID string) (bool, error) {
+	r.renewCalls.Add(1)
+	if r.renew != nil {
+		return r.renew(ctx, runID, workerID)
+	}
+	return true, nil
+}
+func (r *runRepoStub) ReleaseRunOwnership(context.Context, string, string) (bool, error) {
+	r.releases.Add(1)
+	return true, nil
+}
+func (r *runRepoStub) ExpiredRunOwnerships(context.Context, time.Time, int64) ([]models.WorkerOwnership, error) {
+	return append([]models.WorkerOwnership(nil), r.expired...), nil
+}
+func (r *runRepoStub) TakeoverRunOwnership(_ context.Context, runID, previousOwner, owner string) (bool, error) {
+	if r.takeover != nil {
+		return r.takeover(runID, previousOwner, owner)
+	}
+	return true, nil
 }
 func (r *runRepoStub) UpsertRuntime(_ context.Context, runtime *models.ProjectRuntime) error {
 	r.upserts.Add(1)
 	r.runtime = runtime
 	return nil
 }
-func (r *runRepoStub) Heartbeat(ctx context.Context, runID, workerID string, now time.Time) (bool, error) {
-	r.heartbeatCalls.Add(1)
-	if r.heartbeat != nil {
-		return r.heartbeat(ctx, runID, workerID, now)
-	}
-	return true, nil
-}
-func (r *runRepoStub) SetAgentRun(_ context.Context, _, _, agentRunID string, sequence int64, _ time.Time, event *models.AgentEvent) (bool, error) {
-	r.run.AgentRunID, r.run.LastSequence = agentRunID, sequence
-	if event != nil {
-		r.eventsMu.Lock()
-		r.persistedEvents = append(r.persistedEvents, event)
-		r.eventsMu.Unlock()
-	}
-	return true, nil
-}
-func (r *runRepoStub) AppendAssistantDelta(_ context.Context, _, _, delta string, sequence int64, _ time.Time, events []*models.AgentEvent) (bool, error) {
-	r.assistant += delta
-	r.run.LastSequence = sequence
-	if r.appendDelta != nil {
-		r.appendDelta(delta, sequence)
-	}
-	r.eventsMu.Lock()
-	r.persistedEvents = append(r.persistedEvents, events...)
-	r.eventsMu.Unlock()
-	return true, nil
-}
-func (r *runRepoStub) FinishRun(_ context.Context, _, _, status, _, _ string, sequence int64, _ time.Time, event *models.AgentEvent) (bool, error) {
-	r.finishedStatus, r.finishedSequence = status, sequence
-	r.finished.Store(true)
-	r.finishedCount.Add(1)
-	if event != nil {
-		r.eventsMu.Lock()
-		r.persistedEvents = append(r.persistedEvents, event)
-		r.eventsMu.Unlock()
-	}
-	return true, nil
-}
-func (r *runRepoStub) FailOrphanedRuns(context.Context, time.Time, time.Time) ([]models.RunSequence, error) {
-	return nil, nil
-}
 func (r *runRepoStub) IsCancelRequested(context.Context, string) (bool, error) {
 	return r.cancelRequested.Load(), nil
 }
+func (r *runRepoStub) PublishRunEvent(_ context.Context, event *models.AgentEvent) error {
+	r.eventsMu.Lock()
+	r.persistedEvents = append(r.persistedEvents, event)
+	r.eventsMu.Unlock()
+	r.run.LastSequence = event.Sequence
+	switch event.Type {
+	case "message.delta":
+		var payload struct {
+			Content string `json:"content"`
+		}
+		_ = json.Unmarshal(event.Payload, &payload)
+		r.assistant += payload.Content
+		if r.appendDelta != nil {
+			r.appendDelta(payload.Content, event.Sequence)
+		}
+	case "run.completed":
+		r.finishedStatus = models.RunStatusCompleted
+		r.run.Status = models.RunStatusCompleted
+	case "run.failed":
+		r.finishedStatus = models.RunStatusFailed
+		r.run.Status = models.RunStatusFailed
+	case "run.cancelled":
+		r.finishedStatus = models.RunStatusCancelled
+		r.run.Status = models.RunStatusCancelled
+	}
+	if isTerminalEvent(event.Type) {
+		r.finishedSequence = event.Sequence
+		r.finished.Store(true)
+		r.finishedCount.Add(1)
+	}
+	return nil
+}
 
 type eventStoreStub struct {
-	events  []*models.AgentEvent
-	stored  []*models.StoredRunEvent
-	after   string
-	expired atomic.Int64
-	publish func(context.Context, string, *models.AgentEvent) error
-	expire  func(context.Context, string, time.Duration) error
+	stored []*models.StoredRunEvent
+	after  string
 }
 
-func (s *eventStoreStub) Publish(ctx context.Context, runID string, event *models.AgentEvent) (string, error) {
-	if s.publish != nil {
-		if err := s.publish(ctx, runID, event); err != nil {
-			return "", err
-		}
-	}
-	s.events = append(s.events, event)
-	return "1-0", nil
+type taskPublisherStub struct {
+	runIDs []string
+	err    error
 }
+
+func (s *taskPublisherStub) PublishRunTask(_ context.Context, runID, _ string) error {
+	s.runIDs = append(s.runIDs, runID)
+	return s.err
+}
+
+func (s *taskPublisherStub) PublishPublicationTask(context.Context, string, string) error {
+	return s.err
+}
+
+type runEventPublisherStub struct {
+	calls atomic.Int64
+	err   error
+}
+
+func (s *runEventPublisherStub) PublishRunEvent(context.Context, *models.AgentEvent) error {
+	s.calls.Add(1)
+	return s.err
+}
+
 func (s *eventStoreStub) Read(_ context.Context, _, after string, _ time.Duration) ([]*models.StoredRunEvent, error) {
 	s.after = after
 	events := s.stored
 	s.stored = nil
 	return events, nil
-}
-func (s *eventStoreStub) Expire(ctx context.Context, runID string, ttl time.Duration) error {
-	s.expired.Add(1)
-	if s.expire != nil {
-		return s.expire(ctx, runID, ttl)
-	}
-	return nil
 }
 
 type gatewayStub struct {
@@ -224,6 +254,8 @@ type gatewayStub struct {
 	stream      func(context.Context, string, string, string, func(*models.AgentEvent) error) error
 	streamCalls int
 	putSHA      string
+	streamAfter atomic.Int64
+	getRun      func(context.Context, string, string) (*models.AgentRunState, error)
 }
 
 func (g *gatewayStub) EnsureRuntime(ctx context.Context, sessionID string) (string, error) {
@@ -243,6 +275,19 @@ func (g *gatewayStub) StreamChat(ctx context.Context, sessionID, conversationID,
 		}
 	}
 	return nil
+}
+func (g *gatewayStub) StartAgentRun(_ context.Context, _, runID, _, _ string) (*models.AgentRunState, error) {
+	return &models.AgentRunState{RunID: runID, Status: models.RunStatusRunning}, nil
+}
+func (g *gatewayStub) GetAgentRun(ctx context.Context, sessionID, runID string) (*models.AgentRunState, error) {
+	if g.getRun != nil {
+		return g.getRun(ctx, sessionID, runID)
+	}
+	return &models.AgentRunState{RunID: "run-1", Status: models.RunStatusRunning}, nil
+}
+func (g *gatewayStub) StreamAgentRun(ctx context.Context, sessionID, _ string, after int64, callback func(*models.AgentEvent) error) error {
+	g.streamAfter.Store(after)
+	return g.StreamChat(ctx, sessionID, "project-1", "", callback)
 }
 func (g *gatewayStub) CancelRun(context.Context, string, string) error { return nil }
 func (g *gatewayStub) GetFileTree(context.Context, string, string) (*models.GatewayFileTree, error) {
@@ -265,17 +310,8 @@ type artifactRunRepoStub struct {
 	records  []models.RunTrajectoryRecord
 }
 
-func (r *artifactRunRepoStub) SaveWorkspaceSnapshot(_ context.Context, _, _ string, data []byte, sha, captureError string, now time.Time) (bool, error) {
+func (r *artifactRunRepoStub) SaveWorkspaceSnapshot(_ context.Context, _ string, data []byte, sha, captureError string, now time.Time) (bool, error) {
 	r.snapshot = &models.WorkspaceSnapshot{Data: append([]byte(nil), data...), SHA: sha, Error: captureError, CreatedAt: now}
-	return true, nil
-}
-
-func (r *artifactRunRepoStub) AppendTrajectoryRecord(_ context.Context, _, _, _ string, _ int64, raw json.RawMessage, _ time.Time) (bool, error) {
-	var record models.RunTrajectoryRecord
-	if err := json.Unmarshal(raw, &record); err != nil {
-		return false, err
-	}
-	r.records = append(r.records, record)
 	return true, nil
 }
 
@@ -385,8 +421,33 @@ func TestCreateRunReturnsAcceptedContract(t *testing.T) {
 	require.Nil(t, apiErr)
 	require.NotEmpty(t, result.RunID)
 	require.NotEmpty(t, result.UserMessageID)
-	require.Equal(t, models.RunStatusQueued, result.Status)
+	require.Equal(t, models.RunStatusRunning, result.Status)
 	require.NotEmpty(t, runs.run.TraceParent)
+}
+
+func TestCreateRunPublishesDirectlyToKafkaTaskPublisher(t *testing.T) {
+	projects := &projectRepoStub{project: &models.Project{ID: "project-1", OwnerID: "user-1"}}
+	runs := &runRepoStub{}
+	tasks := &taskPublisherStub{}
+	usecase := NewProjectUsecase(projects, runs, &eventStoreStub{}, &gatewayStub{}).(*projectUseCase)
+	usecase.tasks = tasks
+
+	result, apiErr := usecase.CreateRun(context.Background(), models.AuthPrincipal{UserID: "user-1"}, "project-1", "request-1", &models.RunCreateReq{Message: "build"})
+	require.Nil(t, apiErr)
+	require.Equal(t, models.RunStatusRunning, result.Status)
+	require.Equal(t, []string{result.RunID}, tasks.runIDs)
+}
+
+func TestCreateRunMarksDispatchFailureWhenKafkaRejectsTask(t *testing.T) {
+	projects := &projectRepoStub{project: &models.Project{ID: "project-1", OwnerID: "user-1"}}
+	runs := &runRepoStub{}
+	usecase := NewProjectUsecase(projects, runs, &eventStoreStub{}, &gatewayStub{}).(*projectUseCase)
+	usecase.tasks = &taskPublisherStub{err: errors.New("kafka unavailable")}
+
+	result, apiErr := usecase.CreateRun(context.Background(), models.AuthPrincipal{UserID: "user-1"}, "project-1", "request-1", &models.RunCreateReq{Message: "build"})
+	require.Nil(t, result)
+	require.NotNil(t, apiErr)
+	require.Equal(t, int64(1), runs.dispatchFailures.Load())
 }
 
 func TestCreateRunRejectsExpiredRuntime(t *testing.T) {
@@ -561,7 +622,7 @@ func TestRunWorkerStreamsThroughGatewayAndPersistsTerminal(t *testing.T) {
 	propagation.TraceContext{}.Inject(requestCtx, carrier)
 	requestSpanID := requestSpan.SpanContext().SpanID()
 	requestSpan.End()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, TraceParent: carrier.Get("traceparent"), CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, TraceParent: carrier.Get("traceparent"), CreatedAt: now}
 	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1", Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour), UpdatedAt: now}}
 	delta, _ := json.Marshal(map[string]string{"content": "hello"})
 	gateway := &gatewayStub{events: []*models.AgentEvent{
@@ -571,7 +632,7 @@ func TestRunWorkerStreamsThroughGatewayAndPersistsTerminal(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Hour
+	worker.renewEvery = time.Hour
 	worker.execute(context.Background(), run)
 	require.Equal(t, "hello", runs.assistant)
 	require.Equal(t, models.RunStatusCompleted, runs.finishedStatus)
@@ -580,14 +641,14 @@ func TestRunWorkerStreamsThroughGatewayAndPersistsTerminal(t *testing.T) {
 	require.Equal(t, "run.completed", runs.persistedEvents[2].Type)
 	require.Len(t, spanRecorder.Ended(), 2)
 	runSpan := spanRecorder.Ended()[1]
-	require.Equal(t, "run.execute", runSpan.Name())
+	require.Equal(t, "run.forward_events", runSpan.Name())
 	require.Equal(t, requestSpanID, runSpan.Parent().SpanID())
 	require.Equal(t, codes.Ok, runSpan.Status().Code)
 }
 
 func TestRunWorkerPersistsPrivateTrajectoryAndWorkspaceSnapshot(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	baseRepo := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
 		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
 		Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour), UpdatedAt: now,
@@ -612,15 +673,13 @@ func TestRunWorkerPersistsPrivateTrajectoryAndWorkspaceSnapshot(t *testing.T) {
 		{Type: "run.completed", RunID: "agent-run-1", ConversationID: "project-1", Sequence: 4, Timestamp: now, Payload: json.RawMessage(`{}`)},
 	}}, snapshot: []byte("workspace-before-run")}
 	worker := NewRunWorker(runs, gateway)
-	worker.workerID, worker.heartbeat = "worker-1", time.Hour
+	worker.workerID, worker.renewEvery = "worker-1", time.Hour
 	worker.execute(context.Background(), run)
 
-	require.Len(t, runs.records, 2)
-	require.Equal(t, first.Hash, runs.records[0].Hash)
 	require.Equal(t, []byte("workspace-before-run"), runs.snapshot.Data)
-	require.Len(t, runs.persistedEvents, 2)
-	require.Equal(t, "run.started", runs.persistedEvents[0].Type)
-	require.Equal(t, "run.completed", runs.persistedEvents[1].Type)
+	require.Len(t, runs.persistedEvents, 4)
+	require.Equal(t, "trajectory.record", runs.persistedEvents[0].Type)
+	require.Equal(t, "run.completed", runs.persistedEvents[3].Type)
 }
 
 func signedTrajectoryRecord(t *testing.T, record models.RunTrajectoryRecord) models.RunTrajectoryRecord {
@@ -635,7 +694,7 @@ func signedTrajectoryRecord(t *testing.T, record models.RunTrajectoryRecord) mod
 
 func TestRunWorkerCreatesRuntimeWithAbsoluteExpiry(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run}
 	gateway := &gatewayStub{events: []*models.AgentEvent{
 		{Type: "run.started", RunID: "agent-run-1", Sequence: 1, Timestamp: now, Payload: json.RawMessage(`{}`)},
@@ -643,7 +702,7 @@ func TestRunWorkerCreatesRuntimeWithAbsoluteExpiry(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Hour
+	worker.renewEvery = time.Hour
 	worker.runtimeMax = 45 * time.Minute
 	worker.now = func() time.Time { return now }
 
@@ -655,7 +714,7 @@ func TestRunWorkerCreatesRuntimeWithAbsoluteExpiry(t *testing.T) {
 func TestRunWorkerDoesNotExtendRuntimeAbsoluteExpiry(t *testing.T) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(20 * time.Minute)
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
 		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
 		Status: models.RuntimeStatusActive, CreatedAt: now.Add(-40 * time.Minute), LastActiveAt: now.Add(-time.Minute), ExpiresAt: expiresAt,
@@ -666,7 +725,7 @@ func TestRunWorkerDoesNotExtendRuntimeAbsoluteExpiry(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Hour
+	worker.renewEvery = time.Hour
 	worker.runtimeMax = time.Hour
 	worker.now = func() time.Time { return now }
 
@@ -678,7 +737,7 @@ func TestRunWorkerDoesNotExtendRuntimeAbsoluteExpiry(t *testing.T) {
 
 func TestRunWorkerPersistsTerminalWithTheRunState(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
 		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
 		Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour),
@@ -689,8 +748,7 @@ func TestRunWorkerPersistsTerminalWithTheRunState(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Millisecond
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = time.Millisecond
 
 	worker.execute(context.Background(), run)
 
@@ -700,7 +758,7 @@ func TestRunWorkerPersistsTerminalWithTheRunState(t *testing.T) {
 
 func TestRunWorkerFlushesAssistantDeltaOnInterval(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
 		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
 		Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour),
@@ -725,8 +783,7 @@ func TestRunWorkerFlushesAssistantDeltaOnInterval(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Hour
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = time.Hour
 
 	worker.execute(context.Background(), run)
 
@@ -738,7 +795,7 @@ func TestRunWorkerFlushesAssistantDeltaOnInterval(t *testing.T) {
 
 func TestRunWorkerDoesNotStartAgentAfterCancellationDuringRuntimePreparation(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run}
 	gateway := &gatewayStub{}
 	gateway.ensure = func(context.Context, string) (string, error) {
@@ -756,9 +813,9 @@ func TestRunWorkerDoesNotStartAgentAfterCancellationDuringRuntimePreparation(t *
 	require.Equal(t, "run.cancelled", runs.persistedEvents[0].Type)
 }
 
-func TestRunWorkerHeartbeatsWhilePreparingRuntime(t *testing.T) {
+func TestRunWorkerRenewsOwnershipWhilePreparingRuntime(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run}
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -779,8 +836,7 @@ func TestRunWorkerHeartbeatsWhilePreparingRuntime(t *testing.T) {
 	}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = 5 * time.Millisecond
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = 5 * time.Millisecond
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -788,7 +844,7 @@ func TestRunWorkerHeartbeatsWhilePreparingRuntime(t *testing.T) {
 	}()
 
 	<-started
-	require.Eventually(t, func() bool { return runs.heartbeatCalls.Load() >= 2 }, time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return runs.renewCalls.Load() >= 2 }, time.Second, 5*time.Millisecond)
 	close(release)
 	select {
 	case <-done:
@@ -801,10 +857,10 @@ func TestRunWorkerHeartbeatsWhilePreparingRuntime(t *testing.T) {
 
 func TestRunWorkerCancelsRuntimePreparationWhenLeaseIsLost(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run}
-	runs.heartbeat = func(context.Context, string, string, time.Time) (bool, error) {
-		return runs.heartbeatCalls.Load() < 2, nil
+	runs.renew = func(context.Context, string, string) (bool, error) {
+		return runs.renewCalls.Load() < 2, nil
 	}
 	started := make(chan struct{})
 	gateway := &gatewayStub{ensure: func(ctx context.Context, _ string) (string, error) {
@@ -814,8 +870,7 @@ func TestRunWorkerCancelsRuntimePreparationWhenLeaseIsLost(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = 5 * time.Millisecond
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = 5 * time.Millisecond
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -828,19 +883,19 @@ func TestRunWorkerCancelsRuntimePreparationWhenLeaseIsLost(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not stop runtime preparation after losing its lease")
 	}
-	require.GreaterOrEqual(t, runs.heartbeatCalls.Load(), int64(2))
+	require.GreaterOrEqual(t, runs.renewCalls.Load(), int64(2))
 	require.Zero(t, runs.upserts.Load())
 	require.Zero(t, gateway.streamCalls)
 }
 
-func TestRunWorkerContinuesDuringTemporaryRedisLeaseFailure(t *testing.T) {
+func TestRunWorkerLeavesRecoveryToWatchdogAfterRedisLeaseFailure(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{
 		ProjectID: "project-1", OwnerID: "user-1", GatewaySessionID: "session-1", AgentConversationID: "project-1",
 		Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour),
 	}}
-	runs.heartbeat = func(context.Context, string, string, time.Time) (bool, error) {
+	runs.renew = func(context.Context, string, string) (bool, error) {
 		return false, errors.New("redis unavailable")
 	}
 	gateway := &gatewayStub{stream: func(ctx context.Context, _, _, _ string, callback func(*models.AgentEvent) error) error {
@@ -853,27 +908,25 @@ func TestRunWorkerContinuesDuringTemporaryRedisLeaseFailure(t *testing.T) {
 	}}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Millisecond
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = time.Millisecond
 
 	worker.execute(context.Background(), run)
 
-	require.Equal(t, models.RunStatusCompleted, runs.finishedStatus)
-	require.Greater(t, runs.heartbeatCalls.Load(), int64(1))
+	require.False(t, runs.finished.Load())
+	require.GreaterOrEqual(t, runs.renewCalls.Load(), int64(1))
 }
 
 func TestRunWorkerRechecksLeaseAfterPersistingRuntime(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", WorkerID: "worker-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run}
-	runs.heartbeat = func(context.Context, string, string, time.Time) (bool, error) {
+	runs.renew = func(context.Context, string, string) (bool, error) {
 		return runs.upserts.Load() == 0, nil
 	}
 	gateway := &gatewayStub{}
 	worker := NewRunWorker(runs, gateway)
 	worker.workerID = "worker-1"
-	worker.heartbeat = time.Hour
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = time.Hour
 
 	worker.execute(context.Background(), run)
 
@@ -925,68 +978,145 @@ func (q *taskQueueStub) Receive(ctx context.Context) (TaskDelivery, error) {
 
 func TestRunWorkerRetriesClaimAndAckWithoutLosingExecution(t *testing.T) {
 	now := time.Now().UTC()
-	run := &models.Run{ID: "run-queue", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusQueued, CreatedAt: now}
+	run := &models.Run{ID: "run-queue", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
 	runs := &runRepoStub{run: run, runtime: &models.ProjectRuntime{ProjectID: run.ProjectID, OwnerID: run.OwnerID, GatewaySessionID: "session-1", AgentConversationID: run.ProjectID, Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour)}}
-	var claimCalls atomic.Int64
-	runs.claim = func(_ context.Context, runID, workerID string, _ time.Time) (*models.Run, error) {
-		if claimCalls.Add(1) == 1 {
-			return nil, errors.New("redis unavailable")
-		}
-		require.Equal(t, run.ID, runID)
-		run.Status, run.WorkerID = models.RunStatusRunning, workerID
-		return run, nil
-	}
+	run.Status = models.RunStatusRunning
 	delivery := &taskDeliveryStub{id: run.ID, failAck: 1}
 	queue := &taskQueueStub{delivery: delivery}
 	gateway := &gatewayStub{events: []*models.AgentEvent{{Type: "run.completed", RunID: "agent-run", Sequence: 1, Timestamp: now, Payload: json.RawMessage(`{}`)}}}
 	worker := NewRunWorker(runs, gateway, queue)
 	worker.workerID = "worker-1"
-	worker.orphanAge = time.Hour
-	worker.heartbeat = time.Hour
-	worker.cancelPoll = time.Hour
+	worker.renewEvery = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { worker.Run(ctx); close(done) }()
 	require.Eventually(t, runs.finished.Load, 3*time.Second, 10*time.Millisecond)
 	cancel()
 	<-done
-	require.Equal(t, int64(2), claimCalls.Load())
-	require.Equal(t, int64(2), delivery.ackCalls.Load())
+	require.GreaterOrEqual(t, delivery.ackCalls.Load(), int64(1))
 	require.Equal(t, 1, gateway.streamCalls)
 }
 
 func TestRunWorkerDoesNotSkipBlockedDeliveryBeforeTheNextTask(t *testing.T) {
 	now := time.Now().UTC()
 	runsByID := map[string]*models.Run{
-		"run-first":  {ID: "run-first", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "first", Status: models.RunStatusQueued, CreatedAt: now},
-		"run-second": {ID: "run-second", OwnerID: "user-1", ProjectID: "project-2", InputMessage: "second", Status: models.RunStatusQueued, CreatedAt: now},
+		"run-first":  {ID: "run-first", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "first", Status: models.RunStatusRunning, CreatedAt: now},
+		"run-second": {ID: "run-second", OwnerID: "user-1", ProjectID: "project-2", InputMessage: "second", Status: models.RunStatusRunning, CreatedAt: now},
 	}
-	runs := &runRepoStub{runtime: &models.ProjectRuntime{OwnerID: "user-1", GatewaySessionID: "session-1", Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour)}}
+	runs := &runRepoStub{runs: runsByID, runtime: &models.ProjectRuntime{OwnerID: "user-1", GatewaySessionID: "session-1", Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour)}}
 	var firstClaims atomic.Int64
-	runs.claim = func(_ context.Context, runID, workerID string, _ time.Time) (*models.Run, error) {
-		if runID == "run-first" && firstClaims.Add(1) <= 2 {
-			return nil, errors.New("redis unavailable")
+	runs.acquire = func(runID string) (bool, error) {
+		if runID == "run-first" && firstClaims.Add(1) == 1 {
+			return false, errors.New("redis unavailable")
 		}
-		run := runsByID[runID]
-		run.Status, run.WorkerID = models.RunStatusRunning, workerID
-		runs.run = run
-		runs.runtime.ProjectID = run.ProjectID
-		return run, nil
+		return true, nil
+	}
+	for _, run := range runsByID {
+		run.Status = models.RunStatusRunning
 	}
 	firstDelivery, secondDelivery := &taskDeliveryStub{id: "run-first"}, &taskDeliveryStub{id: "run-second"}
 	queue := &sequenceTaskQueueStub{deliveries: []TaskDelivery{firstDelivery, secondDelivery}}
 	gateway := &gatewayStub{events: []*models.AgentEvent{{Type: "run.completed", RunID: "agent-run", Sequence: 1, Timestamp: now, Payload: json.RawMessage(`{}`)}}}
 	worker := NewRunWorker(runs, gateway, queue)
 	worker.workerID, worker.parallel = "worker-1", 1
-	worker.orphanAge, worker.heartbeat, worker.cancelPoll = time.Hour, time.Hour, time.Hour
+	worker.renewEvery = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { worker.Run(ctx); close(done) }()
 	require.Eventually(t, func() bool { return runs.finishedCount.Load() == 2 }, 4*time.Second, 10*time.Millisecond)
 	cancel()
 	<-done
-	require.Equal(t, int64(3), firstClaims.Load())
+	require.Equal(t, int64(1), firstClaims.Load())
 	require.Equal(t, int64(1), firstDelivery.ackCalls.Load())
 	require.Equal(t, int64(1), secondDelivery.ackCalls.Load())
-	require.Equal(t, 2, gateway.streamCalls)
+	require.Equal(t, 1, gateway.streamCalls)
+}
+
+func TestRunWorkerKeepsKafkaDeliveryWhenFailureEventCannotBePublished(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{ID: "run-1", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build", Status: models.RunStatusRunning, CreatedAt: now}
+	runs := &runRepoStub{run: run, acquire: func(string) (bool, error) { return false, errors.New("redis unavailable") }}
+	delivery := &taskDeliveryStub{id: run.ID}
+	queue := &taskQueueStub{delivery: delivery}
+	events := &runEventPublisherStub{err: errors.New("kafka unavailable")}
+	worker := NewRunWorkerWithEvents(runs, &gatewayStub{}, queue, events)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		worker.Run(ctx)
+		close(done)
+	}()
+	require.Eventually(t, func() bool { return events.calls.Load() == 1 }, time.Second, 10*time.Millisecond)
+	cancel()
+	<-done
+	require.Zero(t, delivery.ackCalls.Load())
+}
+
+func TestRunWorkerTakesOverExpiredEventPumpFromProjectedSequence(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{
+		ID: "run-recover", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build",
+		Status: models.RunStatusRunning, LastSequence: 2, CreatedAt: now, UpdatedAt: now,
+	}
+	runs := &runRepoStub{
+		run: run,
+		runtime: &models.ProjectRuntime{
+			ProjectID: run.ProjectID, OwnerID: run.OwnerID, GatewaySessionID: "session-1", AgentConversationID: run.ProjectID,
+			Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(time.Hour), UpdatedAt: now,
+		},
+		expired: []models.WorkerOwnership{{ID: run.ID, OwnerID: "dead-worker"}},
+	}
+	var takeoverOwner string
+	runs.takeover = func(runID, previousOwner, owner string) (bool, error) {
+		require.Equal(t, run.ID, runID)
+		require.Equal(t, "dead-worker", previousOwner)
+		takeoverOwner = owner
+		return true, nil
+	}
+	delta, err := json.Marshal(map[string]string{"content": "resumed"})
+	require.NoError(t, err)
+	gateway := &gatewayStub{events: []*models.AgentEvent{
+		{Type: "message.delta", RunID: run.ID, ConversationID: run.ProjectID, Sequence: 3, Timestamp: now, Payload: delta},
+		{Type: "run.completed", RunID: run.ID, ConversationID: run.ProjectID, Sequence: 4, Timestamp: now, Payload: json.RawMessage(`{}`)},
+	}}
+	worker := NewRunWorkerWithEvents(runs, gateway, nil, runs)
+	worker.workerID = "worker-new"
+	worker.renewEvery = time.Hour
+
+	worker.recoverExpired(context.Background())
+	require.Eventually(t, runs.finished.Load, time.Second, 10*time.Millisecond)
+	worker.wg.Wait()
+
+	require.Equal(t, "worker-new:recovery", takeoverOwner)
+	require.Equal(t, int64(2), gateway.streamAfter.Load())
+	require.Equal(t, "resumed", runs.assistant)
+	require.Equal(t, models.RunStatusCompleted, runs.finishedStatus)
+	require.Equal(t, int64(1), runs.releases.Load())
+}
+
+func TestRunWorkerRecoversBeforeRuntimeWasPersisted(t *testing.T) {
+	now := time.Now().UTC()
+	run := &models.Run{
+		ID: "run-early-crash", OwnerID: "user-1", ProjectID: "project-1", InputMessage: "build",
+		Status: models.RunStatusRunning, CreatedAt: now, UpdatedAt: now,
+	}
+	runs := &runRepoStub{
+		run:     run,
+		expired: []models.WorkerOwnership{{ID: run.ID, OwnerID: "dead-worker"}},
+	}
+	gateway := &gatewayStub{events: []*models.AgentEvent{
+		{Type: "run.started", RunID: run.ID, ConversationID: run.ProjectID, Sequence: 1, Timestamp: now, Payload: json.RawMessage(`{}`)},
+		{Type: "run.completed", RunID: run.ID, ConversationID: run.ProjectID, Sequence: 2, Timestamp: now, Payload: json.RawMessage(`{}`)},
+	}}
+	worker := NewRunWorkerWithEvents(runs, gateway, nil, runs)
+	worker.workerID = "worker-new"
+	worker.renewEvery = time.Hour
+
+	worker.recoverExpired(context.Background())
+	require.Eventually(t, runs.finished.Load, time.Second, 10*time.Millisecond)
+	worker.wg.Wait()
+
+	require.Equal(t, int64(1), runs.upserts.Load())
+	require.Equal(t, "session-1", runs.runtime.GatewaySessionID)
+	require.Equal(t, models.RunStatusCompleted, runs.finishedStatus)
 }

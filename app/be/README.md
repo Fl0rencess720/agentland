@@ -1,6 +1,6 @@
 # Agentland 应用后端
 
-应用后端保存项目、消息和 Run，使用 Redis Stream 保存运行事件，并经 Sandbox Gateway 访问 `agentd` 、工作区和预览服务。
+应用后端保存项目、消息和 Run，使用 Kafka 传递任务与 Agent 增量事件，并经 Sandbox Gateway 访问 `agentd`、工作区和预览服务。
 
 ## 本地运行
 
@@ -21,11 +21,17 @@ go run ./app/be/cmd
 
 服务默认不信任代理转发的客户端 IP。部署在反向代理后时，用 `SERVER_HTTP_TRUSTED_PROXIES` 配置明确的代理 IP 或 CIDR；例如 `10.0.0.0/8,192.0.2.10`。限流器会按 `RATE_LIMIT_VISITOR_TTL` 清理长期无请求的 IP 记录。预览资源使用独立限流器，默认每个 IP 每秒 100 次请求、突发 500 次，可用 `RATE_LIMIT_PREVIEW_REQUESTS_PER_SECOND` 和 `RATE_LIMIT_PREVIEW_BURST` 调整。
 
-Run 消息最多 256 KiB，工作区文件内容最多 1 MiB，其余 JSON 请求使用较小的请求体上限，超限返回 `413 REQUEST_TOO_LARGE`。活跃 Run 的 Redis Stream 保留完整事件；Run 进入终态后，事件流保留 24 小时。
+Run 消息最多 256 KiB，工作区文件内容最多 1 MiB，其余 JSON 请求使用较小的请求体上限，超限返回 `413 REQUEST_TOO_LARGE`。Agent 增量事件直接写入 Kafka，再由 Event Projector 幂等写入 PostgreSQL；SSE 从 PostgreSQL 续传，Run 进入终态后保留事件 24 小时。
+
+容器镜像发布使用 PostgreSQL 持久化任务，由独立 Publication Worker 经 Gateway 调用远程 BuildKit。Worker 支持多副本领取、心跳检查、取消和异常任务终止，不会自动重放已经开始的构建。应用后端需配置 `AGENTLAND_GATEWAY_PUBLISHER_TOKEN`，其值与 Gateway 的 `AL_PUBLISHER_SERVICE_TOKEN` 相同。Gateway、Registry 凭据和 BuildKit 双向 TLS 配置见 [`docs/application-publishing.md`](../../docs/application-publishing.md)。
 
 `RUNTIME_IDLE_TIMEOUT` 控制空闲期限，默认 15 分钟；`RUNTIME_MAX_SESSION_DURATION` 控制 Sandbox Session 的绝对期限，默认 1 小时。文件、预览和活跃 Run 只更新最后活动时间，不延长绝对期限。
 
 OpenTelemetry 默认关闭；设置 `OTEL_ENABLED=true` 和 `OTEL_ENDPOINT=127.0.0.1:4317` 后会导出 HTTP、Run Worker 与 Gateway 请求链路。创建 Run 时的 W3C Trace Context 会写入 PostgreSQL，后台 Worker 领取任务后继续同一条 Trace。
+
+Run Worker 会在执行前保存工作区快照，并把 `agentd` 的内部轨迹事件写入 PostgreSQL。`GET /api/v1/runs/{run_id}/trajectory` 返回完整轨迹；`POST /api/v1/runs/{run_id}/replays` 使用 `{"mode":"decision"}` 执行无工具副作用的决策回放，使用 `{"mode":"live"}` 在新 Sandbox 中恢复快照并真实执行工具。详细协议见 [`docs/agent-replay.md`](../../docs/agent-replay.md)。
+
+设置 `LANGFUSE_ENABLED=true`、`LANGFUSE_BASE_URL`、`LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY` 后，回放结果会作为 `agent-trajectory-match` 与 `agent-task-completed` Score 写入 Langfuse。启用该配置时应用后端使用 100% Trace 采样；OpenTelemetry Collector 仍需把 OTLP Trace 转发到同一个 Langfuse 项目。
 
 ## 验证
 

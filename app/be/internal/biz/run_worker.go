@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/app/be/internal/models"
@@ -22,478 +21,339 @@ import (
 	"go.uber.org/zap"
 )
 
-const assistantDeltaFlushInterval = 250 * time.Millisecond
-
 type RunWorker struct {
 	repo       RunWorkerRepo
 	gateway    AgentlandGateway
 	queue      TaskQueue
+	events     RunEventPublisher
 	workerID   string
 	now        func() time.Time
-	heartbeat  time.Duration
-	cancelPoll time.Duration
-	orphanAge  time.Duration
+	renewEvery time.Duration
 	runtimeMax time.Duration
 	parallel   int
+	slots      chan struct{}
+	wg         sync.WaitGroup
 }
 
 func NewRunWorker(repo RunWorkerRepo, gateway AgentlandGateway, queues ...TaskQueue) *RunWorker {
 	worker := &RunWorker{
 		repo: repo, gateway: gateway, workerID: token.NewID("worker"), now: time.Now,
-		heartbeat:  configDuration("worker.heartbeat_interval", 5*time.Second),
-		cancelPoll: configDuration("worker.cancel_poll_interval", 250*time.Millisecond),
-		orphanAge:  configDuration("worker.orphan_timeout", 30*time.Second),
+		renewEvery: configDuration("worker.heartbeat_interval", 2*time.Second),
 		runtimeMax: configDuration("runtime.max_session_duration", time.Hour),
 		parallel:   configInt("worker.parallelism", 4),
 	}
 	if len(queues) != 0 {
 		worker.queue = queues[0]
 	}
+	if publisher, ok := any(repo).(RunEventPublisher); ok {
+		worker.events = publisher
+	}
+	worker.slots = make(chan struct{}, worker.parallel)
+	return worker
+}
+
+func (w *RunWorker) execute(ctx context.Context, run *models.Run) {
+	if requested, _ := w.repo.IsCancelRequested(ctx, run.ID); requested {
+		_ = w.publishCancellation(ctx, run)
+		return
+	}
+	runtime, err := w.startAgentRun(ctx, run, w.workerID)
+	if err != nil {
+		if errors.Is(err, ErrRunLeaseLost) {
+			return
+		}
+		if errors.Is(err, ErrRunCancelled) {
+			_ = w.publishCancellation(ctx, run)
+			return
+		}
+		_ = w.publishFailure(ctx, run, runStartErrorCode(err), err)
+		return
+	}
+	if requested, _ := w.repo.IsCancelRequested(ctx, run.ID); requested {
+		_ = w.gateway.CancelRun(ctx, runtime.GatewaySessionID, run.ID)
+	}
+	w.pump(ctx, run, runtime, w.workerID)
+}
+
+func NewRunWorkerWithEvents(repo RunWorkerRepo, gateway AgentlandGateway, queue TaskQueue, events RunEventPublisher) *RunWorker {
+	worker := NewRunWorker(repo, gateway, queue)
+	worker.events = events
 	return worker
 }
 
 func (w *RunWorker) Run(ctx context.Context) {
-	if w.queue == nil {
-		zap.L().Error("run task queue is not configured")
+	if w.queue == nil || w.events == nil {
+		zap.L().Error("run worker dependencies are not configured")
 		return
 	}
-	w.recoverOrphans(ctx)
+	w.wg.Add(1)
 	go func() {
-		sweep := time.NewTicker(w.orphanAge)
-		defer sweep.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-sweep.C:
-				w.recoverOrphans(ctx)
-			}
-		}
+		defer w.wg.Done()
+		w.watchExpired(ctx)
 	}()
-	semaphore := make(chan struct{}, w.parallel)
-	var workers sync.WaitGroup
-	defer workers.Wait()
+	defer w.wg.Wait()
 	for {
 		select {
-		case semaphore <- struct{}{}:
+		case w.slots <- struct{}{}:
 		case <-ctx.Done():
 			return
 		}
 		delivery, err := w.queue.Receive(ctx)
 		if err != nil {
-			<-semaphore
+			<-w.slots
 			if ctx.Err() == nil {
-				zap.L().Warn("receive queued app run failed", zap.Error(err))
+				zap.L().Warn("receive app run failed", zap.Error(err))
 				waitWorkerRetry(ctx, time.Second)
 			}
 			continue
 		}
-		var run *models.Run
-		for ctx.Err() == nil {
-			run, err = w.repo.ClaimRun(ctx, delivery.ID(), w.workerID, w.now().UTC())
-			if err != nil {
-				zap.L().Warn("claim queued app run failed", zap.String("run_id", delivery.ID()), zap.Error(err))
-				waitWorkerRetry(ctx, 250*time.Millisecond)
-				continue
-			}
-			break
-		}
-		for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
-			if err = delivery.Ack(ctx); err == nil {
-				break
-			}
-			zap.L().Warn("commit app run delivery failed", zap.String("run_id", delivery.ID()), zap.Error(err))
+		run, err := w.repo.GetRunForExecution(ctx, delivery.ID())
+		if err != nil {
+			<-w.slots
+			zap.L().Warn("load app run failed", zap.String("run_id", delivery.ID()), zap.Error(err))
 			waitWorkerRetry(ctx, 250*time.Millisecond)
-		}
-		if ctx.Err() != nil {
-			<-semaphore
-			return
-		}
-		if run == nil {
-			<-semaphore
 			continue
 		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			defer func() { <-semaphore }()
-			w.execute(ctx, run)
-		}()
+		if run == nil || isTerminalStatus(run.Status) {
+			_ = delivery.Ack(ctx)
+			<-w.slots
+			continue
+		}
+		owned, err := w.repo.AcquireRunOwnership(ctx, run.ID, w.workerID)
+		if err != nil {
+			if publishErr := w.publishFailure(ctx, run, "WORKER_OWNERSHIP_FAILED", err); publishErr == nil {
+				_ = delivery.Ack(ctx)
+			}
+			<-w.slots
+			continue
+		}
+		if !owned {
+			_ = delivery.Ack(ctx)
+			<-w.slots
+			continue
+		}
+		requested, requestErr := w.repo.IsCancelRequested(ctx, run.ID)
+		if requestErr != nil {
+			_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, w.workerID)
+			<-w.slots
+			waitWorkerRetry(ctx, 250*time.Millisecond)
+			continue
+		}
+		if requested {
+			if publishErr := w.publishCancellation(ctx, run); publishErr == nil {
+				_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, w.workerID)
+				_ = delivery.Ack(ctx)
+			}
+			<-w.slots
+			continue
+		}
+		runtime, err := w.startAgentRun(ctx, run, w.workerID)
+		if err != nil {
+			if errors.Is(err, ErrRunLeaseLost) {
+				_ = delivery.Ack(ctx)
+				<-w.slots
+				continue
+			}
+			var publishErr error
+			if errors.Is(err, ErrRunCancelled) {
+				publishErr = w.publishCancellation(ctx, run)
+			} else {
+				publishErr = w.publishFailure(ctx, run, runStartErrorCode(err), err)
+			}
+			if publishErr == nil {
+				_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, w.workerID)
+				_ = delivery.Ack(ctx)
+			}
+			<-w.slots
+			continue
+		}
+		if requested, requestErr := w.repo.IsCancelRequested(ctx, run.ID); requestErr == nil && requested {
+			if cancelErr := w.gateway.CancelRun(ctx, runtime.GatewaySessionID, run.ID); cancelErr != nil {
+				zap.L().Warn("cancel newly started agent run failed", zap.String("run_id", run.ID), zap.Error(cancelErr))
+			}
+		}
+		if err = delivery.Ack(ctx); err != nil {
+			zap.L().Warn("commit app run delivery failed", zap.String("run_id", run.ID), zap.Error(err))
+		}
+		w.startPump(ctx, run, runtime, w.workerID)
 	}
 }
 
-func (w *RunWorker) execute(parent context.Context, run *models.Run) {
-	if run.TraceParent != "" {
-		carrier := propagation.MapCarrier{"traceparent": run.TraceParent}
-		if run.TraceState != "" {
-			carrier.Set("tracestate", run.TraceState)
-		}
-		parent = propagation.TraceContext{}.Extract(parent, carrier)
+func (w *RunWorker) startAgentRun(ctx context.Context, run *models.Run, owner string) (*models.ProjectRuntime, error) {
+	async, ok := w.gateway.(AsyncAgentlandGateway)
+	if !ok {
+		return nil, errors.New("gateway does not support asynchronous agent runs")
 	}
-	ctx, span := otel.Tracer("agentland/app-be/worker").Start(parent, "run.execute", trace.WithAttributes(
-		attribute.String("app.run.id", run.ID),
-		attribute.String("app.project.id", run.ProjectID),
-		attribute.String("app.worker.id", w.workerID),
-		attribute.Int64("app.run.queue_ms", max(0, w.now().UTC().Sub(run.CreatedAt).Milliseconds())),
-	))
-	defer span.End()
-	parent = ctx
-	if w.finishCancellation(parent, run) {
-		return
-	}
-
-	runtime, err := w.repo.GetRuntime(parent, run.OwnerID, run.ProjectID)
+	runtime, err := w.repo.GetRuntime(ctx, run.OwnerID, run.ProjectID)
 	if err != nil {
-		w.fail(parent, run, "RUNTIME_LOOKUP_FAILED", err)
-		return
+		return nil, err
 	}
 	now := w.now().UTC()
 	if runtime != nil && runtimeIsExpired(runtime, now) {
-		_ = w.repo.ExpireRuntime(parent, run.OwnerID, run.ProjectID, now)
-		w.fail(parent, run, "PROJECT_RUNTIME_EXPIRED", ErrRuntimeExpired)
-		return
+		_ = w.repo.ExpireRuntime(ctx, run.OwnerID, run.ProjectID, now)
+		return nil, ErrRuntimeExpired
 	}
 	seedSession := ""
 	if runtime != nil {
 		seedSession = runtime.GatewaySessionID
 	}
-	readyCtx, readyCancel := context.WithTimeout(parent, 2*time.Minute)
-	readyDone := make(chan struct{})
-	readyStopped := make(chan struct{})
-	preparationLeaseLost := atomic.Bool{}
+	readyCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	lost := make(chan struct{})
+	stopRenew := make(chan struct{})
+	defer close(stopRenew)
+	go w.renewOwnership(readyCtx, run.ID, owner, stopRenew, lost)
 	go func() {
-		defer close(readyStopped)
-		w.keepRuntimePreparationAlive(readyCtx, readyCancel, run, &preparationLeaseLost, readyDone)
+		select {
+		case <-lost:
+			cancel()
+		case <-readyCtx.Done():
+		case <-stopRenew:
+		}
 	}()
 	sessionID, err := w.gateway.EnsureRuntime(readyCtx, seedSession)
-	close(readyDone)
-	readyCancel()
-	<-readyStopped
-	if w.finishCancellation(parent, run) {
-		return
-	}
-	if preparationLeaseLost.Load() {
-		return
+	if ownershipWasLost(lost) {
+		return nil, ErrRunLeaseLost
 	}
 	if err != nil {
-		var gatewayErr *models.GatewayResponseError
-		if errors.As(err, &gatewayErr) && gatewayErr.Code == "PROJECT_RUNTIME_EXPIRED" {
-			_ = w.repo.ExpireRuntime(parent, run.OwnerID, run.ProjectID, w.now().UTC())
-			w.fail(parent, run, "PROJECT_RUNTIME_EXPIRED", err)
-			return
-		}
-		w.fail(parent, run, "PROJECT_RUNTIME_UNAVAILABLE", err)
-		return
-	}
-	if !w.confirmLease(parent, run) {
-		return
+		return nil, err
 	}
 	if runtime == nil {
 		runtime = &models.ProjectRuntime{ProjectID: run.ProjectID, OwnerID: run.OwnerID, GatewaySessionID: sessionID, AgentConversationID: run.ProjectID, Status: models.RuntimeStatusActive, CreatedAt: now, LastActiveAt: now, ExpiresAt: now.Add(w.runtimeMax), UpdatedAt: now}
 	} else {
 		runtime.GatewaySessionID, runtime.Status, runtime.LastActiveAt, runtime.UpdatedAt = sessionID, models.RuntimeStatusActive, now, now
 	}
-	if err = w.repo.UpsertRuntime(parent, runtime); err != nil {
-		w.fail(parent, run, "RUNTIME_PERSIST_FAILED", err)
-		return
-	}
-	if !w.captureWorkspaceSnapshot(parent, run, runtime.GatewaySessionID) {
-		return
-	}
-	if w.finishCancellation(parent, run) {
-		return
-	}
-	if !w.confirmLease(parent, run) {
-		return
-	}
-	runCtx, cancel := context.WithCancel(parent)
-	defer cancel()
-	var agentRunID atomic.Value
-	agentRunID.Store("")
-	terminal := atomic.Bool{}
-	runtimeLost := atomic.Bool{}
-	heartbeatDone := make(chan struct{})
-	go w.keepAlive(runCtx, cancel, run, runtime, &agentRunID, &runtimeLost, heartbeatDone)
-	var pendingDelta strings.Builder
-	pendingEvents := make([]*models.AgentEvent, 0, 32)
-	var pendingSequence int64
-	var trajectorySequence int64
-	var trajectoryHash string
-	var pendingMu sync.Mutex
-	flushDelta := func(ctx context.Context) error {
-		pendingMu.Lock()
-		defer pendingMu.Unlock()
-		if pendingDelta.Len() == 0 && len(pendingEvents) == 0 {
-			return nil
+	if err = w.repo.UpsertRuntime(readyCtx, runtime); err != nil {
+		if ownershipWasLost(lost) {
+			return nil, ErrRunLeaseLost
 		}
-		if pendingDelta.Len() != 0 {
-			delta := pendingDelta.String()
-			acquired, err := w.repo.AppendAssistantDelta(ctx, run.ID, w.workerID, delta, pendingSequence, w.now().UTC(), pendingEvents)
-			if err != nil {
-				return err
-			}
-			if !acquired {
-				return ErrRunLeaseLost
-			}
-			pendingDelta.Reset()
-		}
-		pendingEvents = pendingEvents[:0]
-		return nil
+		return nil, err
 	}
-	flushLoopCtx, stopFlushLoop := context.WithCancel(runCtx)
-	flushLoopDone := make(chan struct{})
-	periodicFlushErr := make(chan error, 1)
+	owned, err := w.repo.RenewRunOwnership(readyCtx, run.ID, owner)
+	if err != nil || !owned {
+		return nil, ErrRunLeaseLost
+	}
+	if err = w.captureWorkspaceSnapshot(readyCtx, run, sessionID); err != nil {
+		if ownershipWasLost(lost) {
+			return nil, ErrRunLeaseLost
+		}
+		return nil, err
+	}
+	if ownershipWasLost(lost) {
+		return nil, ErrRunLeaseLost
+	}
+	if requested, requestErr := w.repo.IsCancelRequested(readyCtx, run.ID); requestErr != nil {
+		if ownershipWasLost(lost) {
+			return nil, ErrRunLeaseLost
+		}
+		return nil, requestErr
+	} else if requested {
+		return nil, ErrRunCancelled
+	}
+	state, err := async.StartAgentRun(readyCtx, sessionID, run.ID, runtime.AgentConversationID, run.InputMessage)
+	if err != nil {
+		if ownershipWasLost(lost) {
+			return nil, ErrRunLeaseLost
+		}
+		return nil, err
+	}
+	if state == nil || state.RunID != run.ID {
+		return nil, errors.New("agentd returned an invalid run")
+	}
+	if ownershipWasLost(lost) {
+		return nil, ErrRunLeaseLost
+	}
+	return runtime, nil
+}
+
+func ownershipWasLost(lost <-chan struct{}) bool {
+	select {
+	case <-lost:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *RunWorker) startPump(parent context.Context, run *models.Run, runtime *models.ProjectRuntime, owner string) {
+	w.wg.Add(1)
 	go func() {
-		defer close(flushLoopDone)
-		ticker := time.NewTicker(assistantDeltaFlushInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-flushLoopCtx.Done():
-				return
-			case <-ticker.C:
-				if err := flushDelta(flushLoopCtx); err != nil {
-					periodicFlushErr <- err
-					cancel()
-					return
-				}
-			}
+		defer w.wg.Done()
+		defer func() { <-w.slots }()
+		w.pump(parent, run, runtime, owner)
+	}()
+}
+
+func (w *RunWorker) pump(parent context.Context, run *models.Run, runtime *models.ProjectRuntime, owner string) {
+	async, ok := w.gateway.(AsyncAgentlandGateway)
+	if !ok {
+		return
+	}
+	if run.TraceParent != "" {
+		carrier := propagation.MapCarrier{"traceparent": run.TraceParent, "tracestate": run.TraceState}
+		parent = propagation.TraceContext{}.Extract(parent, carrier)
+	}
+	ctx, span := otel.Tracer("agentland/app-be/worker").Start(parent, "run.forward_events", trace.WithAttributes(
+		attribute.String("app.run.id", run.ID), attribute.String("app.project.id", run.ProjectID), attribute.String("app.worker.id", owner),
+	))
+	defer span.End()
+	pumpCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	lost := make(chan struct{})
+	stopRenew := make(chan struct{})
+	defer close(stopRenew)
+	go w.renewOwnership(pumpCtx, run.ID, owner, stopRenew, lost)
+	go func() {
+		select {
+		case <-lost:
+			cancel()
+		case <-pumpCtx.Done():
+		case <-stopRenew:
 		}
 	}()
-	err = w.gateway.StreamChat(runCtx, runtime.GatewaySessionID, runtime.AgentConversationID, run.InputMessage, func(event *models.AgentEvent) error {
-		upstreamRunID := strings.TrimSpace(event.RunID)
-		if event.Type == "run.started" && upstreamRunID != "" {
-			agentRunID.Store(upstreamRunID)
-		}
-		event.RunID = run.ID
-		if event.Sequence > run.LastSequence {
-			run.LastSequence = event.Sequence
-		}
-		if event.Timestamp.IsZero() {
-			event.Timestamp = w.now().UTC()
-		}
-		if event.Type == "message.delta" {
-			var payload struct {
-				Content string `json:"content"`
+	after := run.LastSequence
+	for pumpCtx.Err() == nil {
+		terminal := false
+		err := async.StreamAgentRun(pumpCtx, runtime.GatewaySessionID, run.ID, after, func(event *models.AgentEvent) error {
+			event.RunID = run.ID
+			if event.ConversationID == "" {
+				event.ConversationID = run.ProjectID
 			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.Content != "" {
-				pendingMu.Lock()
-				pendingDelta.WriteString(payload.Content)
-				pendingEvents = append(pendingEvents, event)
-				pendingSequence = event.Sequence
-				shouldFlush := pendingDelta.Len() >= 4096
-				pendingMu.Unlock()
-				if shouldFlush {
-					return flushDelta(runCtx)
-				}
+			if event.Timestamp.IsZero() {
+				event.Timestamp = w.now().UTC()
 			}
+			if err := w.events.PublishRunEvent(pumpCtx, event); err != nil {
+				return err
+			}
+			if event.Sequence > after {
+				after = event.Sequence
+			}
+			terminal = isTerminalEvent(event.Type)
 			return nil
-		} else {
-			if err := flushDelta(runCtx); err != nil {
-				return err
-			}
-			if !isTerminalEvent(event.Type) {
-				persistedEvent := event
-				if event.Type == "trajectory.record" {
-					persistedEvent = nil
-				}
-				acquired, err := w.repo.SetAgentRun(runCtx, run.ID, w.workerID, upstreamRunID, event.Sequence, w.now().UTC(), persistedEvent)
-				if err != nil {
-					return err
-				}
-				if !acquired {
-					return ErrRunLeaseLost
-				}
-			}
+		})
+		if terminal {
+			_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(parent), run.ID, owner)
+			span.SetStatus(codes.Ok, "run finished")
+			return
 		}
-		if event.Type == "trajectory.record" {
-			artifacts, ok := w.repo.(RunArtifactRepo)
-			if !ok {
-				return errors.New("run repository does not support trajectory records")
-			}
-			var record models.RunTrajectoryRecord
-			if err := json.Unmarshal(event.Payload, &record); err != nil {
-				return err
-			}
-			if err := verifyTrajectoryRecord(&record, upstreamRunID, runtime.AgentConversationID, trajectorySequence, trajectoryHash); err != nil {
-				return err
-			}
-			acquired, err := artifacts.AppendTrajectoryRecord(runCtx, run.ID, w.workerID, record.Hash, record.Sequence, event.Payload, w.now().UTC())
-			if err != nil {
-				return err
-			}
-			if !acquired {
-				return ErrRunLeaseLost
-			}
-			trajectorySequence, trajectoryHash = record.Sequence, record.Hash
-			return nil
-		}
-		switch event.Type {
-		case "run.completed":
-			if err := w.finish(runCtx, run.ID, models.RunStatusCompleted, "", "", event.Sequence, event); err != nil {
-				return err
-			}
-			terminal.Store(true)
-		case "run.failed":
-			if err := w.finish(runCtx, run.ID, models.RunStatusFailed, "AGENT_RUN_FAILED", eventError(event), event.Sequence, event); err != nil {
-				return err
-			}
-			terminal.Store(true)
-		case "run.cancelled":
-			if err := w.finish(runCtx, run.ID, models.RunStatusCancelled, "", "", event.Sequence, event); err != nil {
-				return err
-			}
-			terminal.Store(true)
-		}
-		return nil
-	})
-	stopFlushLoop()
-	<-flushLoopDone
-	select {
-	case periodicErr := <-periodicFlushErr:
-		if err == nil || errors.Is(err, context.Canceled) {
-			err = periodicErr
-		}
-	default:
-	}
-	flushCtx, flushCancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
-	if flushErr := flushDelta(flushCtx); err == nil && flushErr != nil {
-		err = flushErr
-	}
-	flushCancel()
-	close(heartbeatDone)
-	if terminal.Load() {
-		return
-	}
-	finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
-	defer finalCancel()
-	if runtimeLost.Load() || gatewayRuntimeExpired(err) {
-		_ = w.repo.ExpireRuntime(finalCtx, run.OwnerID, run.ProjectID, w.now().UTC())
-		w.fail(finalCtx, run, "PROJECT_RUNTIME_EXPIRED", ErrRuntimeExpired)
-		return
-	}
-	if requested, requestErr := w.repo.IsCancelRequested(finalCtx, run.ID); requestErr == nil && requested {
-		w.cancelled(finalCtx, run)
-		return
-	}
-	if err == nil {
-		err = errors.New("agent stream ended without a terminal event")
-	}
-	w.fail(finalCtx, run, "AGENT_STREAM_FAILED", err)
-}
-
-func (w *RunWorker) captureWorkspaceSnapshot(ctx context.Context, run *models.Run, sessionID string) bool {
-	artifacts, repoOK := w.repo.(RunArtifactRepo)
-	replayGateway, gatewayOK := w.gateway.(ReplayGateway)
-	if !repoOK || !gatewayOK {
-		return true
-	}
-	snapshot, captureErr := replayGateway.GetWorkspaceSnapshot(ctx, sessionID)
-	captureError := ""
-	sha := ""
-	if captureErr != nil {
-		captureError = captureErr.Error()
-		snapshot = []byte{}
-	} else {
-		digest := sha256.Sum256(snapshot)
-		sha = fmt.Sprintf("%x", digest[:])
-	}
-	acquired, err := artifacts.SaveWorkspaceSnapshot(ctx, run.ID, w.workerID, snapshot, sha, captureError, w.now().UTC())
-	if err != nil {
-		w.fail(ctx, run, "TRAJECTORY_SNAPSHOT_FAILED", err)
-		return false
-	}
-	if !acquired {
-		return false
-	}
-	return true
-}
-
-func verifyTrajectoryRecord(record *models.RunTrajectoryRecord, upstreamRunID, conversationID string, previousSequence int64, previousHash string) error {
-	if record.Version != 1 || record.RunID != upstreamRunID || record.ConversationID != conversationID {
-		return errors.New("trajectory record identity is invalid")
-	}
-	if record.Sequence != previousSequence+1 || record.PreviousHash != previousHash || record.Hash == "" {
-		return errors.New("trajectory record chain is invalid")
-	}
-	expectedHash := record.Hash
-	copy := *record
-	copy.Hash = ""
-	data, err := json.Marshal(copy)
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256(data)
-	if fmt.Sprintf("%x", digest[:]) != expectedHash {
-		return errors.New("trajectory record hash is invalid")
-	}
-	return nil
-}
-
-func (w *RunWorker) keepAlive(ctx context.Context, cancelRun context.CancelFunc, run *models.Run, runtime *models.ProjectRuntime, agentRunID *atomic.Value, runtimeLost *atomic.Bool, done <-chan struct{}) {
-	heartbeat := time.NewTicker(w.heartbeat)
-	cancelPoll := time.NewTicker(w.cancelPoll)
-	keepAlive := time.NewTicker(5 * time.Minute)
-	defer heartbeat.Stop()
-	defer cancelPoll.Stop()
-	defer keepAlive.Stop()
-	for {
 		select {
-		case <-ctx.Done():
+		case <-lost:
+			span.SetAttributes(attribute.Bool("app.run.ownership_lost", true))
 			return
-		case <-done:
-			return
-		case <-heartbeat.C:
-			now := w.now().UTC()
-			acquired, heartbeatErr := w.repo.Heartbeat(ctx, run.ID, w.workerID, now)
-			if heartbeatErr != nil {
-				zap.L().Warn("renew run worker lease failed", zap.String("run_id", run.ID), zap.Error(heartbeatErr))
-			} else if !acquired {
-				cancelRun()
-				return
-			}
-		case <-cancelPoll.C:
-			requested, err := w.repo.IsCancelRequested(ctx, run.ID)
-			if err == nil && requested {
-				cancelRun()
-				if id, _ := agentRunID.Load().(string); id != "" {
-					cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-					_ = w.gateway.CancelRun(cancelCtx, runtime.GatewaySessionID, id)
-					cancel()
-				}
-				return
-			}
-		case <-keepAlive.C:
-			keepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			_, keepErr := w.gateway.EnsureRuntime(keepCtx, runtime.GatewaySessionID)
-			if keepErr == nil {
-				_ = w.repo.TouchRuntime(keepCtx, run.ProjectID, w.now().UTC())
-			}
-			cancel()
-			if keepErr != nil {
-				if gatewayRuntimeExpired(keepErr) {
-					runtimeLost.Store(true)
-				}
-				cancelRun()
-				return
-			}
+		default:
 		}
+		if pumpCtx.Err() != nil {
+			return
+		}
+		if err != nil {
+			zap.L().Warn("agent event stream interrupted", zap.String("run_id", run.ID), zap.Error(err))
+		}
+		waitWorkerRetry(pumpCtx, 250*time.Millisecond)
 	}
 }
 
-func (w *RunWorker) finishCancellation(ctx context.Context, run *models.Run) bool {
-	requested, err := w.repo.IsCancelRequested(ctx, run.ID)
-	if err != nil || !requested {
-		return false
-	}
-	w.cancelled(ctx, run)
-	return true
-}
-
-func (w *RunWorker) keepRuntimePreparationAlive(ctx context.Context, cancel context.CancelFunc, run *models.Run, leaseLost *atomic.Bool, done <-chan struct{}) {
-	heartbeat := time.NewTicker(w.heartbeat)
-	ticker := time.NewTicker(w.cancelPoll)
-	defer heartbeat.Stop()
+func (w *RunWorker) renewOwnership(ctx context.Context, runID, owner string, done <-chan struct{}, lost chan<- struct{}) {
+	ticker := time.NewTicker(w.renewEvery)
 	defer ticker.Stop()
 	for {
 		select {
@@ -501,111 +361,186 @@ func (w *RunWorker) keepRuntimePreparationAlive(ctx context.Context, cancel cont
 			return
 		case <-done:
 			return
-		case <-heartbeat.C:
-			acquired, err := w.repo.Heartbeat(ctx, run.ID, w.workerID, w.now().UTC())
-			if err != nil {
-				zap.L().Warn("renew run worker lease during runtime preparation failed", zap.String("run_id", run.ID), zap.Error(err))
-			} else if !acquired {
-				leaseLost.Store(true)
-				cancel()
-				return
-			}
 		case <-ticker.C:
-			requested, err := w.repo.IsCancelRequested(ctx, run.ID)
-			if err == nil && requested {
-				cancel()
+			owned, err := w.repo.RenewRunOwnership(ctx, runID, owner)
+			if err != nil || !owned {
+				if err != nil {
+					zap.L().Warn("renew run ownership failed", zap.String("run_id", runID), zap.Error(err))
+				}
+				close(lost)
 				return
 			}
 		}
 	}
 }
 
-func (w *RunWorker) confirmLease(ctx context.Context, run *models.Run) bool {
-	acquired, err := w.repo.Heartbeat(ctx, run.ID, w.workerID, w.now().UTC())
-	if err != nil {
-		zap.L().Warn("confirm run worker lease failed", zap.String("run_id", run.ID), zap.Error(err))
-		return true
+func (w *RunWorker) watchExpired(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.recoverExpired(ctx)
+		}
 	}
-	return acquired
 }
 
-func (w *RunWorker) finish(ctx context.Context, runID, status, code, message string, sequence int64, event *models.AgentEvent) error {
-	acquired, err := w.repo.FinishRun(ctx, runID, w.workerID, status, code, message, sequence, w.now().UTC(), event)
+func (w *RunWorker) recoverExpired(ctx context.Context) {
+	candidates, err := w.repo.ExpiredRunOwnerships(ctx, w.now().UTC(), 100)
+	if err != nil {
+		zap.L().Warn("list expired run ownerships failed", zap.Error(err))
+		return
+	}
+	for _, candidate := range candidates {
+		select {
+		case w.slots <- struct{}{}:
+		default:
+			return
+		}
+		owner := w.workerID + ":recovery"
+		acquired, takeErr := w.repo.TakeoverRunOwnership(ctx, candidate.ID, candidate.OwnerID, owner)
+		if takeErr != nil || !acquired {
+			<-w.slots
+			continue
+		}
+		run, loadErr := w.repo.GetRunForExecution(ctx, candidate.ID)
+		if loadErr != nil {
+			<-w.slots
+			continue
+		}
+		if run == nil || isTerminalStatus(run.Status) {
+			_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), candidate.ID, owner)
+			<-w.slots
+			continue
+		}
+		runtime, runtimeErr := w.repo.GetRuntime(ctx, run.OwnerID, run.ProjectID)
+		if runtimeErr != nil {
+			<-w.slots
+			continue
+		}
+		if runtime == nil {
+			runtime, runtimeErr = w.startAgentRun(ctx, run, owner)
+			if runtimeErr != nil {
+				if errors.Is(runtimeErr, ErrRunLeaseLost) {
+					<-w.slots
+					continue
+				}
+				var publishErr error
+				if errors.Is(runtimeErr, ErrRunCancelled) {
+					publishErr = w.publishCancellation(ctx, run)
+				} else {
+					publishErr = w.publishFailure(ctx, run, "AGENT_RUN_RECOVERY_FAILED", runtimeErr)
+				}
+				if publishErr == nil {
+					_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, owner)
+				}
+				<-w.slots
+				continue
+			}
+			w.startPump(ctx, run, runtime, owner)
+			continue
+		}
+		if runtimeIsExpired(runtime, w.now().UTC()) {
+			if publishErr := w.publishFailure(ctx, run, "PROJECT_RUNTIME_EXPIRED", ErrRuntimeExpired); publishErr == nil {
+				_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, owner)
+			}
+			<-w.slots
+			continue
+		}
+		if async, ok := w.gateway.(AsyncAgentlandGateway); ok {
+			if _, statusErr := async.GetAgentRun(ctx, runtime.GatewaySessionID, run.ID); statusErr != nil {
+				var gatewayErr *models.GatewayResponseError
+				if errors.As(statusErr, &gatewayErr) && gatewayErr.StatusCode == 404 {
+					if _, startErr := async.StartAgentRun(ctx, runtime.GatewaySessionID, run.ID, runtime.AgentConversationID, run.InputMessage); startErr != nil {
+						if publishErr := w.publishFailure(ctx, run, "AGENT_RUN_RECOVERY_FAILED", startErr); publishErr == nil {
+							_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, owner)
+						}
+						<-w.slots
+						continue
+					}
+				}
+			}
+		} else {
+			if publishErr := w.publishFailure(ctx, run, "AGENT_RUN_RECOVERY_FAILED", errors.New("gateway does not support asynchronous agent runs")); publishErr == nil {
+				_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, owner)
+			}
+			<-w.slots
+			continue
+		}
+		w.startPump(ctx, run, runtime, owner)
+	}
+}
+
+func (w *RunWorker) captureWorkspaceSnapshot(ctx context.Context, run *models.Run, sessionID string) error {
+	artifacts, repoOK := w.repo.(RunArtifactRepo)
+	replayGateway, gatewayOK := w.gateway.(ReplayGateway)
+	if !repoOK || !gatewayOK {
+		return nil
+	}
+	snapshot, captureErr := replayGateway.GetWorkspaceSnapshot(ctx, sessionID)
+	captureError, sha := "", ""
+	if captureErr != nil {
+		captureError, snapshot = captureErr.Error(), []byte{}
+	} else {
+		digest := sha256.Sum256(snapshot)
+		sha = fmt.Sprintf("%x", digest[:])
+	}
+	acquired, err := artifacts.SaveWorkspaceSnapshot(ctx, run.ID, snapshot, sha, captureError, w.now().UTC())
 	if err != nil {
 		return err
 	}
 	if !acquired {
 		return ErrRunLeaseLost
 	}
-	span := trace.SpanFromContext(ctx)
-	span.SetAttributes(attribute.String("app.run.status", status))
-	if status == models.RunStatusCompleted {
-		span.SetStatus(codes.Ok, "")
-	} else if status == models.RunStatusFailed {
-		span.SetStatus(codes.Error, code)
-		if message != "" {
-			span.RecordError(errors.New(message))
-		}
+	return nil
+}
+
+func (w *RunWorker) publishFailure(ctx context.Context, run *models.Run, code string, cause error) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	payload, _ := json.Marshal(map[string]string{"code": code, "error": message})
+	event := &models.AgentEvent{
+		Type: "run.failed", RunID: run.ID, ConversationID: run.ProjectID, Sequence: run.LastSequence + 1,
+		Timestamp: w.now().UTC(), Payload: payload,
+	}
+	if w.events == nil {
+		return errors.New("run event publisher is not configured")
+	}
+	if err := w.events.PublishRunEvent(ctx, event); err != nil {
+		zap.L().Error("publish run failure failed", zap.String("run_id", run.ID), zap.Error(err))
+		return err
 	}
 	return nil
 }
 
-func (w *RunWorker) fail(ctx context.Context, run *models.Run, code string, cause error) {
-	message := ""
-	if cause != nil {
-		message = cause.Error()
-		span := trace.SpanFromContext(ctx)
-		span.RecordError(cause)
-		span.SetStatus(codes.Error, code)
+func (w *RunWorker) publishCancellation(ctx context.Context, run *models.Run) error {
+	event := &models.AgentEvent{
+		Type: "run.cancelled", RunID: run.ID, ConversationID: run.ProjectID,
+		Sequence: run.LastSequence + 1, Timestamp: w.now().UTC(), Payload: json.RawMessage(`{}`),
 	}
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String("app.run.status", models.RunStatusFailed), attribute.String("app.run.error_code", code))
-	now := w.now().UTC()
-	sequence := run.LastSequence + 1
-	payload, _ := json.Marshal(map[string]string{"code": code, "error": message})
-	event := &models.AgentEvent{Type: "run.failed", RunID: run.ID, Sequence: sequence, Timestamp: now, Payload: payload}
-	acquired, err := w.repo.FinishRun(ctx, run.ID, w.workerID, models.RunStatusFailed, code, message, sequence, now, event)
-	if err != nil || !acquired {
-		return
+	if w.events == nil {
+		return errors.New("run event publisher is not configured")
 	}
+	if err := w.events.PublishRunEvent(ctx, event); err != nil {
+		zap.L().Error("publish run cancellation failed", zap.String("run_id", run.ID), zap.Error(err))
+		return err
+	}
+	return nil
 }
 
-func (w *RunWorker) cancelled(ctx context.Context, run *models.Run) {
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String("app.run.status", models.RunStatusCancelled))
-	now := w.now().UTC()
-	sequence := run.LastSequence + 1
-	event := &models.AgentEvent{Type: "run.cancelled", RunID: run.ID, Sequence: sequence, Timestamp: now, Payload: json.RawMessage(`{}`)}
-	acquired, err := w.repo.FinishRun(ctx, run.ID, w.workerID, models.RunStatusCancelled, "", "", sequence, now, event)
-	if err != nil || !acquired {
-		return
+func runStartErrorCode(err error) string {
+	if errors.Is(err, ErrRuntimeExpired) {
+		return "PROJECT_RUNTIME_EXPIRED"
 	}
-}
-
-func (w *RunWorker) recoverOrphans(ctx context.Context) {
-	now := w.now().UTC()
-	ids, err := w.repo.FailOrphanedRuns(ctx, now.Add(-w.orphanAge), now)
-	if err != nil {
-		zap.L().Warn("recover orphaned app runs failed", zap.Error(err))
-		return
+	var gatewayErr *models.GatewayResponseError
+	if errors.As(err, &gatewayErr) && gatewayErr.Code != "" {
+		return gatewayErr.Code
 	}
-	if len(ids) != 0 {
-		zap.L().Warn("failed orphaned app runs", zap.Int("count", len(ids)))
-	}
-}
-
-func eventError(event *models.AgentEvent) string {
-	var payload struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
-	}
-	if json.Unmarshal(event.Payload, &payload) == nil {
-		if strings.TrimSpace(payload.Error) != "" {
-			return strings.TrimSpace(payload.Error)
-		}
-		if strings.TrimSpace(payload.Message) != "" {
-			return strings.TrimSpace(payload.Message)
-		}
-	}
-	return "agent run failed"
+	return "AGENT_RUN_START_FAILED"
 }
 
 func configDuration(key string, fallback time.Duration) time.Duration {
@@ -631,4 +566,20 @@ func waitWorkerRetry(ctx context.Context, duration time.Duration) {
 	case <-ctx.Done():
 	case <-timer.C:
 	}
+}
+
+func eventError(event *models.AgentEvent) string {
+	var payload struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(event.Payload, &payload) == nil {
+		if strings.TrimSpace(payload.Error) != "" {
+			return strings.TrimSpace(payload.Error)
+		}
+		if strings.TrimSpace(payload.Message) != "" {
+			return strings.TrimSpace(payload.Message)
+		}
+	}
+	return "agent run failed"
 }

@@ -2,7 +2,6 @@ package biz
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/Fl0rencess720/agentland/app/be/internal/models"
@@ -43,8 +42,7 @@ type ProjectUseCase interface {
 }
 
 type RunArtifactRepo interface {
-	SaveWorkspaceSnapshot(context.Context, string, string, []byte, string, string, time.Time) (bool, error)
-	AppendTrajectoryRecord(context.Context, string, string, string, int64, json.RawMessage, time.Time) (bool, error)
+	SaveWorkspaceSnapshot(context.Context, string, []byte, string, string, time.Time) (bool, error)
 	LoadWorkspaceSnapshot(context.Context, string) (*models.WorkspaceSnapshot, error)
 	LoadTrajectoryRecords(context.Context, string) ([]models.RunTrajectoryRecord, error)
 }

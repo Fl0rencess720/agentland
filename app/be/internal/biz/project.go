@@ -39,6 +39,7 @@ var (
 	ErrRuntimeUnavailable  = errors.New("project runtime unavailable")
 	ErrPreviewNotFound     = errors.New("preview not found")
 	ErrRunLeaseLost        = errors.New("run worker lease lost")
+	ErrRunCancelled        = errors.New("run was cancelled before agent start")
 	ErrWorkerLeaseBusy     = errors.New("worker lease is already owned")
 	ErrPublicationNotFound = errors.New("publication not found")
 	ErrActivePublication   = errors.New("project already has an active publication")
@@ -64,6 +65,7 @@ type RunRepo interface {
 	GetProjectRunState(context.Context, string, string) (*models.ProjectRunState, error)
 	ListMessages(context.Context, string, string, string, int) ([]*models.Message, *string, error)
 	RequestCancel(context.Context, string, string, time.Time) (*models.Run, bool, error)
+	FailRunDispatch(context.Context, string, time.Time, error) error
 	GetRuntime(context.Context, string, string) (*models.ProjectRuntime, error)
 	ExpireRuntime(context.Context, string, string, time.Time) error
 	TouchRuntime(context.Context, string, time.Time) error
@@ -74,13 +76,13 @@ type RunRepo interface {
 
 type RunWorkerRepo interface {
 	RunRepo
-	ClaimRun(context.Context, string, string, time.Time) (*models.Run, error)
+	GetRunForExecution(context.Context, string) (*models.Run, error)
 	UpsertRuntime(context.Context, *models.ProjectRuntime) error
-	Heartbeat(context.Context, string, string, time.Time) (bool, error)
-	SetAgentRun(context.Context, string, string, string, int64, time.Time, *models.AgentEvent) (bool, error)
-	AppendAssistantDelta(context.Context, string, string, string, int64, time.Time, []*models.AgentEvent) (bool, error)
-	FinishRun(context.Context, string, string, string, string, string, int64, time.Time, *models.AgentEvent) (bool, error)
-	FailOrphanedRuns(context.Context, time.Time, time.Time) ([]models.RunSequence, error)
+	AcquireRunOwnership(context.Context, string, string) (bool, error)
+	RenewRunOwnership(context.Context, string, string) (bool, error)
+	ReleaseRunOwnership(context.Context, string, string) (bool, error)
+	ExpiredRunOwnerships(context.Context, time.Time, int64) ([]models.WorkerOwnership, error)
+	TakeoverRunOwnership(context.Context, string, string, string) (bool, error)
 	IsCancelRequested(context.Context, string) (bool, error)
 	TouchRuntime(context.Context, string, time.Time) error
 }
@@ -92,6 +94,15 @@ type TaskDelivery interface {
 
 type TaskQueue interface {
 	Receive(context.Context) (TaskDelivery, error)
+}
+
+type TaskPublisher interface {
+	PublishRunTask(context.Context, string, string) error
+	PublishPublicationTask(context.Context, string, string) error
+}
+
+type RunEventPublisher interface {
+	PublishRunEvent(context.Context, *models.AgentEvent) error
 }
 
 type RunEventStore interface {
@@ -108,6 +119,13 @@ type AgentlandGateway interface {
 	CreatePreview(context.Context, string, int) (*models.GatewayPreviewInfo, error)
 }
 
+type AsyncAgentlandGateway interface {
+	AgentlandGateway
+	StartAgentRun(context.Context, string, string, string, string) (*models.AgentRunState, error)
+	GetAgentRun(context.Context, string, string) (*models.AgentRunState, error)
+	StreamAgentRun(context.Context, string, string, int64, func(*models.AgentEvent) error) error
+}
+
 type projectUseCase struct {
 	projects     ProjectRepo
 	runs         RunRepo
@@ -116,6 +134,7 @@ type projectUseCase struct {
 	publications PublicationRepo
 	publisher    PublicationGateway
 	evaluator    EvaluationSink
+	tasks        TaskPublisher
 	now          func() time.Time
 }
 
@@ -123,6 +142,12 @@ func NewProjectUsecaseWithPublishing(projects ProjectRepo, runs RunRepo, events 
 	usecase := NewProjectUsecase(projects, runs, events, gateway, evaluators...).(*projectUseCase)
 	usecase.publications = publications
 	usecase.publisher = publisher
+	return usecase
+}
+
+func NewProjectUsecaseWithPublishingAndTasks(projects ProjectRepo, runs RunRepo, events RunEventStore, gateway AgentlandGateway, publications PublicationRepo, publisher PublicationGateway, tasks TaskPublisher, evaluators ...EvaluationSink) ProjectUseCase {
+	usecase := NewProjectUsecaseWithPublishing(projects, runs, events, gateway, publications, publisher, evaluators...).(*projectUseCase)
+	usecase.tasks = tasks
 	return usecase
 }
 
@@ -301,6 +326,11 @@ func (u *projectUseCase) CreateRun(ctx context.Context, principal models.AuthPri
 	if existing, err := u.runs.FindRunByIdempotency(ctx, principal.UserID, projectID, idempotencyKey, message); err != nil {
 		return nil, mapAPIError(err)
 	} else if existing != nil {
+		if u.tasks != nil && existing.Status == models.RunStatusRunning {
+			if err = u.tasks.PublishRunTask(ctx, existing.ID, existing.ProjectID); err != nil {
+				return nil, mapAPIError(err)
+			}
+		}
 		return &models.RunCreateResp{RunID: existing.ID, UserMessageID: existing.InputMessageID, Status: existing.Status, CreatedAt: formatTime(existing.CreatedAt)}, nil
 	}
 	if runtime, err := u.runs.GetRuntime(ctx, principal.UserID, projectID); err != nil {
@@ -312,13 +342,21 @@ func (u *projectUseCase) CreateRun(ctx context.Context, principal models.AuthPri
 	now := u.now().UTC()
 	traceCarrier := propagation.MapCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, traceCarrier)
-	run, _, err := u.runs.CreateRun(ctx, &models.CreateRunInput{
+	run, existing, err := u.runs.CreateRun(ctx, &models.CreateRunInput{
 		ID: token.NewID("run"), OwnerID: principal.UserID, ProjectID: projectID, IdempotencyKey: idempotencyKey,
 		InputMessageID: token.NewID("msg"), AssistantMessageID: token.NewID("msg"), Message: message,
 		TraceParent: traceCarrier.Get("traceparent"), TraceState: traceCarrier.Get("tracestate"), Now: now,
 	})
 	if err != nil {
 		return nil, mapAPIError(err)
+	}
+	if u.tasks != nil {
+		if err = u.tasks.PublishRunTask(ctx, run.ID, run.ProjectID); err != nil {
+			if !existing {
+				_ = u.runs.FailRunDispatch(context.WithoutCancel(ctx), run.ID, u.now().UTC(), err)
+			}
+			return nil, mapAPIError(err)
+		}
 	}
 	return &models.RunCreateResp{RunID: run.ID, UserMessageID: run.InputMessageID, Status: run.Status, CreatedAt: formatTime(run.CreatedAt)}, nil
 }
@@ -346,7 +384,7 @@ func (u *projectUseCase) StreamRunEvents(ctx context.Context, principal models.A
 		after = "0-0"
 	}
 	for {
-		events, readErr := u.events.Read(ctx, run.ID, after, 15*time.Second)
+		events, readErr := u.events.Read(ctx, run.ID, after, 5*time.Second)
 		if readErr != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -393,8 +431,14 @@ func (u *projectUseCase) CancelRun(ctx context.Context, principal models.AuthPri
 		return nil, mapAPIError(err)
 	}
 	if run.Status != models.RunStatusCancelled && run.AgentRunID != "" {
-		if runtime, runtimeErr := u.runs.GetRuntime(ctx, principal.UserID, run.ProjectID); runtimeErr == nil && runtime != nil {
-			_ = u.gateway.CancelRun(ctx, runtime.GatewaySessionID, run.AgentRunID)
+		runtime, runtimeErr := u.runs.GetRuntime(ctx, principal.UserID, run.ProjectID)
+		if runtimeErr != nil {
+			return nil, mapAPIError(runtimeErr)
+		}
+		if runtime != nil {
+			if cancelErr := u.gateway.CancelRun(ctx, runtime.GatewaySessionID, run.AgentRunID); cancelErr != nil {
+				return nil, gatewayAPIError(cancelErr)
+			}
 		}
 	}
 	return &models.RunCancelResp{ID: run.ID, Status: run.Status}, nil

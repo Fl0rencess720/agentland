@@ -58,7 +58,7 @@ func TestKafkaRunEventProjectionResumeConflictAndTTL(t *testing.T) {
 	conflict.Type = "tool.started"
 	conflictPayload, err := json.Marshal(runEventEnvelope{RunID: runID, Event: &conflict})
 	require.NoError(t, err)
-	require.ErrorContains(t, store.project(ctx, conflictPayload), "conflict")
+	require.NoError(t, store.project(ctx, conflictPayload))
 
 	terminal := &models.AgentEvent{Type: "run.completed", RunID: runID, Sequence: 2, Timestamp: now.Add(time.Second), Payload: json.RawMessage(`{}`)}
 	terminalPayload, err := json.Marshal(runEventEnvelope{RunID: runID, Event: terminal})
@@ -82,7 +82,6 @@ func seedKafkaEventProject(t *testing.T, pool *pgxpool.Pool) (string, string) {
 	_, err = pool.Exec(context.Background(), `insert into projects(id,owner_id,name,template,status,thumbnail_url,metadata,created_at,updated_at) values($1,$2,'event','blank','DRAFT','','{}',$3,$3)`, projectID, ownerID, now)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `delete from kafka_outbox where message_key=$1 or message_key in (select id from agent_runs where owner_id=$2)`, projectID, ownerID)
 		_, _ = pool.Exec(context.Background(), `delete from project_messages where owner_id=$1`, ownerID)
 		_, _ = pool.Exec(context.Background(), `delete from agent_runs where owner_id=$1`, ownerID)
 		_, _ = pool.Exec(context.Background(), `delete from project_publications where owner_id=$1`, ownerID)

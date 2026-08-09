@@ -72,7 +72,7 @@ export type ChatHistory = {
   next_cursor?: string | null;
 };
 
-export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type StartRunResult = {
   run_id: string;
@@ -446,6 +446,7 @@ async function consumeEventStream(
   response: Response,
   signal: AbortSignal,
   handleFrame: (frame: ReturnType<typeof parseSseFrame>) => void,
+  onActivity: () => void,
 ) {
   if (!response.body) throw new ApiError('SSE response has no body', response.status);
   const reader = response.body.getReader();
@@ -454,6 +455,7 @@ async function consumeEventStream(
 
   while (!signal.aborted) {
     const { value, done } = await reader.read();
+    onActivity();
     buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, '\n');
     let boundary = buffer.indexOf('\n\n');
     while (boundary >= 0) {
@@ -467,23 +469,50 @@ async function consumeEventStream(
 }
 
 export async function streamRunEvents(runId: string, options: StreamRunOptions) {
+  const connection = new AbortController();
+  let timedOut = false;
+  let inactivityTimer = window.setTimeout(() => {
+    timedOut = true;
+    connection.abort();
+  }, 10_000);
+  const resetInactivityTimer = () => {
+    window.clearTimeout(inactivityTimer);
+    inactivityTimer = window.setTimeout(() => {
+      timedOut = true;
+      connection.abort();
+    }, 10_000);
+  };
+  const abortConnection = () => connection.abort();
+  if (options.signal.aborted) abortConnection();
+  else options.signal.addEventListener('abort', abortConnection, { once: true });
   const headers = new Headers({ Accept: 'text/event-stream' });
   if (options.lastEventId) headers.set('Last-Event-ID', options.lastEventId);
-  const response = await rawRequest(`/runs/${encodeURIComponent(runId)}/events`, {
-    headers,
-    signal: options.signal,
-  });
-  if (!response.ok) {
-    await parseEnvelope<never>(response, `/runs/${encodeURIComponent(runId)}/events`);
-    throw new ApiError(`SSE HTTP ${response.status}`, response.status);
-  }
+  try {
+    const response = await rawRequest(`/runs/${encodeURIComponent(runId)}/events`, {
+      headers,
+      signal: connection.signal,
+    });
+    resetInactivityTimer();
+    if (!response.ok) {
+      await parseEnvelope<never>(response, `/runs/${encodeURIComponent(runId)}/events`);
+      throw new ApiError(`SSE HTTP ${response.status}`, response.status);
+    }
 
-  await consumeEventStream(response, options.signal, ({ eventName, id, data }) => {
-    if (!data) return;
-    const event = JSON.parse(data) as RunEvent;
-    if (eventName && event.type !== eventName) event.type = eventName as RunEventType;
-    const nextId = id || String(event.sequence);
-    if (nextId) options.onLastEventId?.(nextId);
-    options.onEvent(event);
-  });
+    await consumeEventStream(response, connection.signal, ({ eventName, id, data }) => {
+      if (!data) return;
+      const event = JSON.parse(data) as RunEvent;
+      if (eventName && event.type !== eventName) event.type = eventName as RunEventType;
+      const nextId = id || String(event.sequence);
+      if (nextId) options.onLastEventId?.(nextId);
+      options.onEvent(event);
+    }, resetInactivityTimer);
+  } catch (error) {
+    if (timedOut && !options.signal.aborted) {
+      throw new ApiError('SSE connection timed out', 0);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(inactivityTimer);
+    options.signal.removeEventListener('abort', abortConnection);
+  }
 }
