@@ -15,15 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestKafkaOutboxTaskConsumptionAndEventProjection(t *testing.T) {
+func TestKafkaDirectTaskAndIdempotentEventProjection(t *testing.T) {
 	dsn, brokers, redisAddress := os.Getenv("TEST_DATABASE_URL"), os.Getenv("TEST_KAFKA_BROKERS"), os.Getenv("TEST_REDIS_ADDR")
 	if dsn == "" || brokers == "" || redisAddress == "" {
 		t.Skip("TEST_DATABASE_URL, TEST_KAFKA_BROKERS, and TEST_REDIS_ADDR are required")
 	}
 	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
 	settings := map[string]any{
-		"database.url": dsn, "kafka.brokers": strings.Split(brokers, ","),
-		"redis.addr":      redisAddress,
+		"database.url": dsn, "kafka.brokers": strings.Split(brokers, ","), "redis.addr": redisAddress,
 		"kafka.run_topic": "agentland.test.run." + suffix, "kafka.publication_topic": "agentland.test.publication." + suffix,
 		"kafka.event_topic": "agentland.test.events." + suffix, "kafka.run_consumer_group": "agentland.test.run-workers." + suffix,
 		"kafka.publication_consumer_group": "agentland.test.publication-workers." + suffix, "kafka.event_projector_group": "agentland.test.projector." + suffix,
@@ -48,8 +47,6 @@ func TestKafkaOutboxTaskConsumptionAndEventProjection(t *testing.T) {
 	runs := &runRepo{leaseStore: &redisWorkerLeaseStore{client: redisClient}}
 	pool, err := runs.ready(ctx)
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `delete from kafka_outbox`)
-	require.NoError(t, err)
 	pipeline, err := newKafkaPipeline(ctx, runs)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -63,85 +60,54 @@ func TestKafkaOutboxTaskConsumptionAndEventProjection(t *testing.T) {
 	ownerID, projectID := seedKafkaEventProject(t, pool)
 	now := time.Now().UTC()
 	runID := "run-kafka-" + suffix
-	run, _, err := runs.CreateRun(ctx, &models.CreateRunInput{
+	_, _, err = runs.CreateRun(ctx, &models.CreateRunInput{
 		ID: runID, OwnerID: ownerID, ProjectID: projectID, IdempotencyKey: runID,
 		InputMessageID: "input-" + runID, AssistantMessageID: "assistant-" + runID, Message: "build", Now: now,
 	})
 	require.NoError(t, err)
-	var pending int
-	require.NoError(t, pool.QueryRow(ctx, `select count(*) from kafka_outbox where dedupe_key=$1 and published_at is null`, outboxKindRunTask+":"+runID).Scan(&pending))
-	require.Equal(t, 1, pending)
-	require.NoError(t, pipeline.relayOnce(ctx))
-
+	require.NoError(t, pipeline.PublishRunTask(ctx, runID, projectID))
 	receiveCtx, cancelReceive := context.WithTimeout(ctx, 15*time.Second)
 	delivery, err := pipeline.runQueue.Receive(receiveCtx)
 	cancelReceive()
 	require.NoError(t, err)
 	require.Equal(t, runID, delivery.ID())
-	claimed, err := runs.ClaimRun(ctx, runID, "integration-worker", now.Add(time.Second))
-	require.NoError(t, err)
-	require.Equal(t, models.RunStatusRunning, claimed.Status)
 	require.NoError(t, delivery.Ack(ctx))
 
-	event := &models.AgentEvent{Type: "run.completed", RunID: runID, ConversationID: projectID, Sequence: 1, Timestamp: now.Add(2 * time.Second), Payload: json.RawMessage(`{}`)}
-	finished, err := runs.FinishRun(ctx, runID, "integration-worker", models.RunStatusCompleted, "", "", 1, now.Add(2*time.Second), event)
-	require.NoError(t, err)
-	require.True(t, finished)
-	require.NoError(t, pipeline.relayOnce(ctx))
-
+	delta, _ := json.Marshal(map[string]string{"content": "hello"})
+	events := []*models.AgentEvent{
+		{Type: "message.delta", RunID: runID, ConversationID: projectID, Sequence: 1, Timestamp: now.Add(time.Second), Payload: delta},
+		{Type: "run.completed", RunID: runID, ConversationID: projectID, Sequence: 2, Timestamp: now.Add(2 * time.Second), Payload: json.RawMessage(`{}`)},
+	}
+	for _, event := range events {
+		require.NoError(t, pipeline.PublishRunEvent(ctx, event))
+		projectCtx, cancelProject := context.WithTimeout(ctx, 15*time.Second)
+		require.NoError(t, pipeline.projectNext(projectCtx))
+		cancelProject()
+	}
+	require.NoError(t, pipeline.PublishRunEvent(ctx, events[0]))
 	projectCtx, cancelProject := context.WithTimeout(ctx, 15*time.Second)
 	require.NoError(t, pipeline.projectNext(projectCtx))
 	cancelProject()
-	events, err := pipeline.events.Read(ctx, runID, "0", 0)
-	require.NoError(t, err)
-	require.Len(t, events, 1)
-	require.Equal(t, "1", events[0].ID)
-	require.Equal(t, "run.completed", events[0].Type)
 
-	// A relay crash after Kafka accepted the record can publish it again. The projector must keep one row.
-	_, err = pool.Exec(ctx, `update kafka_outbox set published_at=null where dedupe_key=$1`, runID+":1")
-	require.NoError(t, err)
-	require.NoError(t, pipeline.relayOnce(ctx))
-	projectCtx, cancelProject = context.WithTimeout(ctx, 15*time.Second)
-	require.NoError(t, pipeline.projectNext(projectCtx))
-	cancelProject()
 	var projected int
-	require.NoError(t, pool.QueryRow(ctx, `select count(*) from run_events where run_id=$1 and sequence=1`, runID).Scan(&projected))
-	require.Equal(t, 1, projected)
+	var assistant, status string
+	require.NoError(t, pool.QueryRow(ctx, `select count(*) from run_events where run_id=$1`, runID).Scan(&projected))
+	require.NoError(t, pool.QueryRow(ctx, `select message.content,run.status from agent_runs run join project_messages message on message.id=run.assistant_message_id where run.id=$1`, runID).Scan(&assistant, &status))
+	require.Equal(t, 2, projected)
+	require.Equal(t, "hello", assistant)
+	require.Equal(t, models.RunStatusCompleted, status)
 
 	publicationID := "publication-kafka-" + suffix
-	publication, _, err := runs.CreatePublication(ctx, &models.CreatePublicationInput{
+	_, _, err = runs.CreatePublication(ctx, &models.CreatePublicationInput{
 		ID: publicationID, OwnerID: ownerID, ProjectID: projectID, IdempotencyKey: publicationID,
 		Context: ".", Dockerfile: "Dockerfile", Now: now.Add(3 * time.Second),
 	})
 	require.NoError(t, err)
-	require.NoError(t, pipeline.relayOnce(ctx))
+	require.NoError(t, pipeline.PublishPublicationTask(ctx, publicationID, projectID))
 	receiveCtx, cancelReceive = context.WithTimeout(ctx, 15*time.Second)
 	publicationDelivery, err := pipeline.pubQueue.Receive(receiveCtx)
 	cancelReceive()
 	require.NoError(t, err)
-	require.Equal(t, publication.ID, publicationDelivery.ID())
-	claimedPublication, err := runs.ClaimPublication(ctx, publication.ID, "integration-publisher", now.Add(4*time.Second))
-	require.NoError(t, err)
-	require.Equal(t, models.PublicationStatusRunning, claimedPublication.Status)
+	require.Equal(t, publicationID, publicationDelivery.ID())
 	require.NoError(t, publicationDelivery.Ack(ctx))
-	publicationFinished, err := runs.FinishPublication(ctx, &models.FinishPublicationInput{
-		ID: publication.ID, WorkerID: "integration-publisher", Status: models.PublicationStatusCompleted,
-		ImageRef: "registry.example/app:latest", Digest: "sha256:integration", Now: now.Add(5 * time.Second),
-	})
-	require.NoError(t, err)
-	require.True(t, publicationFinished)
-
-	// Simulate an upgrade where queued rows predate the Outbox table migration.
-	legacyID := "legacy-run-" + suffix
-	_, err = pool.Exec(ctx, `insert into agent_runs(id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,created_at,updated_at)
-		values($1,$2,$3,$1,$4,$5,'queued',$6,$6)`, legacyID, ownerID, projectID, "input-"+legacyID, "assistant-"+legacyID, now.Add(3*time.Second))
-	require.NoError(t, err)
-	_, err = pool.Exec(ctx, `delete from kafka_outbox where dedupe_key=$1`, outboxKindRunTask+":"+legacyID)
-	require.NoError(t, err)
-	require.NoError(t, runs.backfillKafkaTasks(ctx))
-	require.NoError(t, pool.QueryRow(ctx, `select count(*) from kafka_outbox where dedupe_key=$1`, outboxKindRunTask+":"+legacyID).Scan(&pending))
-	require.Equal(t, 1, pending)
-
-	_ = run
 }

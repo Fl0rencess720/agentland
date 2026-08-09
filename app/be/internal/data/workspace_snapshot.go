@@ -206,8 +206,8 @@ type workspaceSnapshotMetadata struct {
 }
 
 type workspaceSnapshotMetadataStore interface {
-	CanSaveWorkspaceSnapshot(context.Context, string, string) (bool, error)
-	UpsertWorkspaceSnapshotMetadata(context.Context, string, string, workspaceSnapshotMetadata) (bool, error)
+	CanSaveWorkspaceSnapshot(context.Context, string) (bool, error)
+	UpsertWorkspaceSnapshotMetadata(context.Context, string, workspaceSnapshotMetadata) (bool, error)
 	GetWorkspaceSnapshotMetadata(context.Context, string) (*workspaceSnapshotMetadata, error)
 }
 
@@ -218,13 +218,13 @@ type workspaceSnapshotArtifacts struct {
 	maxBytes int64
 }
 
-func (a *workspaceSnapshotArtifacts) Save(ctx context.Context, runID, workerID string, data []byte, suppliedSHA, captureError string, now time.Time) (bool, error) {
+func (a *workspaceSnapshotArtifacts) Save(ctx context.Context, runID string, data []byte, suppliedSHA, captureError string, now time.Time) (bool, error) {
 	metadata := workspaceSnapshotMetadata{RunID: runID, CaptureError: captureError, CreatedAt: now}
 	if captureError != "" || len(data) == 0 {
 		if metadata.CaptureError == "" {
 			metadata.CaptureError = "workspace snapshot is empty"
 		}
-		return a.metadata.UpsertWorkspaceSnapshotMetadata(ctx, runID, workerID, metadata)
+		return a.metadata.UpsertWorkspaceSnapshotMetadata(ctx, runID, metadata)
 	}
 	if int64(len(data)) > a.maxBytes {
 		return false, fmt.Errorf("workspace snapshot exceeds %d bytes", a.maxBytes)
@@ -234,7 +234,7 @@ func (a *workspaceSnapshotArtifacts) Save(ctx context.Context, runID, workerID s
 	if !strings.EqualFold(strings.TrimSpace(suppliedSHA), actualSHA) {
 		return false, errors.New("workspace snapshot SHA-256 does not match its content")
 	}
-	allowed, err := a.metadata.CanSaveWorkspaceSnapshot(ctx, runID, workerID)
+	allowed, err := a.metadata.CanSaveWorkspaceSnapshot(ctx, runID)
 	if err != nil || !allowed {
 		return false, err
 	}
@@ -244,7 +244,7 @@ func (a *workspaceSnapshotArtifacts) Save(ctx context.Context, runID, workerID s
 	if err = a.objects.PutIfAbsent(ctx, metadata.ObjectKey, data, actualSHA); err != nil {
 		return false, err
 	}
-	return a.metadata.UpsertWorkspaceSnapshotMetadata(ctx, runID, workerID, metadata)
+	return a.metadata.UpsertWorkspaceSnapshotMetadata(ctx, runID, metadata)
 }
 
 func (a *workspaceSnapshotArtifacts) Load(ctx context.Context, runID string) (*models.WorkspaceSnapshot, error) {
@@ -315,12 +315,12 @@ func (r *runRepo) VerifySnapshotStore(ctx context.Context) error {
 	return artifacts.objects.Verify(ctx)
 }
 
-func (r *runRepo) SaveWorkspaceSnapshot(ctx context.Context, runID, workerID string, data []byte, sha, captureError string, now time.Time) (bool, error) {
+func (r *runRepo) SaveWorkspaceSnapshot(ctx context.Context, runID string, data []byte, sha, captureError string, now time.Time) (bool, error) {
 	artifacts, err := r.snapshotArtifacts(ctx)
 	if err != nil {
 		return false, err
 	}
-	return artifacts.Save(ctx, runID, workerID, data, sha, captureError, now)
+	return artifacts.Save(ctx, runID, data, sha, captureError, now)
 }
 
 func (r *runRepo) LoadWorkspaceSnapshot(ctx context.Context, runID string) (*models.WorkspaceSnapshot, error) {
@@ -331,25 +331,25 @@ func (r *runRepo) LoadWorkspaceSnapshot(ctx context.Context, runID string) (*mod
 	return artifacts.Load(ctx, runID)
 }
 
-func (r *runRepo) CanSaveWorkspaceSnapshot(ctx context.Context, runID, workerID string) (bool, error) {
+func (r *runRepo) CanSaveWorkspaceSnapshot(ctx context.Context, runID string) (bool, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return false, err
 	}
 	var allowed bool
-	err = pool.QueryRow(ctx, `select exists(select 1 from agent_runs where id=$1 and worker_id=$2 and status=$3)`, runID, workerID, models.RunStatusRunning).Scan(&allowed)
+	err = pool.QueryRow(ctx, `select exists(select 1 from agent_runs where id=$1 and status=$2)`, runID, models.RunStatusRunning).Scan(&allowed)
 	return allowed, err
 }
 
-func (r *runRepo) UpsertWorkspaceSnapshotMetadata(ctx context.Context, runID, workerID string, metadata workspaceSnapshotMetadata) (bool, error) {
+func (r *runRepo) UpsertWorkspaceSnapshotMetadata(ctx context.Context, runID string, metadata workspaceSnapshotMetadata) (bool, error) {
 	pool, err := r.ready(ctx)
 	if err != nil {
 		return false, err
 	}
 	tag, err := pool.Exec(ctx, `insert into run_workspace_snapshots(run_id,object_key,sha256,size_bytes,capture_error,created_at)
-		select $1,$4,$5,$6,$7,$8 where exists(select 1 from agent_runs where id=$1 and worker_id=$2 and status=$3)
+		select $1,$3,$4,$5,$6,$7 where exists(select 1 from agent_runs where id=$1 and status=$2)
 		on conflict(run_id) do update set content=null,object_key=excluded.object_key,sha256=excluded.sha256,size_bytes=excluded.size_bytes,capture_error=excluded.capture_error,created_at=excluded.created_at`,
-		runID, workerID, models.RunStatusRunning, metadata.ObjectKey, metadata.SHA, metadata.SizeBytes, metadata.CaptureError, metadata.CreatedAt)
+		runID, models.RunStatusRunning, metadata.ObjectKey, metadata.SHA, metadata.SizeBytes, metadata.CaptureError, metadata.CreatedAt)
 	return err == nil && tag.RowsAffected() == 1, err
 }
 

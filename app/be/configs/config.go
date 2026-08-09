@@ -45,9 +45,7 @@ func Init() error {
 	viper.SetDefault("kafka.event_partitions", 32)
 	viper.SetDefault("kafka.replication_factor", 1)
 	viper.SetDefault("kafka.event_retention", 7*24*time.Hour)
-	viper.SetDefault("kafka.relay_poll_interval", 100*time.Millisecond)
-	viper.SetDefault("kafka.relay_batch_size", 100)
-	viper.SetDefault("kafka.outbox_retention", 7*24*time.Hour)
+	viper.SetDefault("kafka.max_event_bytes", 20<<20)
 	viper.SetDefault("kafka.security_protocol", "plaintext")
 	viper.SetDefault("kafka.sasl.mechanism", "plain")
 	viper.SetDefault("kafka.sasl.username", "")
@@ -72,9 +70,9 @@ func Init() error {
 	viper.SetDefault("preview.public_url_template", DefaultPreviewPublicURLTemplate)
 	viper.SetDefault("runtime.idle_timeout", 15*time.Minute)
 	viper.SetDefault("runtime.max_session_duration", time.Hour)
-	viper.SetDefault("worker.heartbeat_interval", 5*time.Second)
+	viper.SetDefault("worker.heartbeat_interval", 2*time.Second)
 	viper.SetDefault("worker.cancel_poll_interval", 250*time.Millisecond)
-	viper.SetDefault("worker.orphan_timeout", 30*time.Second)
+	viper.SetDefault("worker.orphan_timeout", 6*time.Second)
 	viper.SetDefault("worker.parallelism", 4)
 	viper.SetDefault("publication.worker.heartbeat_interval", 5*time.Second)
 	viper.SetDefault("publication.worker.cancel_poll_interval", 250*time.Millisecond)
@@ -136,8 +134,8 @@ func validateKafka() error {
 	if viper.GetDuration("kafka.event_retention") < 24*time.Hour {
 		return fmt.Errorf("kafka.event_retention must be at least 24h")
 	}
-	if viper.GetDuration("kafka.relay_poll_interval") <= 0 || viper.GetInt("kafka.relay_batch_size") <= 0 {
-		return fmt.Errorf("kafka relay settings must be positive")
+	if size := viper.GetInt("kafka.max_event_bytes"); size < 1<<20 || size > 100<<20 {
+		return fmt.Errorf("kafka.max_event_bytes must be between 1 MiB and 100 MiB")
 	}
 	return nil
 }

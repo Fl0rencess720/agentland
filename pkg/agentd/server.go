@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,11 +23,13 @@ import (
 type Server struct {
 	httpServer *http.Server
 	agent      *Agent
+	runs       *RunManager
 	memory     *MemoryStore
 	mcp        *MCPManager
 }
 
 type chatRequest struct {
+	RunID             string `json:"run_id,omitempty"`
 	ConversationID    string `json:"conversation_id"`
 	Message           string `json:"message"`
 	CaptureTrajectory bool   `json:"capture_trajectory,omitempty"`
@@ -83,10 +86,15 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 		return nil, err
 	}
 	agent.modelName = cfg.Model
+	runs, err := NewRunManager(agent, memory.root)
+	if err != nil {
+		manager.Close()
+		return nil, err
+	}
 
 	router := gin.New()
 	router.Use(gin.Recovery())
-	server := &Server{agent: agent, memory: memory, mcp: manager}
+	server := &Server{agent: agent, runs: runs, memory: memory, mcp: manager}
 	router.GET("/health", server.health)
 	api := router.Group("/api")
 	if cfg.AuthEnabled {
@@ -103,6 +111,9 @@ func newServer(ctx context.Context, cfg *Config, chatModel model.ToolCallingChat
 		api.Use(korokmiddleware.SandboxAuth(verifier))
 	}
 	api.POST("/chat", server.chat)
+	api.POST("/runs", server.startRun)
+	api.GET("/runs/:run_id", server.getRun)
+	api.GET("/runs/:run_id/events", server.runEvents)
 	api.POST("/runs/:run_id/cancel", server.cancel)
 	api.GET("/runs/:run_id/trajectory", server.trajectory)
 	api.POST("/replays/decision", server.replayDecision)
@@ -136,6 +147,7 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func (s *Server) Close() error {
+	s.runs.Close()
 	return s.mcp.Close()
 }
 
@@ -144,40 +156,78 @@ func (s *Server) health(c *gin.Context) {
 }
 
 func (s *Server) chat(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxChatRequestBodyBytes)
-	var request chatRequest
-	decoder := json.NewDecoder(c.Request.Body)
-	if err := decoder.Decode(&request); err != nil {
-		var sizeErr *http.MaxBytesError
-		if errors.As(err, &sizeErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body is too large"})
+	request, ok := decodeChatRequest(c)
+	if !ok {
+		return
+	}
+	state, _, err := s.runs.Start(request.RunID, request.ConversationID, request.Message, request.CaptureTrajectory)
+	if err != nil {
+		if errors.Is(err, ErrConversationBusy) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		var sizeErr *http.MaxBytesError
-		if errors.As(err, &sizeErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body is too large"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-	request.ConversationID = strings.TrimSpace(request.ConversationID)
-	if request.ConversationID == "" {
-		request.ConversationID = "default"
-	}
-	if !validID(request.ConversationID) || strings.TrimSpace(request.Message) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "conversation_id and message are invalid"})
-		return
-	}
-	if len(request.Message) > maxChatMessageBytes {
-		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("message exceeds %d bytes", maxChatMessageBytes)})
-		return
-	}
+	s.streamRun(c, state.RunID, 0)
+}
 
+func (s *Server) startRun(c *gin.Context) {
+	request, ok := decodeChatRequest(c)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(request.RunID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "run_id is required"})
+		return
+	}
+	state, created, err := s.runs.Start(request.RunID, request.ConversationID, request.Message, request.CaptureTrajectory)
+	if err != nil {
+		if errors.Is(err, ErrConversationBusy) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusAccepted
+	}
+	c.JSON(status, state)
+}
+
+func (s *Server) getRun(c *gin.Context) {
+	state, ok := s.runs.Get(c.Param("run_id"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+		return
+	}
+	c.JSON(http.StatusOK, state)
+}
+
+func (s *Server) runEvents(c *gin.Context) {
+	after := strings.TrimSpace(c.Query("after"))
+	if after == "" {
+		after = strings.TrimSpace(c.GetHeader("Last-Event-ID"))
+	}
+	sequence := int64(0)
+	if after != "" {
+		parsed, err := strconv.ParseInt(after, 10, 64)
+		if err != nil || parsed < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event sequence"})
+			return
+		}
+		sequence = parsed
+	}
+	s.streamRun(c, c.Param("run_id"), sequence)
+}
+
+func (s *Server) streamRun(c *gin.Context, runID string, after int64) {
+	if _, ok := s.runs.Get(runID); !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+		return
+	}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -187,21 +237,61 @@ func (s *Server) chat(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming is unsupported"})
 		return
 	}
-	emit := func(event Event) error {
+	c.Status(http.StatusOK)
+	flusher.Flush()
+	_ = s.runs.Subscribe(c.Request.Context(), runID, after, func(event Event) error {
 		data, err := json.Marshal(event)
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(c.Writer, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, data); err != nil {
+		if _, err = fmt.Fprintf(c.Writer, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, data); err != nil {
 			return err
 		}
 		flusher.Flush()
 		return nil
+	}, func() error {
+		_, err := fmt.Fprint(c.Writer, ": ping\n\n")
+		flusher.Flush()
+		return err
+	})
+}
+
+func decodeChatRequest(c *gin.Context) (chatRequest, bool) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxChatRequestBodyBytes)
+	var request chatRequest
+	decoder := json.NewDecoder(c.Request.Body)
+	if err := decoder.Decode(&request); err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body is too large"})
+			return chatRequest{}, false
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return chatRequest{}, false
 	}
-	_, err := s.agent.RunWithOptions(c.Request.Context(), request.ConversationID, request.Message, request.CaptureTrajectory, emit)
-	if errors.Is(err, ErrConversationBusy) && !c.Writer.Written() {
-		c.JSON(http.StatusConflict, gin.H{"error": ErrConversationBusy.Error()})
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body is too large"})
+			return chatRequest{}, false
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return chatRequest{}, false
 	}
+	request.ConversationID = strings.TrimSpace(request.ConversationID)
+	if request.ConversationID == "" {
+		request.ConversationID = "default"
+	}
+	if !validID(request.ConversationID) || strings.TrimSpace(request.Message) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "conversation_id and message are invalid"})
+		return chatRequest{}, false
+	}
+	if len(request.Message) > maxChatMessageBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("message exceeds %d bytes", maxChatMessageBytes)})
+		return chatRequest{}, false
+	}
+	request.RunID = strings.TrimSpace(request.RunID)
+	return request, true
 }
 
 func (s *Server) trajectory(c *gin.Context) {
@@ -250,7 +340,7 @@ func (s *Server) replay(c *gin.Context, execute func(context.Context, []Trajecto
 }
 
 func (s *Server) cancel(c *gin.Context) {
-	if !s.agent.Cancel(c.Param("run_id")) {
+	if !s.runs.Cancel(c.Param("run_id")) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
 		return
 	}

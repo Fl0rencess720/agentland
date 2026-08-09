@@ -23,14 +23,12 @@ import (
 )
 
 type KafkaPipeline struct {
-	repo       *runRepo
-	producer   *kgo.Client
-	runQueue   *kafkaTaskQueue
-	pubQueue   *kafkaTaskQueue
-	projector  *kgo.Client
-	events     *kafkaRunEventStore
-	relayPoll  time.Duration
-	relayBatch int
+	repo      *runRepo
+	producer  *kgo.Client
+	runQueue  *kafkaTaskQueue
+	pubQueue  *kafkaTaskQueue
+	projector *kgo.Client
+	events    *kafkaRunEventStore
 }
 
 func NewKafkaPipeline(ctx context.Context) (*KafkaPipeline, error) {
@@ -42,17 +40,16 @@ func newKafkaPipeline(ctx context.Context, repo *runRepo) (*KafkaPipeline, error
 	if err != nil {
 		return nil, err
 	}
-	producer, err := kgo.NewClient(append(base, kgo.RequiredAcks(kgo.AllISRAcks()), kgo.ProducerBatchCompression(kgo.SnappyCompression()), kgo.ProducerLinger(5*time.Millisecond))...)
+	producer, err := kgo.NewClient(append(base,
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
+		kgo.ProducerBatchMaxBytes(kafkaMaxEventBytes()),
+		kgo.ProducerLinger(5*time.Millisecond),
+	)...)
 	if err != nil {
 		return nil, err
 	}
-	pipeline := &KafkaPipeline{repo: repo, producer: producer, relayPoll: viper.GetDuration("kafka.relay_poll_interval"), relayBatch: viper.GetInt("kafka.relay_batch_size")}
-	if pipeline.relayPoll <= 0 {
-		pipeline.relayPoll = 100 * time.Millisecond
-	}
-	if pipeline.relayBatch <= 0 {
-		pipeline.relayBatch = 100
-	}
+	pipeline := &KafkaPipeline{repo: repo, producer: producer}
 	cleanup := func(err error) (*KafkaPipeline, error) {
 		pipeline.Close()
 		return nil, err
@@ -118,7 +115,10 @@ func (p *KafkaPipeline) ensureTopics(ctx context.Context) error {
 		return errors.New("kafka.event_retention must be at least 24h")
 	}
 	retentionMS := strconv.FormatInt(retention.Milliseconds(), 10)
-	return createTopics(ctx, admin, eventPartitions, replication, map[string]*string{"retention.ms": &retentionMS}, kafkaEventTopic())
+	maxEventBytes := strconv.Itoa(int(kafkaMaxEventBytes()))
+	return createTopics(ctx, admin, eventPartitions, replication, map[string]*string{
+		"retention.ms": &retentionMS, "max.message.bytes": &maxEventBytes,
+	}, kafkaEventTopic())
 }
 
 func createTopics(ctx context.Context, admin *kadm.Client, partitions int32, replication int16, configs map[string]*string, topics ...string) error {
@@ -199,7 +199,11 @@ func kafkaOptions() ([]kgo.Opt, error) {
 	if len(brokers) == 0 {
 		return nil, errors.New("kafka.brokers is required")
 	}
-	options := []kgo.Opt{kgo.SeedBrokers(brokers...), kgo.ClientID(viper.GetString("kafka.client_id"))}
+	maxEventBytes := kafkaMaxEventBytes()
+	options := []kgo.Opt{
+		kgo.SeedBrokers(brokers...), kgo.ClientID(viper.GetString("kafka.client_id")),
+		kgo.FetchMaxPartitionBytes(maxEventBytes), kgo.FetchMaxBytes(maxEventBytes * 2),
+	}
 	protocol := strings.ToLower(strings.TrimSpace(viper.GetString("kafka.security_protocol")))
 	if protocol == "" {
 		protocol = "plaintext"
@@ -229,6 +233,14 @@ func kafkaOptions() ([]kgo.Opt, error) {
 	return options, nil
 }
 
+func kafkaMaxEventBytes() int32 {
+	value := viper.GetInt("kafka.max_event_bytes")
+	if value <= 0 {
+		return 20 << 20
+	}
+	return int32(value)
+}
+
 func kafkaTLSConfig() (*tls.Config, error) {
 	config := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: strings.TrimSpace(viper.GetString("kafka.tls.server_name"))}
 	if path := strings.TrimSpace(viper.GetString("kafka.tls.ca_file")); path != "" {
@@ -254,117 +266,6 @@ func kafkaTLSConfig() (*tls.Config, error) {
 		config.Certificates = []tls.Certificate{certificate}
 	}
 	return config, nil
-}
-
-func (p *KafkaPipeline) RunRelay(ctx context.Context) {
-	ticker := time.NewTicker(p.relayPoll)
-	cleanup := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	defer cleanup.Stop()
-	for {
-		if err := p.relayOnce(ctx); err != nil && ctx.Err() == nil {
-			zap.L().Warn("relay kafka outbox failed", zap.Error(err))
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-cleanup.C:
-			p.deletePublishedOutbox(ctx)
-		case <-ticker.C:
-		}
-	}
-}
-
-func (p *KafkaPipeline) deletePublishedOutbox(ctx context.Context) {
-	pool, err := p.repo.ready(ctx)
-	if err != nil {
-		return
-	}
-	retention := viper.GetDuration("kafka.outbox_retention")
-	if retention < 24*time.Hour {
-		retention = 7 * 24 * time.Hour
-	}
-	cutoff := time.Now().UTC().Add(-retention)
-	for ctx.Err() == nil {
-		tag, deleteErr := pool.Exec(ctx, `delete from kafka_outbox where id in (
-			select id from kafka_outbox where published_at<$1 order by id limit 10000)`, cutoff)
-		if deleteErr != nil {
-			zap.L().Warn("delete published kafka outbox failed", zap.Error(deleteErr))
-			return
-		}
-		if tag.RowsAffected() < 10000 {
-			return
-		}
-	}
-}
-
-func (p *KafkaPipeline) relayOnce(ctx context.Context) error {
-	pool, err := p.repo.ready(ctx)
-	if err != nil {
-		return err
-	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `select o.id,o.topic,o.message_key,o.payload from kafka_outbox o
-		where o.published_at is null and not exists (
-			select 1 from kafka_outbox earlier where earlier.published_at is null and earlier.topic=o.topic and earlier.message_key=o.message_key and earlier.id<o.id)
-		order by o.id for update skip locked limit $1`, p.relayBatch)
-	if err != nil {
-		return err
-	}
-	type item struct {
-		id      int64
-		topic   string
-		key     string
-		payload []byte
-	}
-	items := make([]item, 0, p.relayBatch)
-	for rows.Next() {
-		var value item
-		if err = rows.Scan(&value.id, &value.topic, &value.key, &value.payload); err != nil {
-			rows.Close()
-			return err
-		}
-		items = append(items, value)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	records := make([]*kgo.Record, 0, len(items))
-	itemsByRecord := make(map[*kgo.Record]item, len(items))
-	for _, value := range items {
-		record := &kgo.Record{Topic: value.topic, Key: []byte(value.key), Value: value.payload}
-		records = append(records, record)
-		itemsByRecord[record] = value
-	}
-	results := p.producer.ProduceSync(ctx, records...)
-	var produceErrors []error
-	// ProduceSync reports completion order, which can differ across partitions.
-	for _, result := range results {
-		value, ok := itemsByRecord[result.Record]
-		if !ok {
-			return errors.New("kafka producer returned an unknown outbox record")
-		}
-		if result.Err != nil {
-			produceErrors = append(produceErrors, result.Err)
-			if _, err = tx.Exec(ctx, `update kafka_outbox set attempts=attempts+1,last_error=$2 where id=$1`, value.id, result.Err.Error()); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err = tx.Exec(ctx, `update kafka_outbox set published_at=now(),attempts=attempts+1,last_error='' where id=$1`, value.id); err != nil {
-			return err
-		}
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return errors.Join(append(produceErrors, err)...)
-	}
-	return errors.Join(produceErrors...)
 }
 
 func (p *KafkaPipeline) RunEventProjector(ctx context.Context) {

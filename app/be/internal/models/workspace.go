@@ -43,3 +43,11 @@ type GatewayFileWrite struct {
 	Path, SHA string
 	Size      int64
 }
+
+type AgentRunState struct {
+	RunID          string `json:"run_id"`
+	ConversationID string `json:"conversation_id"`
+	Status         string `json:"status"`
+	LastSequence   int64  `json:"last_sequence"`
+	Error          string `json:"error,omitempty"`
+}

@@ -27,11 +27,11 @@ type snapshotMetadataStub struct {
 	err     error
 }
 
-func (s *snapshotMetadataStub) CanSaveWorkspaceSnapshot(context.Context, string, string) (bool, error) {
+func (s *snapshotMetadataStub) CanSaveWorkspaceSnapshot(context.Context, string) (bool, error) {
 	return s.allowed, s.err
 }
 
-func (s *snapshotMetadataStub) UpsertWorkspaceSnapshotMetadata(_ context.Context, _, _ string, item workspaceSnapshotMetadata) (bool, error) {
+func (s *snapshotMetadataStub) UpsertWorkspaceSnapshotMetadata(_ context.Context, _ string, item workspaceSnapshotMetadata) (bool, error) {
 	if s.err != nil || !s.allowed {
 		return false, s.err
 	}
@@ -87,7 +87,7 @@ func TestWorkspaceSnapshotSaveUsesContentAddressedObject(t *testing.T) {
 	digest := sha256.Sum256(data)
 	sha := hex.EncodeToString(digest[:])
 
-	saved, err := artifacts.Save(context.Background(), "run-1", "worker-1", data, sha, "", time.Unix(1, 0))
+	saved, err := artifacts.Save(context.Background(), "run-1", data, sha, "", time.Unix(1, 0))
 	require.NoError(t, err)
 	require.True(t, saved)
 	require.Equal(t, "tenant/workspace-snapshots/sha256/"+sha[:2]+"/"+sha, metadata.item.ObjectKey)
@@ -96,7 +96,7 @@ func TestWorkspaceSnapshotSaveUsesContentAddressedObject(t *testing.T) {
 	require.Nil(t, metadata.item.LegacyData)
 	require.Equal(t, data, objects.objects[metadata.item.ObjectKey])
 
-	_, err = artifacts.Save(context.Background(), "run-2", "worker-1", data, sha, "", time.Unix(2, 0))
+	_, err = artifacts.Save(context.Background(), "run-2", data, sha, "", time.Unix(2, 0))
 	require.NoError(t, err)
 	require.Equal(t, 1, objects.puts)
 }
@@ -106,13 +106,13 @@ func TestWorkspaceSnapshotSaveValidatesSHAAndS3Errors(t *testing.T) {
 	objects := &snapshotObjectStoreStub{}
 	artifacts := &workspaceSnapshotArtifacts{metadata: metadata, objects: objects, maxBytes: 1024}
 
-	_, err := artifacts.Save(context.Background(), "run", "worker", []byte("data"), "wrong", "", time.Now())
+	_, err := artifacts.Save(context.Background(), "run", []byte("data"), "wrong", "", time.Now())
 	require.ErrorContains(t, err, "SHA-256")
 	require.Zero(t, metadata.upserts)
 
 	digest := sha256.Sum256([]byte("data"))
 	objects.putErr = errors.New("S3 unavailable")
-	_, err = artifacts.Save(context.Background(), "run", "worker", []byte("data"), hex.EncodeToString(digest[:]), "", time.Now())
+	_, err = artifacts.Save(context.Background(), "run", []byte("data"), hex.EncodeToString(digest[:]), "", time.Now())
 	require.ErrorContains(t, err, "S3 unavailable")
 	require.Zero(t, metadata.upserts)
 }
@@ -129,7 +129,7 @@ func TestWorkspaceSnapshotCaptureFailuresOnlyWriteMetadata(t *testing.T) {
 			metadata := &snapshotMetadataStub{allowed: true}
 			objects := &snapshotObjectStoreStub{}
 			artifacts := &workspaceSnapshotArtifacts{metadata: metadata, objects: objects, maxBytes: 1024}
-			saved, err := artifacts.Save(context.Background(), "run", "worker", testCase.data, "", testCase.captureError, time.Now())
+			saved, err := artifacts.Save(context.Background(), "run", testCase.data, "", testCase.captureError, time.Now())
 			require.NoError(t, err)
 			require.True(t, saved)
 			require.Empty(t, metadata.item.ObjectKey)

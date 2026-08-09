@@ -33,6 +33,20 @@ func TestGatewayUsesAgentInvocationContracts(t *testing.T) {
 			result.Header.Set(agentlandSessionHeader, "session-1")
 			result.Header.Set("Content-Type", "text/event-stream")
 			return result, nil
+		case "/api/agent-sessions/invocations/api/runs":
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "session-1", r.Header.Get(agentlandSessionHeader))
+			body, err := io.ReadAll(r.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"run_id":"run-1","conversation_id":"project-1","message":"build an app","capture_trajectory":true}`, string(body))
+			return response(http.StatusAccepted, `{"run_id":"run-1","conversation_id":"project-1","status":"running","last_sequence":0}`), nil
+		case "/api/agent-sessions/invocations/api/runs/run-1":
+			return response(http.StatusOK, `{"run_id":"run-1","conversation_id":"project-1","status":"running","last_sequence":1}`), nil
+		case "/api/agent-sessions/invocations/api/runs/run-1/events":
+			require.Equal(t, "1", r.URL.Query().Get("after"))
+			result := response(http.StatusOK, "id: 2\nevent: run.completed\ndata: {\"type\":\"run.completed\",\"run_id\":\"run-1\",\"conversation_id\":\"project-1\",\"sequence\":2,\"timestamp\":\"2026-08-02T00:00:00Z\",\"payload\":{}}\n\n")
+			result.Header.Set("Content-Type", "text/event-stream")
+			return result, nil
 		case "/api/agent-sessions/invocations/api/workspace/tree":
 			result := response(http.StatusOK, `{"root":"/workspace","nodes":[{"path":"main.go","name":"main.go","type":"file","size":12}]}`)
 			result.Header.Set(agentlandSessionHeader, "session-1")
@@ -68,6 +82,19 @@ func TestGatewayUsesAgentInvocationContracts(t *testing.T) {
 	require.NoError(t, client.StreamChat(ctx, sessionID, "project-1", "build an app", func(event *models.AgentEvent) error { events = append(events, event); return nil }))
 	require.Len(t, events, 1)
 	require.Equal(t, "agent-run-1", events[0].RunID)
+	state, err := client.StartAgentRun(ctx, sessionID, "run-1", "project-1", "build an app")
+	require.NoError(t, err)
+	require.Equal(t, "run-1", state.RunID)
+	state, err = client.GetAgentRun(ctx, sessionID, "run-1")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), state.LastSequence)
+	asyncEvents := make([]*models.AgentEvent, 0, 1)
+	require.NoError(t, client.StreamAgentRun(ctx, sessionID, "run-1", 1, func(event *models.AgentEvent) error {
+		asyncEvents = append(asyncEvents, event)
+		return nil
+	}))
+	require.Len(t, asyncEvents, 1)
+	require.Equal(t, "run.completed", asyncEvents[0].Type)
 	tree, err := client.GetFileTree(ctx, sessionID, ".")
 	require.NoError(t, err)
 	require.Len(t, tree.Nodes, 1)

@@ -48,6 +48,9 @@ func (r *publicationRepoStub) RequestPublicationCancel(context.Context, string, 
 	r.cancelled = true
 	return r.item, nil
 }
+func (r *publicationRepoStub) FailPublicationDispatch(context.Context, string, time.Time, error) error {
+	return nil
+}
 func (r *publicationRepoStub) ClaimPublication(ctx context.Context, id, workerID string, now time.Time) (*models.Publication, error) {
 	if r.claim != nil {
 		return r.claim(ctx, id, workerID, now)

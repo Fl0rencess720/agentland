@@ -51,6 +51,31 @@ func TestServerStreamsChatAndReturnsHistory(t *testing.T) {
 	require.Contains(t, response.Body.String(), `"content":"hello"`)
 }
 
+func TestServerStartsAndReplaysAsynchronousRun(t *testing.T) {
+	server, err := newServer(context.Background(), &Config{WorkspaceRoot: t.TempDir(), ContextTokens: 128000}, &fakeModel{
+		responses: []*schema.Message{schema.AssistantMessage("hello", nil)},
+	})
+	require.NoError(t, err)
+	defer server.Close()
+
+	response := serveRequest(server, http.MethodPost, "/api/runs", `{"run_id":"run-1","conversation_id":"main","message":"hi"}`)
+	require.Equal(t, http.StatusAccepted, response.Code)
+	require.Contains(t, response.Body.String(), `"status":"running"`)
+	require.Eventually(t, func() bool {
+		state := serveRequest(server, http.MethodGet, "/api/runs/run-1", "")
+		return state.Code == http.StatusOK && strings.Contains(state.Body.String(), `"status":"completed"`)
+	}, time.Second, 10*time.Millisecond)
+
+	response = serveRequest(server, http.MethodGet, "/api/runs/run-1/events?after=1", "")
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), "event: message.delta")
+	require.Contains(t, response.Body.String(), "event: run.completed")
+
+	response = serveRequest(server, http.MethodPost, "/api/runs", `{"run_id":"run-1","conversation_id":"main","message":"hi"}`)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), `"status":"completed"`)
+}
+
 func TestServerRejectsOversizedChatMessageAndBody(t *testing.T) {
 	server := newTestServer(t, t.TempDir())
 	defer server.Close()

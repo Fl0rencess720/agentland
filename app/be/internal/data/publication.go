@@ -59,9 +59,6 @@ func (r *runRepo) CreatePublication(ctx context.Context, input *models.CreatePub
 		}
 		return nil, false, err
 	}
-	if err = enqueueTask(ctx, tx, kafkaPublicationTopic(), outboxKindPublicationTask, input.ID, input.ProjectID); err != nil {
-		return nil, false, err
-	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, false, err
 	}
@@ -154,6 +151,20 @@ func (r *runRepo) RequestPublicationCancel(ctx context.Context, ownerID, publica
 		return nil, err
 	}
 	return item, nil
+}
+
+func (r *runRepo) FailPublicationDispatch(ctx context.Context, publicationID string, now time.Time, cause error) error {
+	pool, err := r.ready(ctx)
+	if err != nil {
+		return err
+	}
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	_, err = pool.Exec(ctx, `update project_publications set status=$2,error_code='KAFKA_PUBLISH_FAILED',error_message=$3,completed_at=$4,updated_at=$4
+		where id=$1 and status=$5`, publicationID, models.PublicationStatusFailed, message, now, models.PublicationStatusQueued)
+	return err
 }
 
 func (r *runRepo) ClaimPublication(ctx context.Context, publicationID, workerID string, now time.Time) (*models.Publication, error) {

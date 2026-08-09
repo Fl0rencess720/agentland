@@ -127,6 +127,72 @@ func (c *agentlandGatewayClient) StreamChat(ctx context.Context, sessionID, conv
 	if actual := strings.TrimSpace(resp.Header.Get(agentlandSessionHeader)); actual != "" && actual != strings.TrimSpace(sessionID) {
 		return &models.GatewayResponseError{StatusCode: http.StatusConflict, Code: "PROJECT_RUNTIME_EXPIRED", Message: "project runtime session was replaced"}
 	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return decodeGatewayError(resp.StatusCode, body)
+	}
+	return parseAgentEvents(resp.Body, onEvent)
+}
+
+func (c *agentlandGatewayClient) StartAgentRun(ctx context.Context, sessionID, runID, conversationID, message string) (result *models.AgentRunState, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.start_agent_run", attribute.String("gateway.session_id", sessionID), attribute.String("agent.run_id", runID))
+	defer finishGatewaySpan(span, &err)
+	data, err := c.invocationJSON(ctx, http.MethodPost, "/api/agent-sessions/invocations/api/runs", sessionID, map[string]any{
+		"run_id": runID, "conversation_id": conversationID, "message": message, "capture_trajectory": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var state models.AgentRunState
+	if err = json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func (c *agentlandGatewayClient) GetAgentRun(ctx context.Context, sessionID, runID string) (result *models.AgentRunState, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.get_agent_run", attribute.String("gateway.session_id", sessionID), attribute.String("agent.run_id", runID))
+	defer finishGatewaySpan(span, &err)
+	requestPath := "/api/agent-sessions/invocations/api/runs/" + url.PathEscape(strings.TrimSpace(runID))
+	resp, err := c.do(ctx, http.MethodGet, requestPath, sessionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeGatewayError(resp.StatusCode, body)
+	}
+	var state models.AgentRunState
+	if err = json.Unmarshal(body, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func (c *agentlandGatewayClient) StreamAgentRun(ctx context.Context, sessionID, runID string, after int64, onEvent func(*models.AgentEvent) error) (err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.stream_agent_run", attribute.String("gateway.session_id", sessionID), attribute.String("agent.run_id", runID), attribute.Int64("agent.event.after", after))
+	defer finishGatewaySpan(span, &err)
+	query := url.Values{}
+	query.Set("after", fmt.Sprintf("%d", after))
+	requestPath := "/api/agent-sessions/invocations/api/runs/" + url.PathEscape(strings.TrimSpace(runID)) + "/events?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+requestPath, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(agentlandSessionHeader, strings.TrimSpace(sessionID))
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if actual := strings.TrimSpace(resp.Header.Get(agentlandSessionHeader)); actual != "" && actual != strings.TrimSpace(sessionID) {
+		return &models.GatewayResponseError{StatusCode: http.StatusConflict, Code: "PROJECT_RUNTIME_EXPIRED", Message: "project runtime session was replaced"}
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return decodeGatewayError(resp.StatusCode, body)
@@ -414,7 +480,7 @@ func (c *agentlandGatewayClient) invocationJSON(ctx context.Context, method, pat
 	if actual := strings.TrimSpace(resp.Header.Get(agentlandSessionHeader)); actual != "" && actual != strings.TrimSpace(sessionID) {
 		return nil, &models.GatewayResponseError{StatusCode: http.StatusConflict, Code: "PROJECT_RUNTIME_EXPIRED", Message: "project runtime session was replaced"}
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		return nil, decodeGatewayError(resp.StatusCode, payload)
 	}
 	return payload, nil
@@ -439,7 +505,7 @@ func (c *agentlandGatewayClient) do(ctx context.Context, method, path, sessionID
 
 func parseAgentEvents(reader io.Reader, onEvent func(*models.AgentEvent) error) error {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64<<10), 16<<20)
+	scanner.Buffer(make([]byte, 64<<10), 20<<20)
 	var eventType string
 	var dataLines []string
 	flush := func() error {

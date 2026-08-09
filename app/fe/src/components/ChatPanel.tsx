@@ -60,9 +60,9 @@ function isTerminalRunEvent(event: RunEvent) {
   return event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled';
 }
 
-function reconnectDelay(signal: AbortSignal) {
+function reconnectDelay(signal: AbortSignal, failures = 1) {
   return new Promise<void>((resolve) => {
-    const timeout = window.setTimeout(resolve, 1_000);
+    const timeout = window.setTimeout(resolve, Math.min(5_000, 500 * (2 ** Math.max(0, failures - 1))));
     signal.addEventListener('abort', () => {
       window.clearTimeout(timeout);
       resolve();
@@ -231,6 +231,7 @@ export default function ChatPanel({ project, readOnly }: ChatPanelProps) {
     void (async () => {
       let lastEventId = '';
       let terminalEventReceived = false;
+      let reconnectFailures = 0;
       while (!controller.signal.aborted && !terminalEventReceived && activeRunIdRef.current === activeRunId) {
         try {
           await streamRunEvents(activeRunId, {
@@ -238,15 +239,21 @@ export default function ChatPanel({ project, readOnly }: ChatPanelProps) {
             lastEventId,
             onLastEventId: (id) => { lastEventId = id; },
             onEvent: (event) => {
+              reconnectFailures = 0;
+              setRunError('');
               if (isTerminalRunEvent(event)) terminalEventReceived = true;
               handleEvent(event);
             },
           });
+          if (!terminalEventReceived) reconnectFailures += 1;
         } catch (error) {
           if (controller.signal.aborted) return;
-          setRunError(error instanceof Error && error.message ? error.message : t('workspace.connectionError'));
+          reconnectFailures += 1;
+          if (reconnectFailures >= 3) {
+            setRunError(error instanceof Error && error.message ? error.message : t('workspace.connectionError'));
+          }
         }
-        if (!terminalEventReceived && !controller.signal.aborted) await reconnectDelay(controller.signal);
+        if (!terminalEventReceived && !controller.signal.aborted) await reconnectDelay(controller.signal, reconnectFailures);
       }
     })();
 
@@ -324,7 +331,7 @@ export default function ChatPanel({ project, readOnly }: ChatPanelProps) {
     ? persistedMessages.filter((message) => message.role !== 'assistant' || message.run_id !== streamedAssistant.runId)
     : persistedMessages, [persistedMessages, streamedAssistant]);
   const showPendingUser = pendingUser && !persistedMessages.some((message) => message.id === pendingUser.id);
-  const isRunning = Boolean(activeRunId) && (runStatus === 'queued' || runStatus === 'running');
+  const isRunning = Boolean(activeRunId) && runStatus === 'running';
 
   return (
     <section aria-label={t('workspace.chat')} className="flex h-full min-h-0 flex-col bg-white">

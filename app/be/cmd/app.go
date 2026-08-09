@@ -44,7 +44,7 @@ func newApp(ctx context.Context) (*App, error) {
 		kafka.Close()
 		return nil, fmt.Errorf("gateway does not support image publication")
 	}
-	projectUseCase := biz.NewProjectUsecaseWithPublishing(projectRepo, runRepo, runEvents, gateway, publicationRepo, publisher, data.NewLangfuseScoreClient())
+	projectUseCase := biz.NewProjectUsecaseWithPublishingAndTasks(projectRepo, runRepo, runEvents, gateway, publicationRepo, publisher, kafka, data.NewLangfuseScoreClient())
 
 	httpServer := service.NewHTTPServer(
 		middlewares.NewDefaultIPRateLimiter(),
@@ -54,7 +54,7 @@ func newApp(ctx context.Context) (*App, error) {
 	)
 	return &App{
 		HTTPServer:        httpServer,
-		RunWorker:         biz.NewRunWorker(runRepo, gateway, kafka.RunQueue()),
+		RunWorker:         biz.NewRunWorkerWithEvents(runRepo, gateway, kafka.RunQueue(), kafka),
 		PublicationWorker: biz.NewPublicationWorker(publicationRepo, publisher, kafka.PublicationQueue()),
 		Kafka:             kafka,
 	}, nil

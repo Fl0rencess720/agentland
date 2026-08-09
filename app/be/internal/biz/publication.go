@@ -25,6 +25,7 @@ type PublicationRepo interface {
 	GetPublication(context.Context, string, string) (*models.Publication, error)
 	ListPublications(context.Context, string, string, int) ([]*models.Publication, error)
 	RequestPublicationCancel(context.Context, string, string, time.Time) (*models.Publication, error)
+	FailPublicationDispatch(context.Context, string, time.Time, error) error
 }
 
 type PublicationWorkerRepo interface {
@@ -90,12 +91,20 @@ func (u *projectUseCase) CreatePublication(ctx context.Context, principal models
 	now := u.now().UTC()
 	carrier := propagation.MapCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
-	publication, _, err := u.publications.CreatePublication(ctx, &models.CreatePublicationInput{
+	publication, existing, err := u.publications.CreatePublication(ctx, &models.CreatePublicationInput{
 		ID: token.NewID("pub"), OwnerID: principal.UserID, ProjectID: projectID, IdempotencyKey: idempotencyKey,
 		Context: contextPath, Dockerfile: dockerfile, TraceParent: carrier.Get("traceparent"), TraceState: carrier.Get("tracestate"), Now: now,
 	})
 	if err != nil {
 		return nil, mapAPIError(err)
+	}
+	if u.tasks != nil {
+		if err = u.tasks.PublishPublicationTask(ctx, publication.ID, publication.ProjectID); err != nil {
+			if !existing {
+				_ = u.publications.FailPublicationDispatch(context.WithoutCancel(ctx), publication.ID, u.now().UTC(), err)
+			}
+			return nil, mapAPIError(err)
+		}
 	}
 	_ = u.runs.TouchRuntime(ctx, projectID, now)
 	return publicationResponse(publication), nil
