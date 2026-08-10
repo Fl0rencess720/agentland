@@ -35,18 +35,29 @@ const (
 	maxSummaryFileBytes     = 128 << 10
 	minStreamBufferTokens   = 16 << 10
 
-	compressionThresholdPercent   = 50
-	compressionPreservePercent    = 30
-	compressionRetryGrowthPercent = 150
-	compressionToolTokenBudget    = 50_000
-	compressionToolTailLines      = 30
-	compressionToolTailBytes      = 8 << 10
-	compressionMaxOutputTokens    = 8 << 10
+	compressionThresholdPercent    = 50
+	compressionPreservePercent     = 30
+	compressionRetryGrowthPercent  = 150
+	compressionToolTokenBudget     = 50_000
+	compressionSingleToolTokens    = 12_000
+	compressionToolTailLines       = 30
+	compressionToolTailBytes       = 8 << 10
+	compressionMaxOutputTokens     = 8 << 10
+	compressionRecentMessages      = 8
+	snipTriggerPercent             = 80
+	microcompactTriggerPercent     = 90
+	microcompactToolTokens         = 2_000
+	contextCollapseTriggerPercent  = 150
+	contextCollapsePreservePercent = 50
+	contextCollapseMinMessages     = 12
 )
 
 const compressionSystemPrompt = `Create a compact, factual state snapshot for a coding agent that will continue this session.
 Output only one <state_snapshot> block. Preserve exact user requirements and constraints, decisions and their reasons, current implementation state, changed and relevant files, commands and tool evidence, unresolved errors, and the next concrete steps.
 Merge every still-relevant fact from the previous snapshot. Prefer exact paths, identifiers, error messages, and observed results. Do not invent completed work or hide uncertainty.`
+
+const contextCollapseSystemPrompt = `Create a compact factual fold of older coding-agent history.
+Output only one <context_collapse> block. Preserve user requirements and constraints, decisions and reasons, relevant file paths, tool evidence, unresolved errors, and next steps. The recent conversation will be supplied separately. Do not invent work or completion.`
 
 type MemoryStore struct {
 	root                string
@@ -64,8 +75,19 @@ type conversationSummary struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type conversationCollapse struct {
+	Version    int    `json:"version"`
+	BaseUpTo   int    `json:"base_up_to"`
+	BaseOffset int64  `json:"base_offset"`
+	UpTo       int    `json:"up_to"`
+	Offset     int64  `json:"offset"`
+	Content    string `json:"content"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
 type contextMessage struct {
 	message    *schema.Message
+	number     int
 	nextOffset int64
 	tokens     int
 	bytes      int
@@ -169,6 +191,10 @@ func (s *MemoryStore) Context(ctx context.Context, conversationID, systemPrompt 
 	if err != nil {
 		return nil, err
 	}
+	collapse, err := s.loadCollapse(conversationID)
+	if err != nil {
+		return nil, err
+	}
 	memory, err := s.readProjectMemory()
 	if err != nil {
 		return nil, err
@@ -178,12 +204,19 @@ func (s *MemoryStore) Context(ctx context.Context, conversationID, systemPrompt 
 	}
 
 	historyBudget := contextHistoryTokenBudget(s.contextTokens, systemPrompt, summary)
-	history, updatedSummary, changed, err := s.contextHistory(ctx, conversationID, chatModel, summary, historyBudget)
+	history, updatedSummary, updatedCollapse, summaryChanged, collapseChanged, err := s.contextHistory(
+		ctx, conversationID, chatModel, summary, collapse, historyBudget,
+	)
 	if err != nil {
 		return nil, err
 	}
-	if changed {
+	if summaryChanged {
 		if err := s.saveSummary(conversationID, updatedSummary); err != nil {
+			return nil, err
+		}
+	}
+	if collapseChanged {
+		if err := s.saveCollapse(conversationID, updatedCollapse); err != nil {
 			return nil, err
 		}
 	}
@@ -195,18 +228,19 @@ func (s *MemoryStore) contextHistory(
 	conversationID string,
 	chatModel model.BaseChatModel,
 	summary *conversationSummary,
+	collapse *conversationCollapse,
 	historyBudget int,
-) ([]*schema.Message, *conversationSummary, bool, error) {
+) ([]*schema.Message, *conversationSummary, *conversationCollapse, bool, bool, error) {
 	dir, err := s.conversationDir(conversationID)
 	if err != nil {
-		return nil, summary, false, err
+		return nil, summary, collapse, false, false, err
 	}
 	f, err := os.Open(filepath.Join(dir, "history.jsonl"))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, summary, false, nil
+		return nil, summary, nil, false, collapse != nil, nil
 	}
 	if err != nil {
-		return nil, summary, false, fmt.Errorf("open conversation history: %w", err)
+		return nil, summary, collapse, false, false, fmt.Errorf("open conversation history: %w", err)
 	}
 	defer f.Close()
 
@@ -217,19 +251,19 @@ func (s *MemoryStore) contextHistory(
 		offset = summary.Offset
 	}
 	if checkpoint < 0 || offset < 0 {
-		return nil, summary, false, fmt.Errorf("conversation summary checkpoint is invalid")
+		return nil, summary, collapse, false, false, fmt.Errorf("conversation summary checkpoint is invalid")
 	}
 	if err := validateHistoryOffset(f, offset); err != nil {
-		return nil, summary, false, err
+		return nil, summary, collapse, false, false, err
 	}
 
 	legacySkip := 0
 	startNumber := checkpoint
-	changed := false
+	summaryChanged := false
 	if checkpoint > 0 && offset == 0 {
 		legacySkip = checkpoint
 		startNumber = 0
-		changed = true
+		summaryChanged = true
 	}
 
 	currentSummary := summary
@@ -254,7 +288,7 @@ func (s *MemoryStore) contextHistory(
 			return fmt.Errorf("decode conversation history line %d: %w", line.number, err)
 		}
 		entry := contextMessage{
-			message: &message, nextOffset: line.nextOffset,
+			message: &message, number: line.number, nextOffset: line.nextOffset,
 			tokens: estimateMessageTokens(&message), bytes: messageSize(&message),
 		}
 		entries = append(entries, entry)
@@ -265,35 +299,34 @@ func (s *MemoryStore) contextHistory(
 		}
 
 		var compacted bool
-		currentSummary, entries, historyTokens, historyBytes, compacted, err = s.compactContext(
+		currentSummary, entries, historyTokens, historyBytes, compacted, err = s.autoCompactContext(
 			ctx, conversationID, chatModel, currentSummary, entries, historyTokens, historyBytes, historyBudget,
 		)
-		changed = changed || compacted
+		summaryChanged = summaryChanged || compacted
 		return err
 	})
 	if err != nil {
-		return nil, summary, false, fmt.Errorf("read conversation history: %w", err)
+		return nil, summary, collapse, false, false, fmt.Errorf("read conversation history: %w", err)
 	}
 	if legacySkip > 0 {
-		return nil, summary, false, fmt.Errorf("conversation summary checkpoint exceeds history")
+		return nil, summary, collapse, false, false, fmt.Errorf("conversation summary checkpoint exceeds history")
 	}
 
-	var compacted bool
-	currentSummary, entries, historyTokens, historyBytes, compacted, err = s.compactContext(
-		ctx, conversationID, chatModel, currentSummary, entries, historyTokens, historyBytes, historyBudget,
+	currentSummary, collapse, entries, compacted, collapseChanged, err := s.progressiveContext(
+		ctx, conversationID, chatModel, currentSummary, collapse, entries, historyBudget,
 	)
 	if err != nil {
-		return nil, summary, false, err
+		return nil, summary, collapse, false, false, err
 	}
-	changed = changed || compacted
+	summaryChanged = summaryChanged || compacted
 	history := make([]*schema.Message, 0, len(entries))
 	for _, entry := range entries {
 		history = append(history, entry.message)
 	}
-	return history, currentSummary, changed, nil
+	return history, currentSummary, collapse, summaryChanged, collapseChanged, nil
 }
 
-func (s *MemoryStore) compactContext(
+func (s *MemoryStore) autoCompactContext(
 	ctx context.Context,
 	conversationID string,
 	chatModel model.BaseChatModel,
@@ -351,10 +384,7 @@ func (s *MemoryStore) compactContext(
 		return summary, degradedEntries, degradedTokens, degradedBytes, false, nil
 	}
 	nextSummary.Version = 2
-	nextSummary.UpTo = keepStart
-	if summary != nil {
-		nextSummary.UpTo += summary.UpTo
-	}
+	nextSummary.UpTo = entries[keepStart-1].number
 	nextSummary.Offset = entries[keepStart-1].nextOffset
 	keptEntries := degradedEntries[keepStart:]
 	keptTokens, keptBytes := contextMessageTotals(keptEntries)
@@ -471,17 +501,7 @@ func summarize(
 }
 
 func normalizeStateSnapshot(content string) string {
-	content = strings.TrimSpace(strings.ToValidUTF8(content, "\uFFFD"))
-	if content == "" {
-		return ""
-	}
-	if start := strings.Index(content, "<state_snapshot>"); start >= 0 {
-		if end := strings.Index(content[start:], "</state_snapshot>"); end >= 0 {
-			end += start + len("</state_snapshot>")
-			return content[start:end]
-		}
-	}
-	return "<state_snapshot>\n" + content + "\n</state_snapshot>"
+	return normalizeTaggedBlock(content, "state_snapshot")
 }
 
 func contextHistoryTokenBudget(contextTokens int, systemPrompt string, summary *conversationSummary) int {
@@ -530,36 +550,12 @@ func summaryTokenCount(summary *conversationSummary) int {
 }
 
 func (s *MemoryStore) degradeToolOutputs(conversationID string, messages []*schema.Message) ([]*schema.Message, error) {
-	result := cloneMessages(messages)
-	used := 0
-	for index := len(result) - 1; index >= 0; index-- {
-		message := result[index]
-		if message.Role != schema.Tool || message.Content == "" {
-			continue
-		}
-		tokens := estimateTextTokens(message.Content)
-		if used+tokens <= compressionToolTokenBudget {
-			used += tokens
-			continue
-		}
-		path, err := s.saveCompressionArtifact(conversationID, message.Content)
-		if err != nil {
-			return nil, err
-		}
-		tail := lastLines(message.Content, compressionToolTailLines, compressionToolTailBytes)
-		message.Content = fmt.Sprintf(
-			"[Older tool output truncated during context compression. Full output: %s; original size: %d bytes; showing the last %d lines.]\n\n%s",
-			path, len(message.Content), compressionToolTailLines, tail,
-		)
-		used += estimateTextTokens(message.Content)
-	}
-	return result, nil
+	return s.boundToolResultMessages(conversationID, messages)
 }
 
 func (s *MemoryStore) saveCompressionArtifact(conversationID, content string) (string, error) {
-	digest := sha256.Sum256([]byte(content))
-	name := hex.EncodeToString(digest[:]) + ".log"
-	relative := filepath.Join(".agentland", "logs", "compression", conversationID, name)
+	relative := compressionArtifactRelativePath(conversationID, content)
+	name := filepath.Base(relative)
 	dir := filepath.Join(s.root, "logs", "compression", conversationID)
 	path := filepath.Join(dir, name)
 
@@ -598,6 +594,12 @@ func (s *MemoryStore) saveCompressionArtifact(conversationID, content string) (s
 		return "", fmt.Errorf("install compression artifact: %w", err)
 	}
 	return filepath.ToSlash(relative), nil
+}
+
+func compressionArtifactRelativePath(conversationID, content string) string {
+	digest := sha256.Sum256([]byte(content))
+	name := hex.EncodeToString(digest[:]) + ".log"
+	return filepath.ToSlash(filepath.Join(".agentland", "logs", "compression", conversationID, name))
 }
 
 func lastLines(content string, count, byteLimit int) string {
@@ -788,6 +790,30 @@ func (s *MemoryStore) loadSummary(conversationID string) (*conversationSummary, 
 	return &summary, nil
 }
 
+func (s *MemoryStore) loadCollapse(conversationID string) (*conversationCollapse, error) {
+	dir, err := s.conversationDir(conversationID)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data, err := readLimitedFile(filepath.Join(dir, "collapse.json"), maxSummaryFileBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read conversation collapse: %w", err)
+	}
+	var collapse conversationCollapse
+	if err := json.Unmarshal(data, &collapse); err != nil {
+		return nil, fmt.Errorf("decode conversation collapse: %w", err)
+	}
+	if collapse.UpTo < 0 || collapse.Offset < 0 || collapse.BaseUpTo < 0 || collapse.BaseOffset < 0 || len(collapse.Content) > maxSummaryContentBytes {
+		return nil, fmt.Errorf("conversation collapse exceeds limits")
+	}
+	return &collapse, nil
+}
+
 func (s *MemoryStore) saveSummary(conversationID string, summary *conversationSummary) error {
 	if summary == nil {
 		return nil
@@ -804,34 +830,63 @@ func (s *MemoryStore) saveSummary(conversationID string, summary *conversationSu
 	if len(data) > maxSummaryFileBytes {
 		return fmt.Errorf("conversation summary exceeds %d bytes", maxSummaryFileBytes)
 	}
+	return s.saveConversationState(dir, "summary", data)
+}
+
+func (s *MemoryStore) saveCollapse(conversationID string, collapse *conversationCollapse) error {
+	dir, err := s.conversationDir(conversationID)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "collapse.json")
+	if collapse == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove conversation collapse: %w", err)
+		}
+		return nil
+	}
+	collapse.Content = utf8Prefix(strings.ToValidUTF8(collapse.Content, "\uFFFD"), maxSummaryContentBytes)
+	data, err := json.MarshalIndent(collapse, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal conversation collapse: %w", err)
+	}
+	if len(data) > maxSummaryFileBytes {
+		return fmt.Errorf("conversation collapse exceeds %d bytes", maxSummaryFileBytes)
+	}
+	return s.saveConversationState(dir, "collapse", data)
+}
+
+func (s *MemoryStore) saveConversationState(dir, name string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create conversation directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".summary-*.json")
+	tmp, err := os.CreateTemp(dir, "."+name+"-*.json")
 	if err != nil {
-		return fmt.Errorf("create conversation summary: %w", err)
+		return fmt.Errorf("create conversation %s: %w", name, err)
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return fmt.Errorf("protect conversation summary: %w", err)
+		return fmt.Errorf("protect conversation %s: %w", name, err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return fmt.Errorf("write conversation summary: %w", err)
+		return fmt.Errorf("write conversation %s: %w", name, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("sync conversation summary: %w", err)
+		return fmt.Errorf("sync conversation %s: %w", name, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close conversation summary: %w", err)
+		return fmt.Errorf("close conversation %s: %w", name, err)
 	}
-	if err := os.Rename(tmpName, filepath.Join(dir, "summary.json")); err != nil {
-		return fmt.Errorf("replace conversation summary: %w", err)
+	if err := os.Rename(tmpName, filepath.Join(dir, name+".json")); err != nil {
+		return fmt.Errorf("replace conversation %s: %w", name, err)
 	}
 	return nil
 }

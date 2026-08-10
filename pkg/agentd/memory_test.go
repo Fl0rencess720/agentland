@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
@@ -246,6 +248,277 @@ func TestMemoryMessagesStopsAtAggregateLimit(t *testing.T) {
 
 	_, err = store.Messages("main")
 	require.ErrorContains(t, err, "conversation history exceeds")
+}
+
+func TestProgressiveContextRunsFiveStagesInOrder(t *testing.T) {
+	store := NewMemoryStore(t.TempDir(), 128000)
+	messages := make([]*schema.Message, 0, 24)
+	largeBudgetOutput := strings.Repeat("budget output\n", 20_000)
+	microOutput := strings.Repeat("refetchable file content ", 500)
+	messages = append(messages,
+		toolCallMessage("budget-call", "shell", `{"command":"build"}`),
+		schema.ToolMessage(largeBudgetOutput, "budget-call", schema.WithToolName("shell")),
+		toolCallMessage("micro-call", "read_file", `{"path":"large.txt"}`),
+		schema.ToolMessage(microOutput, "micro-call", schema.WithToolName("read_file")),
+	)
+	for index := 0; index < 8; index++ {
+		messages = append(messages, schema.UserMessage(strings.Repeat("requirement ", 80)))
+		assistant := schema.AssistantMessage(strings.Repeat("implementation detail ", 60), nil)
+		assistant.ReasoningContent = strings.Repeat("private reasoning ", 300)
+		messages = append(messages, assistant)
+	}
+	messages = append(messages,
+		schema.UserMessage(strings.Repeat("recent request ", 80)),
+		schema.AssistantMessage(strings.Repeat("recent answer ", 80), nil),
+	)
+	chatModel := &fakeModel{generateResponses: []*schema.Message{
+		schema.AssistantMessage(strings.Repeat("large collapse ", 500), nil),
+		schema.AssistantMessage("draft state", nil),
+		schema.AssistantMessage("<state_snapshot>verified state</state_snapshot>", nil),
+	}}
+
+	result, summary, collapse, summaryChanged, collapseChanged, reports, err := store.runProgressiveContext(
+		context.Background(), "main", chatModel, nil, nil, testContextEntries(messages), 300,
+	)
+	require.NoError(t, err)
+	require.Equal(t, progressiveContextStageOrder, stageNames(reports))
+	for _, report := range reports {
+		require.Truef(t, report.Triggered, "stage %s did not trigger", report.Name)
+	}
+	require.True(t, summaryChanged)
+	require.True(t, collapseChanged)
+	require.NotNil(t, summary)
+	require.Nil(t, collapse)
+	require.NotEmpty(t, result)
+	requireToolProtocolValid(t, contextMessages(result))
+	require.Equal(t, 3, chatModel.generateCalls)
+}
+
+func TestToolResultBudgetPersistsFullOutputAndBoundsContextView(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewMemoryStore(workspace, 128000)
+	large := strings.Repeat("0123456789abcdef", 20_000)
+	messages := []*schema.Message{
+		toolCallMessage("call-1", "shell", `{"command":"large"}`),
+		schema.ToolMessage(large, "call-1", schema.WithToolName("shell")),
+	}
+
+	result, err := store.applyToolResultBudget("main", testContextEntries(messages))
+	require.NoError(t, err)
+	require.LessOrEqual(t, estimateTextTokens(result[1].message.Content), compressionSingleToolTokens)
+	require.Contains(t, result[1].message.Content, ".agentland/logs/compression/main/")
+	require.Equal(t, large, messages[1].Content)
+
+	artifacts, err := filepath.Glob(filepath.Join(workspace, ".agentland", "logs", "compression", "main", "*.log"))
+	require.NoError(t, err)
+	require.Len(t, artifacts, 1)
+	content, err := os.ReadFile(artifacts[0])
+	require.NoError(t, err)
+	require.Equal(t, large, string(content))
+
+	cumulative := make([]*schema.Message, 0, 240)
+	medium := strings.Repeat("medium-output ", 2_400)
+	for index := 0; index < 120; index++ {
+		callID := fmt.Sprintf("medium-%d", index)
+		cumulative = append(cumulative,
+			toolCallMessage(callID, "shell", `{"command":"medium"}`),
+			schema.ToolMessage(medium, callID, schema.WithToolName("shell")),
+		)
+	}
+	bounded, err := store.applyToolResultBudget("main", testContextEntries(cumulative))
+	require.NoError(t, err)
+	require.Contains(t, bounded[1].message.Content, ".agentland/logs/compression/main/")
+	require.Equal(t, medium, bounded[len(bounded)-1].message.Content)
+	totalToolTokens, archived := 0, 0
+	for _, entry := range bounded {
+		if entry.message.Role != schema.Tool {
+			continue
+		}
+		tokens := estimateTextTokens(entry.message.Content)
+		require.LessOrEqual(t, tokens, compressionSingleToolTokens)
+		totalToolTokens += tokens
+		if strings.Contains(entry.message.Content, "Full output:") {
+			archived++
+		}
+	}
+	require.LessOrEqual(t, totalToolTokens, compressionToolTokenBudget)
+	require.Positive(t, archived)
+	requireToolProtocolValid(t, contextMessages(bounded))
+
+	invalid := strings.Repeat(string([]byte{0xff, 'x'}), 40_000)
+	invalidResult, err := store.applyToolResultBudget("main", testContextEntries([]*schema.Message{
+		toolCallMessage("invalid", "shell", `{"command":"invalid"}`),
+		schema.ToolMessage(invalid, "invalid", schema.WithToolName("shell")),
+	}))
+	require.NoError(t, err)
+	require.True(t, utf8.ValidString(invalidResult[1].message.Content))
+	require.LessOrEqual(t, estimateTextTokens(invalidResult[1].message.Content), compressionSingleToolTokens)
+}
+
+func TestProgressiveContextKeepsToolCallProtocolValid(t *testing.T) {
+	store := NewMemoryStore(t.TempDir(), 128000)
+	messages := []*schema.Message{
+		schema.UserMessage(strings.Repeat("old request ", 200)),
+		toolCallMessage("call-1", "read_file", `{"path":"one"}`),
+		schema.ToolMessage(strings.Repeat("same output ", 1000), "call-1", schema.WithToolName("read_file")),
+		toolCallMessage("call-2", "read_file", `{"path":"two"}`),
+		schema.ToolMessage(strings.Repeat("same output ", 1000), "call-2", schema.WithToolName("read_file")),
+		schema.UserMessage("recent request"),
+		schema.AssistantMessage("recent answer", nil),
+	}
+
+	result, err := store.microcompactOldToolResults("main", testContextEntries(messages), 100)
+	require.NoError(t, err)
+	requireToolProtocolValid(t, contextMessages(result))
+	require.Equal(t, "call-1", result[2].message.ToolCallID)
+	require.Equal(t, "call-2", result[4].message.ToolCallID)
+}
+
+func TestContextCollapsePersistsAndRestoresWithoutChangingHistory(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewMemoryStore(workspace, 1400)
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, ".agentland"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace, ".agentland", "MEMORY.md"), []byte("keep project rule"), 0o600))
+	for index := 0; index < 8; index++ {
+		require.NoError(t, store.Append("main", schema.UserMessage(strings.Repeat("user constraint ", 16))))
+		require.NoError(t, store.Append("main", schema.AssistantMessage(strings.Repeat("implementation state ", 16), nil)))
+	}
+	historyPath := filepath.Join(workspace, ".agentland", "conversations", "main", "history.jsonl")
+	before, err := os.ReadFile(historyPath)
+	require.NoError(t, err)
+
+	firstModel := &fakeModel{generateResponses: []*schema.Message{
+		schema.AssistantMessage("<context_collapse>requirements and files preserved</context_collapse>", nil),
+	}}
+	first, err := store.Context(context.Background(), "main", "system", firstModel)
+	require.NoError(t, err)
+	require.Equal(t, 1, firstModel.generateCalls)
+	require.Contains(t, first[0].Content, "system")
+	require.Contains(t, first[0].Content, "keep project rule")
+	require.Contains(t, first[1].Content, "Earlier conversation context fold")
+	require.Contains(t, first[len(first)-2].Content, "user constraint")
+	require.Contains(t, first[len(first)-1].Content, "implementation state")
+	_, err = os.Stat(filepath.Join(workspace, ".agentland", "conversations", "main", "collapse.json"))
+	require.NoError(t, err)
+
+	restarted := NewMemoryStore(workspace, 1400)
+	secondModel := &fakeModel{}
+	second, err := restarted.Context(context.Background(), "main", "system", secondModel)
+	require.NoError(t, err)
+	require.Zero(t, secondModel.generateCalls)
+	require.Equal(t, first, second)
+	after, err := os.ReadFile(historyPath)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+}
+
+func TestSnipOnlyRemovesOldReasoningFromContextView(t *testing.T) {
+	messages := make([]*schema.Message, 0, 12)
+	for index := 0; index < 6; index++ {
+		messages = append(messages, schema.UserMessage(strings.Repeat("request ", 40)))
+		assistant := schema.AssistantMessage(strings.Repeat("answer ", 40), nil)
+		assistant.ReasoningContent = strings.Repeat("reasoning ", 100)
+		messages = append(messages, assistant)
+	}
+	entries := testContextEntries(messages)
+	result := snipOldReasoning(entries, 100)
+
+	require.Empty(t, result[1].message.ReasoningContent)
+	require.NotEmpty(t, result[len(result)-1].message.ReasoningContent)
+	require.NotEmpty(t, entries[1].message.ReasoningContent)
+	require.NotEmpty(t, entries[len(entries)-1].message.ReasoningContent)
+}
+
+func TestContextCollapseAndAutoCompactFailuresSuppressRetry(t *testing.T) {
+	store := NewMemoryStore(t.TempDir(), 1400)
+	for index := 0; index < 8; index++ {
+		require.NoError(t, store.Append("main", schema.UserMessage(strings.Repeat("user constraint ", 16))))
+		require.NoError(t, store.Append("main", schema.AssistantMessage(strings.Repeat("implementation state ", 16), nil)))
+	}
+	chatModel := &fakeModel{generateErr: errors.New("compressor unavailable")}
+
+	first, err := store.Context(context.Background(), "main", "system", chatModel)
+	require.NoError(t, err)
+	require.NotEmpty(t, first)
+	require.Equal(t, 2, chatModel.generateCalls)
+	second, err := store.Context(context.Background(), "main", "system", chatModel)
+	require.NoError(t, err)
+	require.NotEmpty(t, second)
+	require.Equal(t, 2, chatModel.generateCalls)
+}
+
+func TestContextCollapseFailureFallsBackToAutoCompact(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewMemoryStore(workspace, 1400)
+	for index := 0; index < 8; index++ {
+		require.NoError(t, store.Append("main", schema.UserMessage(strings.Repeat("user constraint ", 16))))
+		require.NoError(t, store.Append("main", schema.AssistantMessage(strings.Repeat("implementation state ", 16), nil)))
+	}
+	chatModel := &fakeModel{generateResponses: []*schema.Message{
+		schema.AssistantMessage("", nil),
+		schema.AssistantMessage("draft state", nil),
+		schema.AssistantMessage("<state_snapshot>verified state</state_snapshot>", nil),
+	}}
+
+	messages, err := store.Context(context.Background(), "main", "system", chatModel)
+	require.NoError(t, err)
+	require.Equal(t, 3, chatModel.generateCalls)
+	require.Contains(t, messages[1].Content, "verified state")
+	_, err = os.Stat(filepath.Join(workspace, ".agentland", "conversations", "main", "summary.json"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(workspace, ".agentland", "conversations", "main", "collapse.json"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestMemoryRemovesCollapseWithoutHistory(t *testing.T) {
+	workspace := t.TempDir()
+	store := NewMemoryStore(workspace, 128000)
+	require.NoError(t, store.saveCollapse("main", &conversationCollapse{
+		Version: 1, UpTo: 4, Offset: 100, Content: "<context_collapse>stale</context_collapse>", UpdatedAt: "now",
+	}))
+
+	messages, err := store.Context(context.Background(), "main", "system", &fakeModel{})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	_, err = os.Stat(filepath.Join(workspace, ".agentland", "conversations", "main", "collapse.json"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func testContextEntries(messages []*schema.Message) []contextMessage {
+	entries := make([]contextMessage, len(messages))
+	offset := int64(0)
+	for index, message := range messages {
+		offset += int64(messageSize(message) + 1)
+		entries[index] = contextMessage{
+			message: message, number: index + 1, nextOffset: offset,
+			tokens: estimateMessageTokens(message), bytes: messageSize(message),
+		}
+	}
+	return entries
+}
+
+func stageNames(reports []contextStageReport) []string {
+	names := make([]string, len(reports))
+	for index, report := range reports {
+		names[index] = report.Name
+	}
+	return names
+}
+
+func requireToolProtocolValid(t *testing.T, messages []*schema.Message) {
+	t.Helper()
+	knownCalls := make(map[string]struct{})
+	for _, message := range messages {
+		if message.Role == schema.Assistant {
+			for _, call := range message.ToolCalls {
+				knownCalls[call.ID] = struct{}{}
+			}
+		}
+		if message.Role == schema.Tool {
+			_, ok := knownCalls[message.ToolCallID]
+			require.Truef(t, ok, "tool result %s has no preceding call", message.ToolCallID)
+		}
+	}
 }
 
 func bytesOfLines(line []byte, count int) []byte {
