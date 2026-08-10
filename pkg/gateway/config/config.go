@@ -26,4 +26,18 @@ type Config struct {
 	RegistryDockerConfig     string        `json:"registry_docker_config"`
 	BuildKitAllowInsecure    bool          `json:"buildkit_allow_insecure"`
 	PublisherServiceToken    string        `json:"publisher_service_token"`
+
+	ApplicationNamespace       string        `json:"application_namespace"`
+	ApplicationBaseDomain      string        `json:"application_base_domain"`
+	ApplicationIngressClass    string        `json:"application_ingress_class"`
+	ApplicationTLSSecret       string        `json:"application_tls_secret"`
+	ApplicationRuntimeClass    string        `json:"application_runtime_class"`
+	ApplicationImagePullSecret string        `json:"application_image_pull_secret"`
+	ApplicationPort            int32         `json:"application_port"`
+	ApplicationReplicas        int32         `json:"application_replicas"`
+	ApplicationDeployTimeout   time.Duration `json:"application_deploy_timeout"`
+	ApplicationCPURequest      string        `json:"application_cpu_request"`
+	ApplicationMemoryRequest   string        `json:"application_memory_request"`
+	ApplicationCPULimit        string        `json:"application_cpu_limit"`
+	ApplicationMemoryLimit     string        `json:"application_memory_limit"`
 }

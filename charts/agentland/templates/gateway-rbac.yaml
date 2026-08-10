@@ -40,3 +40,41 @@ subjects:
     name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.serviceAccount.name) }}
     namespace: {{ .Values.namespaces.system }}
 {{- end }}
+{{- if .Values.gateway.publisher.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" "application-deployer") }}
+  namespace: {{ .Values.namespaces.applications }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agentland.componentName" (dict "root" . "name" "application-deployer") }}
+  namespace: {{ .Values.namespaces.applications }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: agentland
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agentland.componentName" (dict "root" . "name" "application-deployer") }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agentland.componentName" (dict "root" . "name" .Values.gateway.serviceAccount.name) }}
+    namespace: {{ .Values.namespaces.system }}
+{{- end }}

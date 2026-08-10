@@ -169,21 +169,40 @@ func TestGatewayPublicationUsesServiceAuthentication(t *testing.T) {
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		require.Equal(t, "/api/publications", request.URL.Path)
 		require.Equal(t, "Bearer publisher-secret", request.Header.Get("Authorization"))
-		require.Equal(t, "session-1", request.Header.Get(agentlandSessionHeader))
+		require.Equal(t, "project-1", request.URL.Query().Get("project_id"))
+		require.Equal(t, "pub-1", request.URL.Query().Get("release_id"))
 		body, err := io.ReadAll(request.Body)
 		require.NoError(t, err)
-		require.JSONEq(t, `{"project_id":"project-1","release_id":"pub-1","context":".","dockerfile":"Dockerfile"}`, string(body))
+		require.Equal(t, "snapshot", string(body))
 		return &http.Response{
 			StatusCode: http.StatusOK, Header: make(http.Header), Request: request,
-			Body: io.NopCloser(strings.NewReader(`{"image_ref":"registry.example/apps/project-1:pub-1","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logs":"done"}`)),
+			Body: io.NopCloser(strings.NewReader(`{"image_ref":"registry.example/apps/project-1:pub-1","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","deployment_url":"https://app.example.com","deployment_hostname":"app.example.com","deployment_name":"app-123","logs":"done"}`)),
 		}, nil
 	})
 	client := &agentlandGatewayClient{
 		baseURL: "http://gateway", streamClient: &http.Client{Transport: transport}, publisherToken: "publisher-secret",
 	}
-	result, err := client.PublishImage(context.Background(), "session-1", "project-1", "pub-1", ".", "Dockerfile")
+	result, err := client.PublishApplication(context.Background(), "project-1", "pub-1", ".", "Dockerfile", []byte("snapshot"))
 	require.NoError(t, err)
 	require.Equal(t, "registry.example/apps/project-1:pub-1", result.ImageRef)
+	require.Equal(t, "https://app.example.com", result.DeploymentURL)
+}
+
+func TestGatewayPublicationPreservesBuiltImageWhenDeploymentFails(t *testing.T) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Request: request,
+			Body: io.NopCloser(strings.NewReader(`{"code":"APPLICATION_DEPLOY_FAILED","message":"rollout timed out","image_ref":"registry.example/apps/project-1:pub-1","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logs":"build complete"}`)),
+		}, nil
+	})
+	client := &agentlandGatewayClient{baseURL: "http://gateway", streamClient: &http.Client{Transport: transport}, publisherToken: "publisher-secret"}
+
+	_, err := client.PublishApplication(context.Background(), "project-1", "pub-1", ".", "Dockerfile", []byte("snapshot"))
+	var gatewayErr *models.GatewayResponseError
+	require.ErrorAs(t, err, &gatewayErr)
+	require.Equal(t, "APPLICATION_DEPLOY_FAILED", gatewayErr.Code)
+	require.Equal(t, "registry.example/apps/project-1:pub-1", gatewayErr.ImageRef)
+	require.Equal(t, "build complete", gatewayErr.Logs)
 }
 
 func TestGatewaySendsExplicitEmptySHAWhenRecreatingFile(t *testing.T) {

@@ -59,6 +59,19 @@ func main() {
 	_ = viper.BindEnv("publisher.docker_config", "AL_REGISTRY_DOCKER_CONFIG")
 	_ = viper.BindEnv("publisher.buildkit_allow_insecure", "AL_BUILDKIT_ALLOW_INSECURE")
 	_ = viper.BindEnv("publisher.service_token", "AL_PUBLISHER_SERVICE_TOKEN")
+	_ = viper.BindEnv("applications.namespace", "AL_APPLICATION_NAMESPACE")
+	_ = viper.BindEnv("applications.base_domain", "AL_APPLICATION_BASE_DOMAIN")
+	_ = viper.BindEnv("applications.ingress_class", "AL_APPLICATION_INGRESS_CLASS")
+	_ = viper.BindEnv("applications.tls_secret", "AL_APPLICATION_TLS_SECRET")
+	_ = viper.BindEnv("applications.runtime_class", "AL_APPLICATION_RUNTIME_CLASS")
+	_ = viper.BindEnv("applications.image_pull_secret", "AL_APPLICATION_IMAGE_PULL_SECRET")
+	_ = viper.BindEnv("applications.port", "AL_APPLICATION_PORT")
+	_ = viper.BindEnv("applications.replicas", "AL_APPLICATION_REPLICAS")
+	_ = viper.BindEnv("applications.deploy_timeout", "AL_APPLICATION_DEPLOY_TIMEOUT")
+	_ = viper.BindEnv("applications.cpu_request", "AL_APPLICATION_CPU_REQUEST")
+	_ = viper.BindEnv("applications.memory_request", "AL_APPLICATION_MEMORY_REQUEST")
+	_ = viper.BindEnv("applications.cpu_limit", "AL_APPLICATION_CPU_LIMIT")
+	_ = viper.BindEnv("applications.memory_limit", "AL_APPLICATION_MEMORY_LIMIT")
 	_ = viper.BindEnv("otel.enabled", "AL_OTEL_ENABLED")
 	_ = viper.BindEnv("otel.endpoint", "AL_OTEL_EXPORTER_OTLP_ENDPOINT")
 	_ = viper.BindEnv("otel.insecure", "AL_OTEL_EXPORTER_OTLP_INSECURE")
@@ -80,6 +93,14 @@ func main() {
 	viper.SetDefault("publisher.platform", "linux/amd64")
 	viper.SetDefault("publisher.timeout", "20m")
 	viper.SetDefault("publisher.buildkit_allow_insecure", false)
+	viper.SetDefault("applications.namespace", "agentland-apps")
+	viper.SetDefault("applications.port", 8080)
+	viper.SetDefault("applications.replicas", 1)
+	viper.SetDefault("applications.deploy_timeout", "5m")
+	viper.SetDefault("applications.cpu_request", "50m")
+	viper.SetDefault("applications.memory_request", "64Mi")
+	viper.SetDefault("applications.cpu_limit", "500m")
+	viper.SetDefault("applications.memory_limit", "512Mi")
 	viper.SetDefault("otel.enabled", false)
 	viper.SetDefault("otel.endpoint", "otel-collector:4317")
 	viper.SetDefault("otel.insecure", true)
@@ -138,6 +159,19 @@ func main() {
 		RegistryDockerConfig:         viper.GetString("publisher.docker_config"),
 		BuildKitAllowInsecure:        viper.GetBool("publisher.buildkit_allow_insecure"),
 		PublisherServiceToken:        viper.GetString("publisher.service_token"),
+		ApplicationNamespace:         viper.GetString("applications.namespace"),
+		ApplicationBaseDomain:        viper.GetString("applications.base_domain"),
+		ApplicationIngressClass:      viper.GetString("applications.ingress_class"),
+		ApplicationTLSSecret:         viper.GetString("applications.tls_secret"),
+		ApplicationRuntimeClass:      viper.GetString("applications.runtime_class"),
+		ApplicationImagePullSecret:   viper.GetString("applications.image_pull_secret"),
+		ApplicationPort:              int32(viper.GetInt("applications.port")),
+		ApplicationReplicas:          int32(viper.GetInt("applications.replicas")),
+		ApplicationDeployTimeout:     viper.GetDuration("applications.deploy_timeout"),
+		ApplicationCPURequest:        viper.GetString("applications.cpu_request"),
+		ApplicationMemoryRequest:     viper.GetString("applications.memory_request"),
+		ApplicationCPULimit:          viper.GetString("applications.cpu_limit"),
+		ApplicationMemoryLimit:       viper.GetString("applications.memory_limit"),
 	}
 
 	server, err := gateway.NewServer(config)

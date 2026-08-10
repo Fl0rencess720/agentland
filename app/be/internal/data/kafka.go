@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Fl0rencess720/agentland/app/be/internal/biz"
+	"github.com/Fl0rencess720/agentland/app/be/internal/models"
 	"github.com/spf13/viper"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -23,12 +24,14 @@ import (
 )
 
 type KafkaPipeline struct {
-	repo      *runRepo
-	producer  *kgo.Client
-	runQueue  *kafkaTaskQueue
-	pubQueue  *kafkaTaskQueue
-	projector *kgo.Client
-	events    *kafkaRunEventStore
+	repo                         *runRepo
+	producer                     *kgo.Client
+	runQueue                     *kafkaTaskQueue
+	pubQueue                     *kafkaTaskQueue
+	projector                    *kgo.Client
+	publicationPreparation       *kgo.Client
+	events                       *kafkaRunEventStore
+	publicationPreparationHandle func(context.Context, *models.AgentEvent) error
 }
 
 func NewKafkaPipeline(ctx context.Context) (*KafkaPipeline, error) {
@@ -69,6 +72,10 @@ func newKafkaPipeline(ctx context.Context, repo *runRepo) (*KafkaPipeline, error
 	if err != nil {
 		return cleanup(err)
 	}
+	pipeline.publicationPreparation, err = kgo.NewClient(append(base, kgo.ConsumerGroup(viper.GetString("kafka.publication_preparation_group")), kgo.ConsumeTopics(kafkaEventTopic()), kgo.DisableAutoCommit())...)
+	if err != nil {
+		return cleanup(err)
+	}
 	pipeline.events = newKafkaRunEventStore()
 	pipeline.events.repo = repo
 	return pipeline, nil
@@ -77,6 +84,10 @@ func newKafkaPipeline(ctx context.Context, repo *runRepo) (*KafkaPipeline, error
 func (p *KafkaPipeline) RunQueue() biz.TaskQueue         { return p.runQueue }
 func (p *KafkaPipeline) PublicationQueue() biz.TaskQueue { return p.pubQueue }
 func (p *KafkaPipeline) EventStore() biz.RunEventStore   { return p.events }
+
+func (p *KafkaPipeline) SetPublicationPreparationHandler(handler func(context.Context, *models.AgentEvent) error) {
+	p.publicationPreparationHandle = handler
+}
 
 func (p *KafkaPipeline) Close() {
 	if p.runQueue != nil {
@@ -87,6 +98,9 @@ func (p *KafkaPipeline) Close() {
 	}
 	if p.projector != nil {
 		p.projector.Close()
+	}
+	if p.publicationPreparation != nil {
+		p.publicationPreparation.Close()
 	}
 	if p.producer != nil {
 		p.producer.Close()
@@ -310,6 +324,53 @@ func (p *KafkaPipeline) projectNext(ctx context.Context) error {
 			}
 			zap.L().Warn("commit run event projection failed", zap.Error(commitErr))
 			waitContext(ctx, time.Second)
+		}
+		return commitErr
+	}
+	return ctx.Err()
+}
+
+func (p *KafkaPipeline) RunPublicationPreparation(ctx context.Context) {
+	for ctx.Err() == nil {
+		if err := p.preparePublicationNext(ctx); err != nil && ctx.Err() == nil {
+			zap.L().Warn("consume publication preparation event failed", zap.Error(err))
+			waitContext(ctx, time.Second)
+		}
+	}
+}
+
+func (p *KafkaPipeline) preparePublicationNext(ctx context.Context) error {
+	if p.publicationPreparationHandle == nil {
+		return errors.New("publication preparation handler is not configured")
+	}
+	fetches := p.publicationPreparation.PollRecords(ctx, 1)
+	if err := fetches.Err(); err != nil {
+		return err
+	}
+	var record *kgo.Record
+	fetches.EachRecord(func(item *kgo.Record) { record = item })
+	if record == nil {
+		return nil
+	}
+	var envelope runEventEnvelope
+	if err := json.Unmarshal(record.Value, &envelope); err != nil {
+		return err
+	}
+	if envelope.Event == nil || envelope.RunID == "" || envelope.Event.RunID != envelope.RunID {
+		return errors.New("invalid run event envelope")
+	}
+	for ctx.Err() == nil {
+		if err := p.publicationPreparationHandle(ctx, envelope.Event); err != nil {
+			zap.L().Warn("handle publication preparation event failed", zap.String("run_id", envelope.RunID), zap.Error(err))
+			waitContext(ctx, time.Second)
+			continue
+		}
+		var commitErr error
+		for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
+			if commitErr = p.publicationPreparation.CommitRecords(ctx, record); commitErr == nil {
+				return nil
+			}
+			waitContext(ctx, 250*time.Millisecond)
 		}
 		return commitErr
 	}

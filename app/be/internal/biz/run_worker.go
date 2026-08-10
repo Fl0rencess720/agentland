@@ -250,7 +250,11 @@ func (w *RunWorker) startAgentRun(ctx context.Context, run *models.Run, owner st
 	} else if requested {
 		return nil, ErrRunCancelled
 	}
-	state, err := async.StartAgentRun(readyCtx, sessionID, run.ID, runtime.AgentConversationID, run.InputMessage)
+	conversationID := runtime.AgentConversationID
+	if run.AgentConversationID != "" {
+		conversationID = run.AgentConversationID
+	}
+	state, err := async.StartAgentRun(readyCtx, sessionID, run.ID, conversationID, run.InputMessage)
 	if err != nil {
 		if ownershipWasLost(lost) {
 			return nil, ErrRunLeaseLost
@@ -453,7 +457,11 @@ func (w *RunWorker) recoverExpired(ctx context.Context) {
 			if _, statusErr := async.GetAgentRun(ctx, runtime.GatewaySessionID, run.ID); statusErr != nil {
 				var gatewayErr *models.GatewayResponseError
 				if errors.As(statusErr, &gatewayErr) && gatewayErr.StatusCode == 404 {
-					if _, startErr := async.StartAgentRun(ctx, runtime.GatewaySessionID, run.ID, runtime.AgentConversationID, run.InputMessage); startErr != nil {
+					conversationID := runtime.AgentConversationID
+					if run.AgentConversationID != "" {
+						conversationID = run.AgentConversationID
+					}
+					if _, startErr := async.StartAgentRun(ctx, runtime.GatewaySessionID, run.ID, conversationID, run.InputMessage); startErr != nil {
 						if publishErr := w.publishFailure(ctx, run, "AGENT_RUN_RECOVERY_FAILED", startErr); publishErr == nil {
 							_, _ = w.repo.ReleaseRunOwnership(context.WithoutCancel(ctx), run.ID, owner)
 						}

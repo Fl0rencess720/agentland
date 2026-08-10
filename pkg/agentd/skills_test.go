@@ -47,6 +47,16 @@ func TestSkillMetadataHasSizeLimit(t *testing.T) {
 	require.ErrorContains(t, err, "unterminated YAML front matter")
 }
 
+func TestBuiltinDockerfileSkillLoads(t *testing.T) {
+	registry, err := LoadSkills(filepath.Join("..", "..", "skills"), t.TempDir())
+	require.NoError(t, err)
+	require.Contains(t, registry.Index(), "dockerfile")
+	content, err := registry.Read("dockerfile")
+	require.NoError(t, err)
+	require.Contains(t, content, "pnpm-lock.yaml")
+	require.Contains(t, content, ".agentland")
+}
+
 func writeSkill(t *testing.T, path, name, description, body string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))

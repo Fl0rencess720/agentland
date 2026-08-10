@@ -214,8 +214,9 @@ type eventStoreStub struct {
 }
 
 type taskPublisherStub struct {
-	runIDs []string
-	err    error
+	runIDs         []string
+	publicationIDs []string
+	err            error
 }
 
 func (s *taskPublisherStub) PublishRunTask(_ context.Context, runID, _ string) error {
@@ -223,7 +224,8 @@ func (s *taskPublisherStub) PublishRunTask(_ context.Context, runID, _ string) e
 	return s.err
 }
 
-func (s *taskPublisherStub) PublishPublicationTask(context.Context, string, string) error {
+func (s *taskPublisherStub) PublishPublicationTask(_ context.Context, publicationID, _ string) error {
+	s.publicationIDs = append(s.publicationIDs, publicationID)
 	return s.err
 }
 
@@ -249,6 +251,7 @@ type gatewayStub struct {
 	write       *models.GatewayFileWrite
 	putErr      error
 	getErr      error
+	getFile     func(string) (*models.GatewayFile, error)
 	events      []*models.AgentEvent
 	ensure      func(context.Context, string) (string, error)
 	stream      func(context.Context, string, string, string, func(*models.AgentEvent) error) error
@@ -293,7 +296,10 @@ func (g *gatewayStub) CancelRun(context.Context, string, string) error { return 
 func (g *gatewayStub) GetFileTree(context.Context, string, string) (*models.GatewayFileTree, error) {
 	return &models.GatewayFileTree{Root: "."}, nil
 }
-func (g *gatewayStub) GetFile(context.Context, string, string) (*models.GatewayFile, error) {
+func (g *gatewayStub) GetFile(_ context.Context, _, path string) (*models.GatewayFile, error) {
+	if g.getFile != nil {
+		return g.getFile(path)
+	}
 	return g.file, g.getErr
 }
 func (g *gatewayStub) PutFile(_ context.Context, _, _, _, sha string) (*models.GatewayFileWrite, error) {

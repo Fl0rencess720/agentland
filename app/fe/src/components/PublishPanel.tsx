@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Ban, Box, Check, Clipboard, LoaderCircle, Rocket, Terminal } from 'lucide-react';
+import { AlertCircle, Ban, Box, Check, Clipboard, ExternalLink, LoaderCircle, Rocket, Terminal } from 'lucide-react';
 import { cancelPublication, createPublication, listPublications, type Publication } from '../api';
 import { useI18n } from '../i18n';
 import { queryKeys } from '../queryKeys';
@@ -32,7 +32,7 @@ export default function PublishPanel({ projectId, readOnly }: PublishPanelProps)
   const publicationsQuery = useQuery({
     queryKey: queryKeys.publications(projectId),
     queryFn: () => listPublications(projectId),
-    refetchInterval: (query) => query.state.data?.items.some((item) => item.status === 'queued' || item.status === 'running') ? 1_500 : false,
+    refetchInterval: (query) => query.state.data?.items.some((item) => item.status === 'preparing' || item.status === 'queued' || item.status === 'running') ? 1_500 : false,
     refetchIntervalInBackground: true,
   });
   const createMutation = useMutation({
@@ -60,7 +60,7 @@ export default function PublishPanel({ projectId, readOnly }: PublishPanelProps)
     () => items.find((item) => item.id === selectedId) ?? items[0],
     [items, selectedId],
   );
-  const active = items.find((item) => item.status === 'queued' || item.status === 'running');
+  const active = items.find((item) => item.status === 'preparing' || item.status === 'queued' || item.status === 'running');
   const image = selected ? immutableImage(selected) : '';
   const canPublish = !readOnly && !active && buildContext.trim() !== '' && dockerfile.trim() !== '';
   const displayError = createMutation.error?.message || publicationsQuery.error?.message;
@@ -116,7 +116,7 @@ export default function PublishPanel({ projectId, readOnly }: PublishPanelProps)
               <div className="flex flex-wrap items-center gap-2">
                 <StatusIcon item={selected} />
                 <strong className="text-sm text-slate-900">{t(`publish.${selected.status}`)}</strong>
-                {(selected.status === 'queued' || selected.status === 'running') && (
+                {(selected.status === 'preparing' || selected.status === 'queued' || selected.status === 'running') && (
                   <button type="button" onClick={() => cancelMutation.mutate(selected.id)} disabled={cancelMutation.isPending} className="ml-auto flex h-8 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:text-slate-400"><Ban size={14} />{t('common.cancel')}</button>
                 )}
               </div>
@@ -129,8 +129,16 @@ export default function PublishPanel({ projectId, readOnly }: PublishPanelProps)
                   </div>
                 </section>
               )}
+              {selected.deployment_url && (
+                <section className="border-y border-slate-200 bg-white py-3">
+                  <h3 className="mb-2 text-xs font-semibold uppercase text-slate-500">{t('publish.application')}</h3>
+                  <a href={selected.deployment_url} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-800 hover:underline">
+                    <span className="break-all">{selected.deployment_hostname || selected.deployment_url}</span><ExternalLink size={14} className="shrink-0" />
+                  </a>
+                </section>
+              )}
               {(selected.error_message || selected.error_code) && <div role="alert" className="flex items-start gap-2 border border-red-200 bg-red-50 p-3 text-sm text-red-800"><AlertCircle size={16} className="mt-0.5 shrink-0" /><span className="break-words"><strong>{selected.error_code}</strong>{selected.error_message && `: ${selected.error_message}`}</span></div>}
-              {(selected.logs || selected.status === 'running' || selected.status === 'queued') && (
+              {(selected.logs || selected.status === 'preparing' || selected.status === 'running' || selected.status === 'queued') && (
                 <section>
                   <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500"><Terminal size={14} />{t('publish.logs')}</h3>
                   <pre className="chat-scrollbar min-h-36 max-h-[55vh] overflow-auto rounded-md bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-200">{selected.logs || t(`publish.${selected.status}`)}</pre>
@@ -145,7 +153,7 @@ export default function PublishPanel({ projectId, readOnly }: PublishPanelProps)
 }
 
 function StatusIcon({ item }: { item: Publication }) {
-  if (item.status === 'queued' || item.status === 'running') return <LoaderCircle aria-hidden size={15} className="shrink-0 animate-spin text-blue-600" />;
+  if (item.status === 'preparing' || item.status === 'queued' || item.status === 'running') return <LoaderCircle aria-hidden size={15} className="shrink-0 animate-spin text-blue-600" />;
   if (item.status === 'completed') return <Check aria-hidden size={15} className="shrink-0 text-emerald-600" />;
   if (item.status === 'cancelled') return <Ban aria-hidden size={15} className="shrink-0 text-slate-500" />;
   return <AlertCircle aria-hidden size={15} className="shrink-0 text-red-600" />;

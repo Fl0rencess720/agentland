@@ -8,10 +8,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Fl0rencess720/agentland/pkg/gateway/config"
-	"github.com/Fl0rencess720/agentland/pkg/gateway/pkgs/db"
+	"github.com/Fl0rencess720/agentland/pkg/gateway/deployer"
 	"github.com/Fl0rencess720/agentland/pkg/gateway/publisher"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -23,12 +22,14 @@ type ImagePublisher interface {
 	Build(context.Context, publisher.Request) (*publisher.Result, error)
 }
 
+type ApplicationDeployer interface {
+	Deploy(context.Context, deployer.Request) (*deployer.Result, error)
+}
+
 type PublicationHandler struct {
 	enabled      bool
-	sessionStore SessionStore
-	tokenSigner  TokenSigner
 	publisher    ImagePublisher
-	httpClient   *http.Client
+	deployer     ApplicationDeployer
 	serviceToken string
 }
 
@@ -45,10 +46,6 @@ func InitPublicationAPI(group *gin.RouterGroup, cfg *config.Config) error {
 		if len(strings.TrimSpace(cfg.PublisherServiceToken)) < 32 {
 			return errors.New("publisher service token must contain at least 32 characters")
 		}
-		signer, err := BuildTokenSigner(cfg)
-		if err != nil {
-			return fmt.Errorf("initialize publication token signer: %w", err)
-		}
 		imagePublisher, err := publisher.New(publisher.Config{
 			BuildctlPath:     cfg.BuildctlPath,
 			Address:          cfg.BuildKitAddress,
@@ -64,15 +61,20 @@ func InitPublicationAPI(group *gin.RouterGroup, cfg *config.Config) error {
 		if err != nil {
 			return fmt.Errorf("initialize image publisher: %w", err)
 		}
-		h.sessionStore = db.NewSessionStore()
-		h.tokenSigner = signer
 		h.publisher = imagePublisher
+		applicationDeployer, err := deployer.New(deployer.Config{
+			Namespace: cfg.ApplicationNamespace, BaseDomain: cfg.ApplicationBaseDomain,
+			IngressClass: cfg.ApplicationIngressClass, TLSSecret: cfg.ApplicationTLSSecret,
+			RuntimeClass: cfg.ApplicationRuntimeClass, ImagePullSecret: cfg.ApplicationImagePullSecret,
+			Port: cfg.ApplicationPort, Replicas: cfg.ApplicationReplicas, Timeout: cfg.ApplicationDeployTimeout,
+			CPURequest: cfg.ApplicationCPURequest, MemoryRequest: cfg.ApplicationMemoryRequest,
+			CPULimit: cfg.ApplicationCPULimit, MemoryLimit: cfg.ApplicationMemoryLimit,
+		})
+		if err != nil {
+			return fmt.Errorf("initialize application deployer: %w", err)
+		}
+		h.deployer = applicationDeployer
 		h.serviceToken = strings.TrimSpace(cfg.PublisherServiceToken)
-		h.httpClient = &http.Client{Timeout: 2 * time.Minute, Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		}}
 	}
 	group.POST("", h.Publish)
 	return nil
@@ -93,27 +95,28 @@ func (h *PublicationHandler) Publish(ctx *gin.Context) {
 		publicationError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "publisher service authentication failed")
 		return
 	}
-	var request publicationRequest
-	if !bindGatewayJSON(ctx, &request, 64<<10) {
+	if h.publisher == nil || h.deployer == nil {
+		publicationError(ctx, http.StatusServiceUnavailable, "PUBLISHER_UNAVAILABLE", "application deployment is not configured")
 		return
 	}
-	sessionID := strings.TrimSpace(ctx.GetHeader(SessionHeader))
-	if sessionID == "" {
-		publicationError(ctx, http.StatusBadRequest, "SESSION_REQUIRED", "x-agentland-session is required")
+	request := publicationRequest{
+		ProjectID: strings.TrimSpace(ctx.Query("project_id")), ReleaseID: strings.TrimSpace(ctx.Query("release_id")),
+		Context: strings.TrimSpace(ctx.Query("context")), Dockerfile: strings.TrimSpace(ctx.Query("dockerfile")),
+	}
+	if request.ProjectID == "" || request.ReleaseID == "" {
+		publicationError(ctx, http.StatusBadRequest, "INVALID_ARGUMENT", "project_id and release_id are required")
 		return
 	}
-
-	snapshot, err := h.workspaceSnapshot(ctx.Request.Context(), sessionID)
+	snapshot, err := io.ReadAll(io.LimitReader(ctx.Request.Body, maxWorkspaceSnapshotBytes+1))
 	if err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, db.ErrSessionNotFound) {
-			status = http.StatusGone
-		}
-		zap.L().Warn("Fetch workspace snapshot for publication failed", zap.String("session_id", sessionID), zap.Error(err))
-		publicationError(ctx, status, "WORKSPACE_SNAPSHOT_FAILED", err.Error())
+		publicationError(ctx, http.StatusBadRequest, "WORKSPACE_SNAPSHOT_INVALID", err.Error())
 		return
 	}
-	result, err := h.publisher.Build(ctx.Request.Context(), publisher.Request{
+	if len(snapshot) == 0 || int64(len(snapshot)) > maxWorkspaceSnapshotBytes {
+		publicationError(ctx, http.StatusRequestEntityTooLarge, "WORKSPACE_SNAPSHOT_INVALID", "workspace snapshot must be between 1 byte and 8 MiB")
+		return
+	}
+	build, err := h.publisher.Build(ctx.Request.Context(), publisher.Request{
 		ProjectID: request.ProjectID, ReleaseID: request.ReleaseID,
 		Context: request.Context, Dockerfile: request.Dockerfile, Snapshot: snapshot,
 	})
@@ -130,57 +133,24 @@ func (h *PublicationHandler) Publish(ctx *gin.Context) {
 		}
 		return
 	}
-	ctx.JSON(http.StatusOK, result)
-}
-
-func (h *PublicationHandler) workspaceSnapshot(ctx context.Context, sessionID string) ([]byte, error) {
-	info, err := h.sessionStore.GetSession(ctx, sessionID)
+	deployment, err := h.deployer.Deploy(ctx.Request.Context(), deployer.Request{
+		ProjectID: request.ProjectID, ReleaseID: request.ReleaseID, ImageRef: build.ImageRef, Digest: build.Digest,
+	})
 	if err != nil {
-		return nil, err
+		if errors.Is(ctx.Request.Context().Err(), context.Canceled) {
+			return
+		}
+		zap.L().Warn("Deploy application image failed", zap.String("project_id", request.ProjectID), zap.String("release_id", request.ReleaseID), zap.Error(err))
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{
+			"code": "APPLICATION_DEPLOY_FAILED", "message": err.Error(), "logs": build.Logs,
+			"image_ref": build.ImageRef, "digest": build.Digest,
+		})
+		return
 	}
-	if err := h.sessionStore.UpdateLatestActivity(ctx, sessionID); err != nil {
-		zap.L().Warn("Update publication session activity failed", zap.String("session_id", sessionID), zap.Error(err))
-	}
-	token, err := h.tokenSigner.Sign(sessionID, "", 0)
-	if err != nil {
-		return nil, fmt.Errorf("sign workspace request: %w", err)
-	}
-	target, err := resolveSandboxTarget(info.GrpcEndpoint)
-	if err != nil {
-		return nil, err
-	}
-	target.Path = "/api/workspace/snapshot"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set(SessionHeader, sessionID)
-	response, err := h.httpClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxWorkspaceSnapshotBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sandbox returned status %d: %s", response.StatusCode, strings.TrimSpace(string(data)))
-	}
-	if int64(len(data)) > maxWorkspaceSnapshotBytes {
-		return nil, errors.New("workspace snapshot exceeds 8 MiB")
-	}
-	return data, nil
-}
-
-func bindGatewayJSON(ctx *gin.Context, target any, limit int64) bool {
-	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, limit)
-	if err := ctx.ShouldBindJSON(target); err != nil {
-		publicationError(ctx, http.StatusBadRequest, "INVALID_ARGUMENT", err.Error())
-		return false
-	}
-	return true
+	ctx.JSON(http.StatusOK, gin.H{
+		"image_ref": build.ImageRef, "digest": build.Digest, "logs": build.Logs,
+		"deployment_url": deployment.URL, "deployment_hostname": deployment.Hostname, "deployment_name": deployment.DeploymentName,
+	})
 }
 
 func publicationError(ctx *gin.Context, status int, code, message string) {

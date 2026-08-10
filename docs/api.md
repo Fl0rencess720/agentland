@@ -566,6 +566,31 @@ curl -X POST "$BASE/api/code-runner/fs/upload" \
 - 缺少关键路径参数：`400`，`{"error":"port and sessionId are required"}`
 - 代理失败：`502`，`sandbox unreachable`
 
+## 应用构建部署接口
+
+`POST /api/publications` 是应用后端调用的内部接口。一次请求会依次构建镜像、推送 Registry、按镜像 Digest 更新 Kubernetes 工作负载并等待滚动发布可用。调用方无需再发起单独的部署请求。
+
+必填 Header 为 `Authorization: Bearer <publisher-service-token>` 和 `Content-Type: application/gzip`。请求体是已经冻结并校验过的工作区快照，压缩后上限为 8 MiB。
+
+查询参数包括 `project_id`、`release_id`、`context` 和 `dockerfile`。前两个参数必填；构建目录和 Dockerfile 必须是工作区内的相对路径。
+
+成功响应：
+
+```json
+{
+  "image_ref": "registry.example.com/apps/project_123:publication_456",
+  "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "deployment_url": "https://app-a1b2c3d4e5f60708.apps.example.com",
+  "deployment_hostname": "app-a1b2c3d4e5f60708.apps.example.com",
+  "deployment_name": "app-a1b2c3d4e5f60708",
+  "logs": "..."
+}
+```
+
+构建失败返回 `IMAGE_BUILD_FAILED`。镜像已经推送但滚动发布失败时返回 `APPLICATION_DEPLOY_FAILED`，响应仍携带 `image_ref`、`digest` 和构建日志。Gateway 会恢复项目上一版 Deployment；项目第一次部署失败时会移除未就绪的 Deployment。
+
+每个项目使用由 `project_id` 哈希得到的固定资源名和子域名。后续发布更新同一组 Deployment、Service 和 Ingress，并始终使用 `<repository>@sha256:<digest>` 运行镜像。应用容器监听 `0.0.0.0:8080`。
+
 ## 前端接入建议
 
 本节给出与实现一致的落地建议，避免常见对接问题。

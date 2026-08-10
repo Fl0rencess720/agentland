@@ -294,25 +294,24 @@ func (c *agentlandGatewayClient) CancelRun(ctx context.Context, sessionID, agent
 	return nil
 }
 
-func (c *agentlandGatewayClient) PublishImage(ctx context.Context, sessionID, projectID, publicationID, buildContext, dockerfile string) (result *models.GatewayPublication, err error) {
-	ctx, span := startGatewaySpan(ctx, "gateway.publish_image",
-		attribute.String("gateway.session_id", sessionID),
+func (c *agentlandGatewayClient) PublishApplication(ctx context.Context, projectID, publicationID, buildContext, dockerfile string, snapshot []byte) (result *models.GatewayPublication, err error) {
+	ctx, span := startGatewaySpan(ctx, "gateway.publish_application",
 		attribute.String("app.project.id", projectID),
 		attribute.String("app.publication.id", publicationID),
 	)
 	defer finishGatewaySpan(span, &err)
-	payload, err := json.Marshal(map[string]string{
-		"project_id": projectID, "release_id": publicationID, "context": buildContext, "dockerfile": dockerfile,
-	})
+	if int64(len(snapshot)) > c.snapshotLimit() {
+		return nil, fmt.Errorf("workspace snapshot exceeds %d bytes", c.snapshotLimit())
+	}
+	query := url.Values{
+		"project_id": []string{projectID}, "release_id": []string{publicationID},
+		"context": []string{buildContext}, "dockerfile": []string{dockerfile},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/publications?"+query.Encode(), bytes.NewReader(snapshot))
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/publications", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(agentlandSessionHeader, strings.TrimSpace(sessionID))
+	request.Header.Set("Content-Type", "application/gzip")
 	if c.publisherToken == "" {
 		return nil, errors.New("agentland-gateway.publisher_token is required")
 	}
@@ -333,7 +332,7 @@ func (c *agentlandGatewayClient) PublishImage(ctx context.Context, sessionID, pr
 	if err = json.Unmarshal(body, &publication); err != nil {
 		return nil, err
 	}
-	if publication.ImageRef == "" || !imageDigestPattern.MatchString(publication.Digest) {
+	if publication.ImageRef == "" || !imageDigestPattern.MatchString(publication.Digest) || publication.DeploymentURL == "" {
 		return nil, errors.New("gateway returned invalid publication metadata")
 	}
 	return &publication, nil
@@ -547,16 +546,19 @@ func parseAgentEvents(reader io.Reader, onEvent func(*models.AgentEvent) error) 
 
 func decodeGatewayError(status int, body []byte) error {
 	var raw struct {
-		Code    string `json:"code"`
-		Error   string `json:"error"`
-		Message string `json:"message"`
-		Msg     string `json:"msg"`
-		SHA     string `json:"sha"`
-		Logs    string `json:"logs"`
+		Code          string `json:"code"`
+		Error         string `json:"error"`
+		Message       string `json:"message"`
+		Msg           string `json:"msg"`
+		SHA           string `json:"sha"`
+		Logs          string `json:"logs"`
+		ImageRef      string `json:"image_ref"`
+		Digest        string `json:"digest"`
+		DeploymentURL string `json:"deployment_url"`
 	}
 	_ = json.Unmarshal(body, &raw)
 	message := firstValue(raw.Error, raw.Message, raw.Msg, strings.TrimSpace(string(body)), http.StatusText(status))
-	return &models.GatewayResponseError{StatusCode: status, Code: raw.Code, Message: message, SHA: raw.SHA, Logs: raw.Logs}
+	return &models.GatewayResponseError{StatusCode: status, Code: raw.Code, Message: message, SHA: raw.SHA, Logs: raw.Logs, ImageRef: raw.ImageRef, Digest: raw.Digest, DeploymentURL: raw.DeploymentURL}
 }
 
 func firstValue(values ...string) string {

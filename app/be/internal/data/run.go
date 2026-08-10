@@ -52,6 +52,9 @@ func (r *runRepo) CreateRun(ctx context.Context, input *models.CreateRunInput) (
 		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `select id from projects where id=$1 and owner_id=$2 for update`, input.ProjectID, input.OwnerID); err != nil {
+		return nil, false, err
+	}
 	existing, err := scanRun(tx.QueryRow(ctx, runSelect+` where owner_id=$1 and project_id=$2 and idempotency_key=$3`, input.OwnerID, input.ProjectID, input.IdempotencyKey))
 	if err == nil {
 		var message string
@@ -66,9 +69,16 @@ func (r *runRepo) CreateRun(ctx context.Context, input *models.CreateRunInput) (
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, err
 	}
+	var preparationActive bool
+	if err = tx.QueryRow(ctx, `select exists(select 1 from project_publications where project_id=$1 and status=$2)`, input.ProjectID, models.PublicationStatusPreparing).Scan(&preparationActive); err != nil {
+		return nil, false, err
+	}
+	if preparationActive {
+		return nil, false, biz.ErrActivePublication
+	}
 	_, err = tx.Exec(ctx, `insert into agent_runs
-(id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,agent_run_id,last_sequence,error_code,error_message,trace_parent,trace_state,created_at,updated_at,started_at,completed_at,cancel_requested_at)
-values($1,$2,$3,$4,$5,$6,$7,$1,0,'','',$8,$9,$10,$10,$10,null,null)`, input.ID, input.OwnerID, input.ProjectID, input.IdempotencyKey, input.InputMessageID, input.AssistantMessageID, models.RunStatusRunning, input.TraceParent, input.TraceState, input.Now)
+(id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,agent_run_id,agent_conversation_id,last_sequence,error_code,error_message,trace_parent,trace_state,created_at,updated_at,started_at,completed_at,cancel_requested_at)
+values($1,$2,$3,$4,$5,$6,$7,$1,$8,0,'','',$9,$10,$11,$11,$11,null,null)`, input.ID, input.OwnerID, input.ProjectID, input.IdempotencyKey, input.InputMessageID, input.AssistantMessageID, models.RunStatusRunning, input.AgentConversationID, input.TraceParent, input.TraceState, input.Now)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -100,7 +110,7 @@ values($1,$2,$3,$4,$5,$6,$7,$1,0,'','',$8,$9,$10,$10,$10,null,null)`, input.ID, 
 		return nil, false, err
 	}
 	started := input.Now
-	return &models.Run{ID: input.ID, OwnerID: input.OwnerID, ProjectID: input.ProjectID, IdempotencyKey: input.IdempotencyKey, InputMessageID: input.InputMessageID, AssistantMessageID: input.AssistantMessageID, InputMessage: input.Message, Status: models.RunStatusRunning, AgentRunID: input.ID, TraceParent: input.TraceParent, TraceState: input.TraceState, CreatedAt: input.Now, UpdatedAt: input.Now, StartedAt: &started}, false, nil
+	return &models.Run{ID: input.ID, OwnerID: input.OwnerID, ProjectID: input.ProjectID, IdempotencyKey: input.IdempotencyKey, AgentConversationID: input.AgentConversationID, InputMessageID: input.InputMessageID, AssistantMessageID: input.AssistantMessageID, InputMessage: input.Message, Status: models.RunStatusRunning, AgentRunID: input.ID, TraceParent: input.TraceParent, TraceState: input.TraceState, CreatedAt: input.Now, UpdatedAt: input.Now, StartedAt: &started}, false, nil
 }
 
 func (r *runRepo) FindRunByIdempotency(ctx context.Context, ownerID, projectID, key, message string) (*models.Run, error) {
@@ -228,7 +238,7 @@ func (r *runRepo) ListMessages(ctx context.Context, ownerID, projectID, cursor s
 		return nil, nil, err
 	}
 	args := []any{ownerID, projectID, limit + 1}
-	query := `select id,project_id,owner_id,run_id,role,content,status,created_at,updated_at from project_messages where owner_id=$1 and project_id=$2`
+	query := `select id,project_id,owner_id,run_id,role,content,status,created_at,updated_at from project_messages where owner_id=$1 and project_id=$2 and hidden=false`
 	if cursor != "" {
 		query += ` and (created_at,id)<(select created_at,id from project_messages where id=$4 and owner_id=$1 and project_id=$2)`
 		args = append(args, cursor)
@@ -451,11 +461,12 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 		statements := []string{
 			`create table if not exists agent_runs (
 				id text primary key,owner_id text not null references users(id),project_id text not null references projects(id),idempotency_key text not null,
-				input_message_id text not null,assistant_message_id text not null,status text not null,agent_run_id text not null default '',last_sequence bigint not null default 0,
+				input_message_id text not null,assistant_message_id text not null,status text not null,agent_run_id text not null default '',agent_conversation_id text not null default '',last_sequence bigint not null default 0,
 				error_code text not null default '',error_message text not null default '',trace_parent text not null default '',trace_state text not null default '',created_at timestamptz not null,updated_at timestamptz not null,
 				started_at timestamptz,completed_at timestamptz,cancel_requested_at timestamptz)`,
 			`alter table agent_runs add column if not exists trace_parent text not null default ''`,
 			`alter table agent_runs add column if not exists trace_state text not null default ''`,
+			`alter table agent_runs add column if not exists agent_conversation_id text not null default ''`,
 			`alter table agent_runs drop column if exists worker_id`,
 			`alter table agent_runs drop column if exists heartbeat_at`,
 			`update agent_runs set status='failed',error_code='LEGACY_QUEUED_RUN',error_message='run predates direct Kafka dispatch',completed_at=coalesce(completed_at,now()),updated_at=now() where status='queued'`,
@@ -466,7 +477,8 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`drop index if exists idx_agent_runs_recovery`,
 			`create table if not exists project_messages (
 				id text primary key,project_id text not null references projects(id),owner_id text not null references users(id),run_id text references agent_runs(id),role text not null,
-				content text not null,status text not null,created_at timestamptz not null,updated_at timestamptz not null)`,
+				content text not null,status text not null,hidden boolean not null default false,created_at timestamptz not null,updated_at timestamptz not null)`,
+			`alter table project_messages add column if not exists hidden boolean not null default false`,
 			`create index if not exists idx_project_messages_project_created on project_messages(project_id,created_at,id)`,
 			`create table if not exists project_runtimes (
 				project_id text primary key references projects(id),owner_id text not null references users(id),gateway_session_id text not null,agent_conversation_id text not null,status text not null,
@@ -485,10 +497,22 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 			`create table if not exists project_publications (
 				id text primary key,owner_id text not null references users(id),project_id text not null references projects(id),idempotency_key text not null,
 				build_context text not null,dockerfile text not null,status text not null,worker_id text not null default '',image_ref text not null default '',image_digest text not null default '',
+				deployment_url text not null default '',deployment_hostname text not null default '',deployment_name text not null default '',
 				build_logs text not null default '',error_code text not null default '',error_message text not null default '',trace_parent text not null default '',trace_state text not null default '',
-				created_at timestamptz not null,updated_at timestamptz not null,started_at timestamptz,heartbeat_at timestamptz,completed_at timestamptz,cancel_requested_at timestamptz)`,
+				preparation_run_id text references agent_runs(id),snapshot_object_key text not null default '',snapshot_sha256 text not null default '',snapshot_size_bytes bigint not null default 0,
+				build_dispatched_at timestamptz,created_at timestamptz not null,updated_at timestamptz not null,started_at timestamptz,heartbeat_at timestamptz,completed_at timestamptz,cancel_requested_at timestamptz)`,
+			`alter table project_publications add column if not exists preparation_run_id text references agent_runs(id)`,
+			`alter table project_publications add column if not exists snapshot_object_key text not null default ''`,
+			`alter table project_publications add column if not exists snapshot_sha256 text not null default ''`,
+			`alter table project_publications add column if not exists snapshot_size_bytes bigint not null default 0`,
+			`alter table project_publications add column if not exists build_dispatched_at timestamptz`,
+			`alter table project_publications add column if not exists deployment_url text not null default ''`,
+			`alter table project_publications add column if not exists deployment_hostname text not null default ''`,
+			`alter table project_publications add column if not exists deployment_name text not null default ''`,
 			`create unique index if not exists uq_project_publications_idempotency on project_publications(owner_id,project_id,idempotency_key)`,
-			`create unique index if not exists uq_project_publications_active on project_publications(project_id) where status in ('queued','running')`,
+			`create unique index if not exists uq_project_publications_active_v2 on project_publications(project_id) where status in ('preparing','queued','running')`,
+			`drop index if exists uq_project_publications_active`,
+			`create unique index if not exists uq_project_publications_preparation_run on project_publications(preparation_run_id) where preparation_run_id is not null`,
 			`create index if not exists idx_project_publications_queue on project_publications(status,created_at)`,
 			`create index if not exists idx_project_publications_recovery on project_publications(status,id)`,
 			`create index if not exists idx_project_publications_project_created on project_publications(project_id,created_at desc)`,
@@ -511,11 +535,11 @@ func (r *runRepo) ready(ctx context.Context) (*pgxpool.Pool, error) {
 	return r.pool, r.schemaErr
 }
 
-const runSelect = `select id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,agent_run_id,last_sequence,error_code,error_message,trace_parent,trace_state,created_at,updated_at,started_at,completed_at,cancel_requested_at from agent_runs`
+const runSelect = `select id,owner_id,project_id,idempotency_key,input_message_id,assistant_message_id,status,agent_run_id,agent_conversation_id,last_sequence,error_code,error_message,trace_parent,trace_state,created_at,updated_at,started_at,completed_at,cancel_requested_at from agent_runs`
 
 func scanRun(scanner rowScanner) (*models.Run, error) {
 	run := &models.Run{}
-	err := scanner.Scan(&run.ID, &run.OwnerID, &run.ProjectID, &run.IdempotencyKey, &run.InputMessageID, &run.AssistantMessageID, &run.Status, &run.AgentRunID, &run.LastSequence, &run.ErrorCode, &run.ErrorMessage, &run.TraceParent, &run.TraceState, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt, &run.CancelRequestedAt)
+	err := scanner.Scan(&run.ID, &run.OwnerID, &run.ProjectID, &run.IdempotencyKey, &run.InputMessageID, &run.AssistantMessageID, &run.Status, &run.AgentRunID, &run.AgentConversationID, &run.LastSequence, &run.ErrorCode, &run.ErrorMessage, &run.TraceParent, &run.TraceState, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt, &run.CancelRequestedAt)
 	return run, err
 }
 

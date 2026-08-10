@@ -6,11 +6,14 @@ import (
 )
 
 type GatewayResponseError struct {
-	StatusCode int
-	Code       string
-	Message    string
-	SHA        string
-	Logs       string
+	StatusCode    int
+	Code          string
+	Message       string
+	SHA           string
+	Logs          string
+	ImageRef      string
+	Digest        string
+	DeploymentURL string
 }
 
 func (e *GatewayResponseError) Error() string {

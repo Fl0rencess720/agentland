@@ -41,6 +41,7 @@ func Init() error {
 	viper.SetDefault("kafka.run_consumer_group", "agentland.app.run-workers")
 	viper.SetDefault("kafka.publication_consumer_group", "agentland.app.publication-workers")
 	viper.SetDefault("kafka.event_projector_group", "agentland.app.run-event-projectors")
+	viper.SetDefault("kafka.publication_preparation_group", "agentland.app.publication-preparation")
 	viper.SetDefault("kafka.task_partitions", 16)
 	viper.SetDefault("kafka.event_partitions", 32)
 	viper.SetDefault("kafka.replication_factor", 1)
@@ -123,7 +124,7 @@ func validateKafka() error {
 	if len(viper.GetStringSlice("kafka.brokers")) == 0 {
 		return fmt.Errorf("kafka.brokers is required")
 	}
-	for _, key := range []string{"run_topic", "publication_topic", "event_topic", "run_consumer_group", "publication_consumer_group", "event_projector_group"} {
+	for _, key := range []string{"run_topic", "publication_topic", "event_topic", "run_consumer_group", "publication_consumer_group", "event_projector_group", "publication_preparation_group"} {
 		if strings.TrimSpace(viper.GetString("kafka."+key)) == "" {
 			return fmt.Errorf("kafka.%s is required", key)
 		}

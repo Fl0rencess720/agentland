@@ -21,7 +21,7 @@ function renderPanel() {
 }
 
 describe('PublishPanel', () => {
-  it('creates an idempotent publication and shows queued status', async () => {
+  it('creates an idempotent publication and shows preparing status', async () => {
     localStorage.setItem('agentland.locale', 'en-US');
     let idempotency = '';
     let requestBody: Record<string, string> = {};
@@ -31,15 +31,15 @@ describe('PublishPanel', () => {
         idempotency = request.headers.get('Idempotency-Key') ?? '';
         requestBody = await request.json() as Record<string, string>;
         return envelope({
-          id: 'pub-1', project_id: 'project-1', status: 'queued', context: requestBody.context,
+          id: 'pub-1', project_id: 'project-1', status: 'preparing', preparation_run_id: 'run-prepare-1', context: requestBody.context,
           dockerfile: requestBody.dockerfile, created_at: '2026-01-01T00:00:00Z',
         }, 202);
       }),
     );
     renderPanel();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Build and push' }));
-    await waitFor(() => expect(screen.getAllByText('Queued').length).toBeGreaterThan(0));
+    await user.click(await screen.findByRole('button', { name: 'Deploy' }));
+    await waitFor(() => expect(screen.getAllByText('Preparing Dockerfile').length).toBeGreaterThan(0));
     expect(idempotency).not.toBe('');
     expect(requestBody).toEqual({ context: '.', dockerfile: 'Dockerfile' });
   });
@@ -49,10 +49,12 @@ describe('PublishPanel', () => {
     server.use(http.get('/api/v1/projects/project-1/publications', () => envelope({ items: [{
       id: 'pub-1', project_id: 'project-1', status: 'completed', context: '.', dockerfile: 'Dockerfile',
       image_ref: 'registry.example/apps/project-1:pub-1', digest: `sha256:${'a'.repeat(64)}`,
+      deployment_url: 'https://app-123.apps.example.com', deployment_hostname: 'app-123.apps.example.com',
       logs: 'build complete', created_at: '2026-01-01T00:00:00Z',
     }] })));
     renderPanel();
     expect(await screen.findByText(/registry\.example\/apps\/project-1@sha256:/)).toBeInTheDocument();
     expect(screen.getByText('build complete')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /app-123\.apps\.example\.com/ })).toHaveAttribute('href', 'https://app-123.apps.example.com');
   });
 });

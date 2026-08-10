@@ -63,7 +63,7 @@ func main() {
 	}
 
 	var workerWG sync.WaitGroup
-	workerWG.Add(4)
+	workerWG.Add(5)
 	go func() {
 		defer workerWG.Done()
 		app.RunWorker.Run(ctx)
@@ -75,6 +75,10 @@ func main() {
 	go func() {
 		defer workerWG.Done()
 		app.Kafka.RunEventProjector(ctx)
+	}()
+	go func() {
+		defer workerWG.Done()
+		app.Kafka.RunPublicationPreparation(ctx)
 	}()
 	go func() {
 		defer workerWG.Done()

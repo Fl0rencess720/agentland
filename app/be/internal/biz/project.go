@@ -642,6 +642,17 @@ func (u *projectUseCase) UpdateFileContent(ctx context.Context, principal models
 	if len(req.Content) > models.MaxFileContentBytes {
 		return nil, response.InvalidArgumentError("content", "too large")
 	}
+	if publications, ok := u.runs.(interface {
+		HasPreparingPublication(context.Context, string, string) (bool, error)
+	}); ok {
+		active, err := publications.HasPreparingPublication(ctx, principal.UserID, strings.TrimSpace(projectID))
+		if err != nil {
+			return nil, mapAPIError(err)
+		}
+		if active {
+			return nil, response.ActivePublicationConflictError()
+		}
+	}
 	runtime, apiErr := u.workspaceRuntime(ctx, principal, projectID)
 	if apiErr != nil {
 		return nil, apiErr

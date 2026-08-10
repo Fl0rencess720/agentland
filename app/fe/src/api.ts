@@ -152,7 +152,7 @@ export type PreviewResult = {
   last_heartbeat_at?: string;
 };
 
-export type PublicationStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type PublicationStatus = 'preparing' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
 export type Publication = {
   id: string;
@@ -160,8 +160,12 @@ export type Publication = {
   status: PublicationStatus;
   context: string;
   dockerfile: string;
+  preparation_run_id?: string;
   image_ref?: string;
   digest?: string;
+  deployment_url?: string;
+  deployment_hostname?: string;
+  deployment_name?: string;
   logs?: string;
   error_code?: string;
   error_message?: string;

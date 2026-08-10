@@ -67,6 +67,32 @@ spec:
               value: {{ .Values.gateway.publisher.timeout | quote }}
             - name: AL_REGISTRY_REPOSITORY_PREFIX
               value: {{ .Values.gateway.publisher.repositoryPrefix | quote }}
+            - name: AL_APPLICATION_NAMESPACE
+              value: {{ .Values.namespaces.applications | quote }}
+            - name: AL_APPLICATION_BASE_DOMAIN
+              value: {{ if .Values.gateway.publisher.enabled }}{{ required "gateway.applications.baseDomain is required when publishing is enabled" .Values.gateway.applications.baseDomain | quote }}{{ else }}{{ .Values.gateway.applications.baseDomain | quote }}{{ end }}
+            - name: AL_APPLICATION_INGRESS_CLASS
+              value: {{ .Values.gateway.applications.ingressClass | quote }}
+            - name: AL_APPLICATION_TLS_SECRET
+              value: {{ .Values.gateway.applications.tlsSecret | quote }}
+            - name: AL_APPLICATION_RUNTIME_CLASS
+              value: {{ .Values.gateway.applications.runtimeClassName | quote }}
+            - name: AL_APPLICATION_IMAGE_PULL_SECRET
+              value: {{ .Values.gateway.applications.imagePullSecret | quote }}
+            - name: AL_APPLICATION_PORT
+              value: {{ .Values.gateway.applications.port | quote }}
+            - name: AL_APPLICATION_REPLICAS
+              value: {{ .Values.gateway.applications.replicas | quote }}
+            - name: AL_APPLICATION_DEPLOY_TIMEOUT
+              value: {{ .Values.gateway.applications.deployTimeout | quote }}
+            - name: AL_APPLICATION_CPU_REQUEST
+              value: {{ .Values.gateway.applications.resources.requests.cpu | quote }}
+            - name: AL_APPLICATION_MEMORY_REQUEST
+              value: {{ .Values.gateway.applications.resources.requests.memory | quote }}
+            - name: AL_APPLICATION_CPU_LIMIT
+              value: {{ .Values.gateway.applications.resources.limits.cpu | quote }}
+            - name: AL_APPLICATION_MEMORY_LIMIT
+              value: {{ .Values.gateway.applications.resources.limits.memory | quote }}
 {{- if .Values.gateway.publisher.enabled }}
             - name: AL_PUBLISHER_SERVICE_TOKEN
               valueFrom:

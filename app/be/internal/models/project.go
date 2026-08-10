@@ -19,6 +19,7 @@ const (
 	RuntimeStatusUnavailable = "unavailable"
 
 	PublicationStatusQueued    = "queued"
+	PublicationStatusPreparing = "preparing"
 	PublicationStatusRunning   = "running"
 	PublicationStatusCompleted = "completed"
 	PublicationStatusFailed    = "failed"
@@ -232,6 +233,7 @@ type WorkspaceSnapshot struct {
 
 type Run struct {
 	ID, OwnerID, ProjectID, IdempotencyKey string
+	AgentConversationID                    string
 	InputMessageID, AssistantMessageID     string
 	InputMessage                           string
 	Status, AgentRunID                     string
@@ -247,6 +249,7 @@ type CreateRunInput struct {
 	ID, OwnerID, ProjectID, IdempotencyKey string
 	InputMessageID, AssistantMessageID     string
 	Message                                string
+	AgentConversationID                    string
 	TraceParent, TraceState                string
 	Now                                    time.Time
 }
@@ -352,20 +355,24 @@ type PublicationCreateReq struct {
 }
 
 type PublicationResp struct {
-	ID                string  `json:"id"`
-	ProjectID         string  `json:"project_id"`
-	Status            string  `json:"status"`
-	Context           string  `json:"context"`
-	Dockerfile        string  `json:"dockerfile"`
-	ImageRef          string  `json:"image_ref,omitempty"`
-	Digest            string  `json:"digest,omitempty"`
-	Logs              string  `json:"logs,omitempty"`
-	ErrorCode         string  `json:"error_code,omitempty"`
-	ErrorMessage      string  `json:"error_message,omitempty"`
-	CancelRequestedAt *string `json:"cancel_requested_at,omitempty"`
-	CreatedAt         string  `json:"created_at"`
-	StartedAt         *string `json:"started_at,omitempty"`
-	CompletedAt       *string `json:"completed_at,omitempty"`
+	ID                 string  `json:"id"`
+	ProjectID          string  `json:"project_id"`
+	Status             string  `json:"status"`
+	Context            string  `json:"context"`
+	Dockerfile         string  `json:"dockerfile"`
+	PreparationRunID   string  `json:"preparation_run_id,omitempty"`
+	ImageRef           string  `json:"image_ref,omitempty"`
+	Digest             string  `json:"digest,omitempty"`
+	DeploymentURL      string  `json:"deployment_url,omitempty"`
+	DeploymentHostname string  `json:"deployment_hostname,omitempty"`
+	DeploymentName     string  `json:"deployment_name,omitempty"`
+	Logs               string  `json:"logs,omitempty"`
+	ErrorCode          string  `json:"error_code,omitempty"`
+	ErrorMessage       string  `json:"error_message,omitempty"`
+	CancelRequestedAt  *string `json:"cancel_requested_at,omitempty"`
+	CreatedAt          string  `json:"created_at"`
+	StartedAt          *string `json:"started_at,omitempty"`
+	CompletedAt        *string `json:"completed_at,omitempty"`
 }
 
 type PublicationListResp struct {
@@ -380,7 +387,13 @@ type PublicationCancelResp struct {
 type Publication struct {
 	ID, OwnerID, ProjectID, IdempotencyKey string
 	Context, Dockerfile, Status, WorkerID  string
-	ImageRef, Digest, Logs                 string
+	PreparationRunID, SnapshotObjectKey    string
+	SnapshotSHA                            string
+	SnapshotSize                           int64
+	BuildDispatchedAt                      *time.Time
+	ImageRef, Digest                       string
+	DeploymentURL, DeploymentHostname      string
+	DeploymentName, Logs                   string
 	ErrorCode, ErrorMessage                string
 	TraceParent, TraceState                string
 	CreatedAt, UpdatedAt                   time.Time
@@ -391,21 +404,36 @@ type Publication struct {
 type CreatePublicationInput struct {
 	ID, OwnerID, ProjectID, IdempotencyKey string
 	Context, Dockerfile                    string
+	PreparationRunID                       string
+	PreparationInputMessageID              string
+	PreparationAssistantMessageID          string
+	PreparationMessage                     string
 	TraceParent, TraceState                string
 	Now                                    time.Time
 }
 
+type CompletePublicationPreparationInput struct {
+	ID, PreparationRunID string
+	Snapshot             []byte
+	Now                  time.Time
+}
+
 type FinishPublicationInput struct {
-	ID, WorkerID, Status    string
-	ImageRef, Digest, Logs  string
-	ErrorCode, ErrorMessage string
-	Now                     time.Time
+	ID, WorkerID, Status              string
+	ImageRef, Digest                  string
+	DeploymentURL, DeploymentHostname string
+	DeploymentName, Logs              string
+	ErrorCode, ErrorMessage           string
+	Now                               time.Time
 }
 
 type GatewayPublication struct {
-	ImageRef string `json:"image_ref"`
-	Digest   string `json:"digest"`
-	Logs     string `json:"logs"`
+	ImageRef           string `json:"image_ref"`
+	Digest             string `json:"digest"`
+	DeploymentURL      string `json:"deployment_url"`
+	DeploymentHostname string `json:"deployment_hostname"`
+	DeploymentName     string `json:"deployment_name"`
+	Logs               string `json:"logs"`
 }
 
 type AgentEvent struct {

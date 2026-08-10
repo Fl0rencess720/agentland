@@ -4,8 +4,10 @@ fullnameOverride: ""
 namespaces:
   createSystem: false
   createSandboxes: true
+  createApplications: true
   system: agentland-system
   sandboxes: agentland-sandboxes
+  applications: agentland-apps
 
 agentcore:
   serviceAccount:
@@ -145,6 +147,23 @@ gateway:
     registryCredentialsSecret: ""
     # Existing Secret containing ca.pem, cert.pem and key.pem for BuildKit mTLS.
     buildkitTLSSecret: ""
+
+  applications:
+    baseDomain: ""
+    ingressClass: nginx
+    tlsSecret: ""
+    runtimeClassName: ""
+    imagePullSecret: ""
+    port: 8080
+    replicas: 1
+    deployTimeout: 5m
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
   service:
     enabled: true

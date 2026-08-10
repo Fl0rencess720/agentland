@@ -26,7 +26,8 @@ func TestKafkaDirectTaskAndIdempotentEventProjection(t *testing.T) {
 		"kafka.run_topic": "agentland.test.run." + suffix, "kafka.publication_topic": "agentland.test.publication." + suffix,
 		"kafka.event_topic": "agentland.test.events." + suffix, "kafka.run_consumer_group": "agentland.test.run-workers." + suffix,
 		"kafka.publication_consumer_group": "agentland.test.publication-workers." + suffix, "kafka.event_projector_group": "agentland.test.projector." + suffix,
-		"kafka.task_partitions": 2, "kafka.event_partitions": 2, "kafka.replication_factor": 1, "kafka.event_retention": 24 * time.Hour,
+		"kafka.publication_preparation_group": "agentland.test.publication-preparation." + suffix,
+		"kafka.task_partitions":               2, "kafka.event_partitions": 2, "kafka.replication_factor": 1, "kafka.event_retention": 24 * time.Hour,
 	}
 	for key, value := range settings {
 		viper.Set(key, value)
@@ -100,8 +101,14 @@ func TestKafkaDirectTaskAndIdempotentEventProjection(t *testing.T) {
 	publicationID := "publication-kafka-" + suffix
 	_, _, err = runs.CreatePublication(ctx, &models.CreatePublicationInput{
 		ID: publicationID, OwnerID: ownerID, ProjectID: projectID, IdempotencyKey: publicationID,
-		Context: ".", Dockerfile: "Dockerfile", Now: now.Add(3 * time.Second),
+		Context: ".", Dockerfile: "Dockerfile", PreparationRunID: "prep-" + publicationID,
+		PreparationInputMessageID: "prep-input-" + publicationID, PreparationAssistantMessageID: "prep-assistant-" + publicationID,
+		PreparationMessage: "prepare Dockerfile", Now: now.Add(3 * time.Second),
 	})
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `update agent_runs set status=$2 where id=$1`, "prep-"+publicationID, models.RunStatusCompleted)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `update project_publications set status=$2,build_dispatched_at=$3 where id=$1`, publicationID, models.PublicationStatusQueued, now)
 	require.NoError(t, err)
 	require.NoError(t, pipeline.PublishPublicationTask(ctx, publicationID, projectID))
 	receiveCtx, cancelReceive = context.WithTimeout(ctx, 15*time.Second)

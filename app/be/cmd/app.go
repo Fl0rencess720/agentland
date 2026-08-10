@@ -45,6 +45,8 @@ func newApp(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("gateway does not support image publication")
 	}
 	projectUseCase := biz.NewProjectUsecaseWithPublishingAndTasks(projectRepo, runRepo, runEvents, gateway, publicationRepo, publisher, kafka, data.NewLangfuseScoreClient())
+	preparationCoordinator := biz.NewPublicationPreparationCoordinator(publicationRepo, gateway, kafka)
+	kafka.SetPublicationPreparationHandler(preparationCoordinator.Handle)
 
 	httpServer := service.NewHTTPServer(
 		middlewares.NewDefaultIPRateLimiter(),
